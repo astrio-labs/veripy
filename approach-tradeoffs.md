@@ -1,4 +1,4 @@
-# Python verification approaches — tradeoffs
+# Python Verification Approaches and Tradeoffs
 
 Design brainstorm for a practical verification toolchain for Python: developers write annotated production Python, and the tool translates a chosen fragment into a verification backend (Dafny, Lean, or similar).
 
