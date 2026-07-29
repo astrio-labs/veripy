@@ -269,7 +269,7 @@ The architecture is citable, not speculative:
 
 | System | What it demonstrates | Lesson taken |
 | --- | --- | --- |
-| **Nagini** (Eilers & Müller, CAV 2018; Viper) | The exact front-end shape, published: require PEP 484 annotations, run mypy, reject on error, shallowly encode the typed residue into an IVL | Direct existence proof; copy its practice of stating soundness assumptions explicitly (A1–A6) |
+| **Nagini** (Eilers & Müller, CAV 2018; Viper) | The exact front-end shape, published: require PEP 484 annotations, run mypy, reject on error, shallowly encode the typed residue into an IVL | Direct existence proof; copy its practice of stating soundness assumptions explicitly (A1–A7) |
 | **mypyc** (compiles mypy, black) | Typed island trusting annotations internally + runtime checks where untyped code crosses in — in production | The boundary-guard pattern ships today; verification needs precondition checks too, not just type tags |
 | **Static Python / Cinder** (Meta) | Sound gradual typing enforced at Instagram scale | The boundary is *practical*; enforcement depth (deep vs shallow) is a real per-region design axis |
 | **RPython** (PyPy) | Production software written in a disciplined Python subset | Explicit annotations over whole-program inference; rejection diagnostics are the primary UX |
@@ -305,7 +305,7 @@ Each "not claimed" is either detected and rejected, guarded, or stated — never
 - Conformance checker (basedpyright strict + libcst rule pass + ownership dataflow) — also *shrinks* the encoder's input language.
 - Guard generator: deep exact-type checks, executable preconditions, copy-in, trusted-caller elision, blame errors.
 - Dafny preamble: `PyMod`/`PyFloorDiv`, `PyIndex`/`PySlice`, `Truthy_*`, `Option`, container/str method models — one versioned file with lemmas and its differential test corpus.
-- Assumption list A1–A6 in the verification report.
+- Assumption list A1–A7 in the verification report.
 - Differential harness (§6) in CI.
 
 **v1.5:** `Outcome`/`:-` exceptions; mutable dataclass methods under ownership rules; broader str surface; validated-source tokens; likely admissions from corpus telemetry (expected order: `try/except`, dataclass methods, str breadth, generators).
