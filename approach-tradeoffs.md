@@ -43,7 +43,7 @@ Choose a typed Python subset and lower it syntactically into prover constructs (
 - Cannot claim full CPython semantics
 - Brownfield requires carving typed islands
 - Library surface must be curated (axioms / models)
-- The encoder must define Python semantics precisely, not homophonically: `//`/`%` are floor-based in Python but Euclidean in Dafny, truthiness and `and`/`or` return operands, dicts are insertion-ordered — each needs an explicit lowering rule, and the encoder needs a validation story (see `soundness-architecture.md`)
+- The encoder must define Python semantics precisely, not homophonically: `//`/`%` are floor-based in Python but Euclidean in Dafny, truthiness and `and`/`or` return operands, dicts are insertion-ordered — each needs an explicit lowering rule or a detected, explained rejection, and the encoder needs a validation story (see `soundness-architecture.md`)
 - Value-model soundness requires an ownership/aliasing discipline (`a = b; b.append(1)` breaks a seq model in fully annotated code); type checkers carry zero aliasing information, so this is a dedicated analysis, not a typing requirement
 
 ### Hybrid (shallow core + curated models)
@@ -394,7 +394,7 @@ Track references, fields, sharing. Closest to Python objects; pushes toward Vipe
 | Comments vs new language | `#@` (or light decorators) on real Python | Erasing dialect | Prefer annotating real Python |
 | Product vs research substrate | Toolchain developers can use | General Python semantics in a prover | Product cut first; keep research questions explicit |
 
-### Combinations that conflict
+### Combination compatibility
 
 - **Deep embedding + Dafny** — high conflict; Dafny is a poor host for deep embeddings
 - **Shallow translation + untyped OK** — resolve/emit become guesswork; weak trust
@@ -425,10 +425,10 @@ These are places a Python-best design should *not* blindly mirror a TypeScript-o
 | --- | --- | --- |
 | Static closure | Island code uses constructs with no defined Dafny image (`cast`, reflection, dynamic attrs, aliased mutation) | Conformance checker: basedpyright strict + AST-level lint enforcing a closed sublanguage + ownership dataflow pass |
 | Entry soundness | Untyped callers pass values or violate preconditions the proof assumed | Generated boundary guards: deep exact-type checks, executable `#@ requires`, defensive copy-in, blame-carrying errors |
-| Definition integrity | Runtime patching swaps out the code that was verified | Frozen/slotted classes, sealed subclassing, immutable module wrappers + explicit assumptions A1–A6 (Nagini-style) |
+| Definition integrity | Runtime patching swaps out the code that was verified | Frozen/slotted classes, sealed subclassing, immutable module wrappers + explicit assumptions A1–A7 (Nagini-style) |
 | Model fidelity | The Dafny model means something different from the CPython original (floor vs Euclidean `//`, truthiness, dict order) | Differential testing: Dafny compiles to Python, so fuzz the model against the source on Hypothesis inputs derived from specs |
 
-The defended claim becomes precise: *verified properties hold for executions entering through the generated guards, in programs the conformance checker accepts, under the stated assumptions, with the encoder continuously cross-checked against CPython.*
+The defended claim becomes precise: *verified properties hold for executions entering through the generated guards with all executable checks passing (residual assumed clauses enumerated per entry point), in programs the conformance checker accepts, under the stated assumptions A1–A7, with the encoder continuously cross-checked against CPython.*
 
 Precedents make this architecture citable rather than speculative: Nagini (CAV 2018) gates on mypy and shallowly encodes the typed fragment into Viper; mypyc ships the boundary-guard pattern in production (mypy and black); Meta's Static Python enforces sound gradual typing at Instagram scale; the blame literature (Typed Racket) supplies the boundary theory. Dynamic typing is a property of the language; verification targets programs — and in the LLM-greenfield thesis, the fragment is a generation target, not just a filter.
 

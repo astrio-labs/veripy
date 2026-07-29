@@ -1,10 +1,10 @@
 # Soundness Architecture: Verifying a Typed Python Fragment via Shallow Embedding into Dafny
 
-Companion to [`approach-tradeoffs.md`](approach-tradeoffs.md). That document selects the option (shallow embedding, typed island, Dafny-first, `#@` specs, value semantics); this one specifies the mechanisms that make the selection sound, and answers the question directly: *Python is very dynamically typed — how will you solve that for a shallow embedding?*
+Companion to [`approach-tradeoffs.md`](approach-tradeoffs.md). That document selects the option (shallow embedding, optionally lightly hybrid; typed island; Dafny-first; `#@` specs; value semantics); this one specifies the mechanisms that make the selection sound, and answers the question directly: *Python is very dynamically typed — how will you solve that for a shallow embedding?*
 
 The short answer: dynamic typing decomposes into four distinct threats, and "run Pyright before lowering" addresses only the first. The architecture below assigns each threat an independently checkable mechanism with its own artifact in the toolchain. The result is a precise claim:
 
-> **Verified properties hold for every execution that enters the island through the generated guards, in programs the conformance checker accepts, under assumptions A1–A6, with the encoder continuously cross-checked against CPython.**
+> **Verified properties hold for every execution that enters the island through the generated guards with all executable checks passing and all per-boundary *assumed* (non-executable) precondition clauses true — both enumerated per entry point in the verification report — in programs the conformance checker accepts, under assumptions A1–A7, with the encoder continuously cross-checked against CPython.** Sampling mode (§4.4) forfeits this guarantee and is reported as such.
 
 ---
 
@@ -66,10 +66,10 @@ The aliasing row is the strongest surviving form of the objection: even a perfec
 | - | --- | --- | --- | --- |
 | 1 | **Static closure** | Is every accepted construct one with a defined Dafny image? | Conformance checker: basedpyright strict + AST lint + ownership dataflow | `verifier check` CI gate |
 | 2 | **Entry soundness** | Do the proof's assumptions hold when untyped code calls in? | Generated boundary guards: deep exact-type checks, executable preconditions, copy-in, blame | generated wrapper modules |
-| 3 | **Definition integrity** | Is the code that runs the code that was verified? | Runtime hardening + explicit assumptions A1–A6 | assumption list in report & paper |
+| 3 | **Definition integrity** | Is the code that runs the code that was verified? | Runtime hardening + explicit assumptions A1–A7 | assumption list in report & paper |
 | 4 | **Model fidelity** | Does the Dafny model mean what the Python means? | Differential testing via Dafny's Python backend + fragment semantics note | CI fuzz harness, encoder bug tracker |
 
-A file is "verified" only if checker, Pyright, and Dafny all pass on the same commit, and its public surface is reachable only through generated guards.
+A file is "verified" only if the conformance checker (which includes basedpyright strict as its first pass) and Dafny both pass on the same commit, and its public surface is reachable only through generated guards.
 
 ---
 
@@ -78,6 +78,8 @@ A file is "verified" only if checker, Pyright, and Dafny all pass on the same co
 Stock Pyright verifies annotations; it does not exclude the dynamism that breaks a shallow embedding (`IslandClass.method = evil`, `setattr(obj, name, v)`, `cast`, `EvilList` all type-check). The front-end is therefore two passes: basedpyright in strict mode (with `reportAny`/`reportExplicitAny` etc. enabled), then an AST-level pass (libcst/`ast` joined with the checker's type info) over files opted in via a `#@ verified` pragma or manifest.
 
 ### 3.1 Conformance checklist
+
+Admission is **allowlist-based**: the checker accepts only AST node types and call targets that have a row in the lowering catalog (§7); the forbid-lists below are diagnostics for common near-misses, not the definition of the fragment. (Blocklists over Python dynamism leak — `object.__setattr__`, `operator.setitem`, unbound-method calls like `list.append(x, v)`, three-argument `type()`; none of these need naming under allowlist admission because none has a catalog row.) Checker and encoder are held in agreement mechanically: the encoder hard-fails on any construct without a catalog rule, so a program that lowers without checker acceptance (or vice versa) is a release-blocking bug, and the differential fuzzer (§6) doubles as a probe for constructs the pair mishandles.
 
 - **Escape hatches:** forbid `typing.cast`, `# type: ignore`, `# pyright: ignore`, `TYPE_CHECKING`-conditional divergence, isinstance-laundering of `Any`.
 - **Reflection / dynamism:** forbid `eval`, `exec`, `compile`, `getattr`/`setattr`/`delattr`/`hasattr` (even with literal names — the model has no attribute-by-string operation), `globals()`, `locals()`, `vars()`, `__dict__`, `__class__` assignment, `__getattr__`/`__setattr__`/`__getattribute__` overrides, non-default metaclasses, `importlib`, `sys.modules`, `ctypes`, frame introspection.
@@ -97,11 +99,12 @@ The value/seq lowering (`xs.append(v)` → `xs := xs + [v]`) is sound iff no mut
 3. **Borrows:** `ys = xs` and argument passing create borrows; mutation of either name while both are live is rejected (escape hatch: explicit copy).
 4. **Callee mutation is declared:** a callee mutating a parameter writes `#@ mutates xs`; the call lowers functionally — callee consumes and returns the seq, caller rebinds (`f(xs)` → `xs := F(xs)`), which also keeps the Dafny side pure-method-friendly.
 5. **No mutation through container reads:** `row = grid[0]; row.append(v)` mutates `grid` in CPython but not in the seq model — rejected; the direct form is lowered as a nested update `grid := grid[0 := grid[0] + [v]]`.
-6. **Store transfers ownership:** after `grid.append(row)`, `row` is dead for mutation.
+6. **Store consumes the name (affine transfer):** after `grid.append(row)` — or use of `row` in a container literal or constructor — *any* subsequent use of `row` (mutation, read, re-store, argument passing) is rejected; a name may be stored at most once. Affine consumption, not a mutation freeze: a mere freeze would admit `grid.append(row); grid.append(row)`, whose nested-update lowering diverges from CPython's shared-reference reality.
+7. **Call-site disjointness:** container arguments at any call must come from pairwise-distinct alias groups (as tracked by rule 3), and container-read expressions (`grid[0]`) are rejected in argument position when the callee mutates any parameter — callees are verified under a parameter-disjointness premise that these caller-side checks discharge. For external callers, per-argument copy-in at the guard (§4.1) discharges it: an external `f(xs, xs)` receives two distinct fresh copies.
 
 Plus: no mutation of a container being iterated (CPython's index-based iterator silently skips; reject rather than model).
 
-These rules define the documented fragment ("no observable aliased mutation"); under them the value lowering agrees with CPython by construction. Designing and evaluating this discipline is a research deliverable of the project, not an implementation detail.
+These rules define the documented fragment ("no observable aliased mutation"); under them the value lowering is *intended* to agree with CPython — the simulation argument in the fragment semantics note (§6) is the artifact backing that claim, and the differential harness checks it continuously. "By construction" is precisely what we do not assume of the encoder. Designing and evaluating this discipline — including its soundness argument — is a research deliverable of the project, not an implementation detail.
 
 ### 3.3 Import trust tiers
 
@@ -123,13 +126,15 @@ The translator makes the raw verified function module-private (`_f`) and exports
 
 ### 4.1 Guard anatomy
 
-1. **Deep structural type check** against the annotated types — full traversal (typeguard-style), not O(1) sampling; verification soundness needs totality.
+1. **Deep structural type check** against the annotated types — full traversal (typeguard's `ALL_ITEMS` strategy; note that library's *default* checks only the first item of each collection), never first-item or O(1)-sampled checks; verification soundness needs totality.
 2. **Executable preconditions:** the executable subset of `#@ requires` runs directly (quantifiers over concrete containers evaluate); genuinely non-executable clauses are reported per-boundary as *assumed, not checked*, so residual trust is visible in the verification report.
 3. **Copy-in:** checked data is converted to island-owned representations (frozen structures or fresh lists). This is not polish — type checks alone do not deliver alias-freedom: an untyped caller can retain a reference and mutate it from a callback mid-execution. Defensive copy discharges the ownership premise of §3.2 against the outside world.
 
+Guarded public entry points are **functional-only in v1**: `#@ mutates` is rejected on exported functions — external callers receive results, never in-place effects; island-internal mutating calls use §3.2 rule 4. Copy-out is deliberately excluded: it would reintroduce the caller-side aliasing that copy-in exists to close.
+
 ### 4.2 Exact-type policy
 
-- Builtin containers: require `type(x) is list` (etc.), **not** `isinstance` — a subclass overriding `append`/`__setitem__` breaks the seq/map model, and `isinstance` is also foolable via `ABC.register`. This is sound because CPython builtins cannot be monkey-patched (`list.append = ...` raises `TypeError`).
+- Builtin containers: require `type(x) is list` (etc.), **not** `isinstance` — a subclass overriding `append`/`__setitem__` breaks the seq/map model (and if boundaries ever accepted abstract types like `Sequence`, `isinstance` would additionally be foolable via `ABC.register`). This is sound because CPython builtins cannot be monkey-patched (`list.append = ...` raises `TypeError`).
 - `bool` is accepted where `int` is expected (matches the arithmetic model, with the §7.3 coercion); NumPy scalars are rejected.
 - Island classes: exact `@final` class.
 - Protocols / duck typing: not accepted at the boundary in v1.
@@ -143,7 +148,7 @@ Failures raise `BoundaryContractViolation(entry_point, path='users[3].email', ex
 Deep check + copy is O(size) per crossing — unacceptable for a hot O(1) entry point. Fallbacks, never silent:
 
 1. **Check-once-then-own:** fuse check and copy into one traversal; amortize by keeping data inside the island across calls (batch APIs over chatty per-element calls). The preferred fix is API shape, not weaker checking.
-2. **Validated-source tokens:** validate at the parse edge (pydantic-style), wrap in a private frozen type constructible only by the generated validator; boundaries accept the wrapper with an O(1) token check.
+2. **Validated-source tokens:** validate at the parse edge (pydantic-style), wrap in a private frozen type constructible only by the generated validator; boundaries accept the wrapper with an O(1) token check. The validator must convert payloads to deeply immutable representations (tuples/frozen structures) at the parse edge — a frozen wrapper over caller-held *mutable* data would reintroduce the time-of-check/time-of-use hole that copy-in exists to close.
 3. **Trusted-caller elision:** island-to-island calls route to the unguarded `_f` — free, always on.
 4. **Sampling mode** (beartype-style spot checks) as an explicitly labeled degraded mode: the report downgrades from "boundary checked" to "boundary spot-checked".
 5. Lazy checking proxies: deferred past v1 (bad interactions with mutation and blame timing).
@@ -152,7 +157,7 @@ Design boundaries to be coarse and rarely crossed (module/API-level, not per-hel
 
 ### 4.5 The gradual-verification guarantee
 
-This layer upgrades "we reject dynamic code" to "we soundly coexist with it," in the shape of gradual verification (Bader–Aldrich–Tanter): **if every boundary check passes at runtime, the statically verified properties hold.** Per assumption class, the report states what is enforced deeply, what is spot-checked, and what is assumed — so "what does the verified island actually guarantee when called from untyped code?" always has a concrete answer.
+This layer upgrades "we reject dynamic code" to "we soundly coexist with it," in the shape of gradual verification (Bader–Aldrich–Tanter): **if every boundary check passes at runtime, the statically verified properties hold.** Per assumption class, the report states what is enforced deeply, what is spot-checked, and what is assumed — so "what does the verified island actually guarantee when called from untyped code?" always has a concrete answer. This guarantee is the project's *target theorem*, not an achieved result: v1 states it precisely and enforces it empirically (guards + differential testing); proving it over the fragment semantics note for the v1 fragment is a research-track deliverable (§10).
 
 ---
 
@@ -162,7 +167,7 @@ Even with a perfect checker and guards, CPython gives outside code write access 
 
 **Mitigations that work:**
 
-- `@dataclass(frozen=True, slots=True)` on island data — blocks field mutation and attribute injection.
+- `@dataclass(frozen=True, slots=True)` on island data — blocks field mutation and attribute injection. (The exact exception raised for attribute injection varies by CPython version — a reason blame tooling matches on outcome, not exception type; ties into A4.)
 - `__init_subclass__` raising `TypeError` — seals classes at runtime to match static `@final`.
 - Replace the island module in `sys.modules` with a `ModuleType` subclass whose `__setattr__` raises.
 - Bind island-internal cross-references at definition time (closure or default-arg binding) so rebinding module globals cannot redirect internal call sites.
@@ -173,12 +178,13 @@ Even with a perfect checker and guards, CPython gives outside code write access 
 
 - **A1.** Island definitions and the builtins they reference are as verified: no patching of `builtins`, no `ctypes`/`gc`/frame manipulation.
 - **A2.** All external entries pass through generated guards (no imports of `_`-prefixed internals).
-- **A3.** No concurrent mutation of island-reachable data during island execution.
+- **A3.** No concurrent mutation of island-reachable data during island execution. (Largely discharged by the architecture: copy-in gives the island private fresh containers and island data is frozen/slotted; the residual assumption covers Tier 3 extern calls and the guard's own traversal window.)
 - **A4.** A pinned CPython version range implements the modeled builtins per the fragment semantics.
 - **A5.** Asynchronous exceptions and resource exhaustion (`KeyboardInterrupt`, `MemoryError`, `RecursionError`) are outside the model: properties are partial correctness modulo them. (A Dafny-proven-terminating recursion can still hit the recursion limit; the encoder prefers iterative lowerings and can emit depth preconditions.)
 - **A6.** No import-system or encoding-level tampering (`sys.modules` replacement, path hooks).
+- **A7.** The pinned basedpyright version's type judgments on accepted files are correct: the type checker is in the trusted base, version-pinned like CPython (A4). Where the AST pass needs a type the checker reports as a mixed value/container union or `Unknown`, the construct is rejected with a narrowing fixit — the pass never guesses, and disagreement between the passes is a hard error, not a precedence question.
 
-These six lines appear verbatim in the tool's verification report and in any paper.
+These seven lines appear verbatim in the tool's verification report and in any paper.
 
 ---
 
@@ -195,6 +201,8 @@ The encoder is the largest trusted component; validate it per program instead of
 
 This catches exactly the class of bugs shallow embeddings are prone to — the canonical member being division (§7.1): a homophonic lowering of `//` to Dafny `/` verifies the wrong function, and only a cross-execution test or a very careful reviewer notices.
 
+**Spec pipeline.** `#@` expressions live in comments, so the type checker never sees them: the spec parser parses them, name-resolves against basedpyright's symbol table for the enclosing scope, and type-checks them under the same conformance rules plus ghost constructs (`forall`/`exists`, `old()`, `result`); malformed or ill-typed specs are conformance errors, not runtime surprises. The spec translation into Dafny contracts is a trusted component the body-differential loop does *not* cover — original and compiled bodies agree even if an `ensures` was mistranslated. Mitigations: executable `ensures` clauses are runtime-checked at exit under test (the §4.3 alarm), spec expressions reuse the same expression encoder as bodies wherever syntax overlaps (one encoder to validate, not two), and the semantics note below covers spec expressions explicitly.
+
 **Fragment semantics note.** A short big-step semantics for the fragment (expressions, statements, the allowlisted builtins — a few pages) and a simulation statement relating it to the Dafny encoding, argued on paper for representative constructs; optionally mechanized in Lean later, which also future-proofs the shared-IR/Lean-backend option. The note pins down what "faithful" means; the differential tests enforce it continuously.
 
 ---
@@ -207,7 +215,7 @@ Four honest buckets. Every row is either a differential-testable lowering rule o
 | --- | --- |
 | **Clean** | unbounded `int` (+ bool-coercion rule), `Optional[T]` → `Option<T>` datatype with narrowing replayed as VCs, tuples & multiple returns & swap, frozen dataclasses → datatypes (`replace` → `.(f := v)`), `while`/`for` over `range`/seq with `#@ invariant`/`decreases` passed through, `break`/`continue`, `match` via pattern-compilation to if-chains (silent fall-through modeled; opt-in `#@ exhaustive`) |
 | **Desugared — must be exactly right, fuzz targets** | `//`/`%` (§7.1), negative indexing & slice clamping (`PyIndex`, `PySlice` with bounds VCs), truthiness & `and`/`or` (§7.3), comprehensions → loop desugaring into fresh accumulators (+ characterizing postconditions); eagerly consumed genexps → logic (`all` → `forall`, `any` → `exists`, `sum` → fold), chained comparisons, unpacking with arity VCs |
-| **Curated models (Tier 2 preamble)** | str methods (`split`/`strip`/`find`/`join`…; Unicode-table methods ASCII-only or axiom-flagged), `sorted` (permutation + order; stability only on demand), `dict`/`set` ops (keys restricted to hashable value types, homogeneous), `math` subset, `str(int)`/`int(str)` with parse VCs |
+| **Curated models (Tier 2 preamble)** | str as `seq<char>` of Unicode scalar values — strings containing lone surrogates are rejected at the guard, aligning the model's char domain with the accepted value domain; str methods (`split`/`strip`/`find`/`join`…; Unicode-table methods ASCII-only or axiom-flagged), `sorted` (permutation + order; stability only on demand), `dict`/`set` ops (keys restricted to hashable value types, homogeneous), `math` subset, `str(int)`/`int(str)` with parse VCs |
 | **Excluded in v1 — detected, with reasons** | `float` (§7.2), generators/custom iterators (§7.5), `try/except` (v1 proves absence instead, §7.4), inheritance & user dunders (dispatch is value-dependent; C3 over mutable class objects; behavioral subtyping is the principled v2 via traits), `async` (await points break local reasoning; "sequentializable async" noted as v2 candidate), decorators (function surgery), `nonlocal`, dict iteration where order is observable (offer `sorted(d)`) |
 
 ### 7.1 Integer division and modulo
@@ -273,13 +281,15 @@ The architecture is citable, not speculative:
 | **CrossHair / icontract / deal / beartype / typeguard** | The dynamic side's ecosystem exists | Emit boundary contracts into existing formats; CrossHair doubles as a spec-counterexample oracle (M0) |
 | **Dafny → Python backend** (used in production by AWS-verified libraries) | The model is executable | The differential-testing loop of §6 |
 
+**Delta over precedent.** The composition, not the pieces, is the contribution: (1) an ownership discipline sufficient for a value-semantics lowering of typed Python, with a soundness argument — trading Viper-style permissions for SMT/LLM automation (Nagini has the typed front-end but pays the permission-logic cost in spec burden and automation); (2) a gradual-verification boundary with blame and *semantic* (not tag-level) contracts for a real dynamic language — open territory per the VMCAI line; (3) continuous translation validation of the encoder via the backend's own Python compiler; (4) an evaluation of LLM proof completion against this pipeline. No precedent system has (2), (3), or (4); together they are the thesis, with Nagini as the baseline that proves the front-end shape and lacks the automation/DX properties they serve.
+
 Framing worth keeping: dynamic typing is a property of the *language*; verification targets *programs*. Under the LLM-greenfield thesis the fragment is a *generation target*, not just a filter on found code.
 
 ---
 
 ## 9. What is and is not claimed
 
-**Claimed:** for programs accepted by the conformance checker, properties verified by Dafny hold of every execution entering through generated guards, under A1–A6, with the encoder differential-tested against CPython on every change.
+**Claimed:** for programs accepted by the conformance checker, properties verified by Dafny hold of every execution entering through generated guards with all executable checks passing and any per-boundary assumed (non-executable) clauses true — both enumerated in the verification report — under A1–A7, with the encoder differential-tested against CPython on every change.
 
 **Not claimed:** full CPython semantics; anything about `float` behavior (v1); behavior under runtime patching of island definitions, `ctypes`, or concurrent mutation (A1–A3); behavior past asynchronous exceptions or resource exhaustion (A5); correctness of Tier 3 extern contracts (reported as trusted, optionally runtime-checked).
 
@@ -300,4 +310,6 @@ Each "not claimed" is either detected and rejected, guarded, or stated — never
 
 **v1.5:** `Outcome`/`:-` exceptions; mutable dataclass methods under ownership rules; broader str surface; validated-source tokens; likely admissions from corpus telemetry (expected order: `try/except`, dataclass methods, str breadth, generators).
 
-**v2 / research track:** behavioral subtyping via Dafny traits (single inheritance); generators as verified state machines; sequentializable-async carve-out; mechanized fragment semantics in Lean (also unlocks the shared-IR Lean backend); limited-local-mutation extension of the ownership discipline.
+**v2 / research track:** behavioral subtyping via Dafny traits (single inheritance); generators as verified state machines; sequentializable-async carve-out; mechanized fragment semantics in Lean (also unlocks the shared-IR Lean backend); limited-local-mutation extension of the ownership discipline; proof of the gradual-verification target theorem (§4.5) over the fragment semantics.
+
+**Evaluation plan.** Four measurements anchor the claims: (1) *fragment coverage* — fraction of functions/LOC accepted by the conformance rules across N typed OSS repos (M0, read-only); (2) *verification benchmark* — a fixed suite of spec'd functions (HumanEval/MBPP-style tasks plus a named algorithm set) that v1 must verify end-to-end; (3) *guard overhead* — micro/macro benchmarks per rung of the §4.4 ladder on the same suite, reported against the Takikawa et al. warning; (4) *LLM proof completion* — rate of proofs finished without human edits, the headline DX metric.
