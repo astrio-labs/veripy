@@ -43,6 +43,8 @@ Choose a typed Python subset and lower it syntactically into prover constructs (
 - Cannot claim full CPython semantics
 - Brownfield requires carving typed islands
 - Library surface must be curated (axioms / models)
+- The encoder must define Python semantics precisely, not homophonically: `//`/`%` are floor-based in Python but Euclidean in Dafny, truthiness and `and`/`or` return operands, dicts are insertion-ordered — each needs an explicit lowering rule or a detected, explained rejection, and the encoder needs a validation story (see `soundness-architecture.md`)
+- Value-model soundness requires an ownership/aliasing discipline (`a = b; b.append(1)` breaks a seq model in fully annotated code); type checkers carry zero aliasing information, so this is a dedicated analysis, not a typing requirement
 
 ### Hybrid (shallow core + curated models)
 
@@ -113,6 +115,8 @@ Verified functions must have precise annotations; reject `Any` / unannotated. Us
 
 - Brownfield untyped code is out of scope until typed
 - Users may feel the subset is “not real Python”
+- Checker acceptance is not soundness: `Any` leaks through typed stdlib APIs (`json.loads`) and untyped imports; `cast()` and `# type: ignore` are unchecked assertions; `bool <: int` and nominal subtyping (a `list` subclass with an overridden `append`) all pass strict mode — a conformance layer beyond Pyright is required
+- Annotations are unenforced at runtime: nothing stops untyped callers from passing anything, so boundary guards are load-bearing for soundness, not an optional adoption aid
 
 ### Gradual typing islands
 
@@ -152,6 +156,10 @@ Accept unannotated Python and infer or over-approximate types. Maximizes brownfi
 - Translation becomes speculative / imprecise
 - Dafny fit collapses without stable types
 - Pushes toward deep embedding or heavy analysis
+
+### Resolution: typed island + checked boundary (recommended merge)
+
+The first two options are not actually competitors — they answer different questions, and the design should take both. *Typed subset required* governs what is verified: island code must carry precise annotations and pass a conformance checker stricter than Pyright. *Gradual typing islands* governs how verified code meets the rest of the repo: the translator generates runtime guards at every island entry point (deep type checks, executable preconditions, defensive copy-in), so verified guarantees survive calls from untyped code. This is the gradual-verification shape — "if the boundary checks pass at runtime, the statically verified properties hold" — and it turns "Python is dynamically typed" from an objection into a stated theorem boundary. Full design in `soundness-architecture.md`.
 
 ---
 
@@ -323,6 +331,7 @@ Model list/dict updates as functional seq/map updates. Alias freeness assumed or
 
 - Diverges from Python aliasing reality (`a = b; b.append(1)`)
 - Rejects many idiomatic mutable patterns
+- Sound only under an explicit ownership discipline (mutate only freshly allocated containers; no mutation through a second live name; ownership transfer on store) enforced by a dataflow pass — this analysis is a core deliverable, not a footnote
 
 ### Limited local mutation
 
@@ -368,7 +377,7 @@ Track references, fields, sharing. Closest to Python objects; pushes toward Vipe
 
 | Preset | Embedding | Typing | Backend | Surface | Heap | Why |
 | --- | --- | --- | --- | --- | --- | --- |
-| Approachable v1 (recommended) | Shallow | Typed required | Dafny | `#@` | Value | Maximize DX and Dafny/LLM fit; defer brownfield breadth |
+| Approachable v1 (recommended) | Shallow | Typed island + checked boundary | Dafny | `#@` | Value + ownership rules | Maximize DX and Dafny/LLM fit; guards make guarantees survive untyped callers |
 | Pragmatic islands | Hybrid | Gradual | Multi-backend | `#@` | Limited mut | Keep approachable DX while admitting real-code escape hatches |
 | Semantics-first research | Deep | Gradual | Lean | `#@` | Full heap | Maximize faithfulness; accept slower DX |
 | Python-heap native | Hybrid | Gradual | Viper | Decorators | Full heap | Optimize for mutable object programs |
@@ -385,12 +394,12 @@ Track references, fields, sharing. Closest to Python objects; pushes toward Vipe
 | Comments vs new language | `#@` (or light decorators) on real Python | Erasing dialect | Prefer annotating real Python |
 | Product vs research substrate | Toolchain developers can use | General Python semantics in a prover | Product cut first; keep research questions explicit |
 
-### Combinations that conflict
+### Combination compatibility
 
 - **Deep embedding + Dafny** — high conflict; Dafny is a poor host for deep embeddings
 - **Shallow translation + untyped OK** — resolve/emit become guesswork; weak trust
 - **Full heap + Dafny** — possible in niches, but fights automation/LLM advantage
-- **Typed required + value semantics** — strongest approachable dual; weakest brownfield claim
+- **Typed required + value semantics** — strongest approachable dual; brownfield reach recovered by generated boundary guards rather than by weakening the fragment
 - **Lean + shallow fragment** — viable, but may pay Lean complexity without deep-semantics payoff
 - **Hybrid + gradual islands** — pragmatic research/product compromise for lab + real code
 
@@ -408,14 +417,34 @@ These are places a Python-best design should *not* blindly mirror a TypeScript-o
 
 ---
 
+## Soundness architecture (summary)
+
+"We only translate a typed fragment" is a scoping decision, not a mechanism. The mechanism is four independently checkable obligations, each with its own artifact — full design, threat model, and lowering catalog in [`soundness-architecture.md`](soundness-architecture.md):
+
+| Obligation | Failure it prevents | Mechanism |
+| --- | --- | --- |
+| Static closure | Island code uses constructs with no defined Dafny image (`cast`, reflection, dynamic attrs, aliased mutation) | Conformance checker: basedpyright strict + AST-level lint enforcing a closed sublanguage + ownership dataflow pass |
+| Entry soundness | Untyped callers pass values or violate preconditions the proof assumed | Generated boundary guards: deep exact-type checks, executable `#@ requires`, defensive copy-in, blame-carrying errors |
+| Definition integrity | Runtime patching swaps out the code that was verified | Frozen/slotted classes, sealed subclassing, immutable module wrappers + explicit assumptions A1–A7 (Nagini-style) |
+| Model fidelity | The Dafny model means something different from the CPython original (floor vs Euclidean `//`, truthiness, dict order) | Differential testing: Dafny compiles to Python, so fuzz the model against the source on Hypothesis inputs derived from specs |
+
+The defended claim becomes precise: *verified properties hold for executions entering through the generated guards with all executable checks passing (residual assumed clauses enumerated per entry point), in programs the conformance checker accepts, under the stated assumptions A1–A7, with the encoder continuously cross-checked against CPython.*
+
+Precedents make this architecture citable rather than speculative: Nagini (CAV 2018) gates on mypy and shallowly encodes the typed fragment into Viper; mypyc ships the boundary-guard pattern in production (mypy and black); Meta's Static Python enforces sound gradual typing at Instagram scale; the blame literature (Typed Racket) supplies the boundary theory. Dynamic typing is a property of the language; verification targets programs — and in the LLM-greenfield thesis, the fragment is a generation target, not just a filter.
+
+---
+
 ## Working recommendation
 
 Start the design doc around a Python-best, approachable cut:
 
 - **Embedding:** shallow (or lightly hybrid)
-- **Typing:** types required on verified code; gradual adoption at boundaries for real repos
+- **Typing:** typed island + checked boundary — types required on verified code, generated runtime guards where dynamic code calls in (the merge described in §2)
 - **Surface:** `#@` annotations first; revisit decorators if Python ergonomics demand it
 - **Backend:** Dafny-first, with IR room for Lean later if needed
-- **Heap:** prefer limited local mutation if the fragment must feel like Python; otherwise value semantics for the fastest v1
+- **Heap:** value semantics under explicit ownership rules for v1; limited local mutation as the fragment grows
+- **Trust:** conformance checker + boundary guards + stated assumptions + encoder differential testing (see `soundness-architecture.md`)
+
+Run a runtime-first milestone (M0) in parallel: compile the same `#@` specs to CrossHair/contract checks for immediate counterexample-producing results on real dynamic Python, feeding the later proof loop.
 
 Treat deep embedding and full-heap Python as an explicitly alternate research track, not the v1 product claim.
