@@ -20,8 +20,12 @@ stricter than "strict". The same fail-closed rule applies per path:
 overrides diagnostic settings for a gated file fails that file — path-varying
 diagnostics defeat the claim "this file was checked strictly". Top-level
 per-rule overrides are not policed: they are uniform and visible in one
-place, i.e. the project's own auditable choice. If basedpyright cannot run,
-the gate reports unavailable and `lemmapy check` FAILS — skipping type
+place, i.e. the project's own auditable choice. Config inheritance via
+`extends` is resolved before any of these checks (child keys override base
+keys, pyright's semantics); an unreadable link or a cycle in the chain fails
+closed. Known approximation: executionEnvironment roots from an extended base
+are resolved against the governing config's directory. If basedpyright cannot
+run, the gate reports unavailable and `lemmapy check` FAILS — skipping type
 analysis is only possible via the explicit `--no-types` opt-out.
 """
 
@@ -99,27 +103,57 @@ _STRICT_OK_MODES = frozenset({"strict", "recommended", "all"})
 _ENV_STRUCTURAL_KEYS = frozenset({"root", "pythonVersion", "pythonPlatform", "extraPaths"})
 
 
-def _load_config(config_dir: Path) -> dict:
-    """The governing config as a dict; {} when missing or unreadable (the
-    unreadable case already fails the gate via _config_mode)."""
+def _read_config_json(path: Path) -> dict | None:
+    """Parse one pyrightconfig-style JSON file; None = unreadable."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        text = re.sub(r"^\s*//.*$", "", text, flags=re.M)  # pyright allows comments
+        data = json.loads(text)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _resolve_extends(path: Path, seen: frozenset[Path]) -> dict | None:
+    """Effective config with the `extends` chain resolved — child keys
+    override base keys at top-level granularity, matching pyright. None on
+    any unreadable link or a cycle (fail closed)."""
+    real = path.resolve()
+    if real in seen:
+        return None
+    data = _read_config_json(real)
+    if data is None:
+        return None
+    extends = data.get("extends")
+    if isinstance(extends, str):
+        base = _resolve_extends(real.parent / extends, seen | {real})
+        if base is None:
+            return None
+        return {**base, **{k: v for k, v in data.items() if k != "extends"}}
+    return data
+
+
+def _load_config(config_dir: Path) -> dict | None:
+    """The governing config as an effective dict (extends resolved); None if
+    any part of it is unreadable — the caller fails closed on None."""
     cfg = config_dir / "pyrightconfig.json"
     if cfg.exists():
-        try:
-            text = cfg.read_text(encoding="utf-8", errors="replace")
-            text = re.sub(r"^\s*//.*$", "", text, flags=re.M)
-            data = json.loads(text)
-            return data if isinstance(data, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            return {}
+        return _resolve_extends(cfg, frozenset())
     pyproject = config_dir / "pyproject.toml"
     if pyproject.exists():
         try:
             data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
         except (OSError, tomllib.TOMLDecodeError):
-            return {}
+            return None
         for table in ("basedpyright", "pyright"):
             tool = data.get("tool", {}).get(table)
             if isinstance(tool, dict):
+                extends = tool.get("extends")
+                if isinstance(extends, str):
+                    base = _resolve_extends(config_dir / extends, frozenset())
+                    if base is None:
+                        return None
+                    return {**base, **{k: v for k, v in tool.items() if k != "extends"}}
                 return tool
     return {}
 
@@ -150,34 +184,6 @@ def _diagnostic_override_envs(
     return flagged
 
 
-def _config_mode(config_dir: Path) -> str | None:
-    """The governing config's typeCheckingMode; None if unset (basedpyright's
-    default "recommended" then applies); "<unreadable>" if the config cannot
-    be parsed (treated as failing the gate — fail closed)."""
-    cfg = config_dir / "pyrightconfig.json"
-    if cfg.exists():
-        try:
-            text = cfg.read_text(encoding="utf-8", errors="replace")
-            text = re.sub(r"^\s*//.*$", "", text, flags=re.M)  # pyright allows comments
-            data = json.loads(text)
-        except (OSError, json.JSONDecodeError):
-            return "<unreadable>"
-        mode = data.get("typeCheckingMode")
-        return mode if isinstance(mode, str) else None
-    pyproject = config_dir / "pyproject.toml"
-    if pyproject.exists():
-        try:
-            data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
-        except (OSError, tomllib.TOMLDecodeError):
-            return "<unreadable>"
-        for table in ("basedpyright", "pyright"):
-            tool = data.get("tool", {}).get(table, {})
-            if isinstance(tool, dict) and "typeCheckingMode" in tool:
-                return str(tool["typeCheckingMode"])
-        return None
-    return None
-
-
 def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
     exe = find_basedpyright()
     if exe is None:
@@ -197,7 +203,25 @@ def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
     version: str | None = None
     for config_dir, group in groups.items():
         if config_dir is not None:
-            flagged = _diagnostic_override_envs(_load_config(config_dir), config_dir, group)
+            config = _load_config(config_dir)
+            if config is None:
+                diagnostics.extend(
+                    TypeDiagnostic(
+                        file=str(p),
+                        line=1,
+                        severity="error",
+                        message=(
+                            f"the governing pyright config in {config_dir} (or a "
+                            f"config it extends) is unreadable; the LemmaPy type "
+                            f"gate fails closed — fix the config, or skip type "
+                            f"checking explicitly with --no-types"
+                        ),
+                        rule="lemmapy-strict-required",
+                    )
+                    for p in group
+                )
+                continue
+            flagged = _diagnostic_override_envs(config, config_dir, group)
             for path, reason in flagged.items():
                 diagnostics.append(
                     TypeDiagnostic(
@@ -216,8 +240,8 @@ def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
             group = [p for p in group if p not in flagged]
             if not group:
                 continue
-            mode = _config_mode(config_dir)
-            if mode is not None and mode not in _STRICT_OK_MODES:
+            mode = config.get("typeCheckingMode")
+            if mode is not None and (not isinstance(mode, str) or mode not in _STRICT_OK_MODES):
                 # A weak project config cannot lower the gate: fail these
                 # files explicitly rather than checking them meaninglessly.
                 diagnostics.extend(

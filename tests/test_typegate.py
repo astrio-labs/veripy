@@ -137,6 +137,51 @@ def test_structural_execution_environment_allowed(tmp_path):
     assert not result.errors, [d.message for d in result.errors]
 
 
+def test_extends_inheriting_weak_mode_flagged(tmp_path):
+    module = tmp_path / "m.py"
+    module.write_text("def g(x: int) -> int:\n    return x + 1\n")
+    (tmp_path / "base.json").write_text('{"typeCheckingMode": "basic"}\n')
+    (tmp_path / "pyrightconfig.json").write_text('{"extends": "./base.json"}\n')
+    result = run_type_gate([module])
+    assert result.available
+    assert result.errors
+    assert result.errors[0].rule == "lemmapy-strict-required"
+
+
+def test_extends_inheriting_env_override_flagged(tmp_path):
+    module = tmp_path / "m.py"
+    module.write_text("def f(x):\n    return x + 1\n")
+    (tmp_path / "base.json").write_text(
+        '{"typeCheckingMode": "strict", "executionEnvironments": '
+        '[{"root": ".", "reportUnknownParameterType": "none"}]}\n'
+    )
+    (tmp_path / "pyrightconfig.json").write_text('{"extends": "./base.json"}\n')
+    result = run_type_gate([module])
+    assert result.available
+    assert result.errors
+    assert all(d.rule == "lemmapy-strict-required" for d in result.errors)
+
+
+def test_extends_strict_base_passes(tmp_path):
+    module = tmp_path / "m.py"
+    module.write_text("def g(x: int) -> int:\n    return x + 1\n")
+    (tmp_path / "base.json").write_text('{"typeCheckingMode": "strict"}\n')
+    (tmp_path / "pyrightconfig.json").write_text('{"extends": "./base.json"}\n')
+    result = run_type_gate([module])
+    assert result.available
+    assert not result.errors, [d.message for d in result.errors]
+
+
+def test_extends_missing_base_fails_closed(tmp_path):
+    module = tmp_path / "m.py"
+    module.write_text("def g(x: int) -> int:\n    return x + 1\n")
+    (tmp_path / "pyrightconfig.json").write_text('{"extends": "./nope.json"}\n')
+    result = run_type_gate([module])
+    assert result.available
+    assert result.errors
+    assert "unreadable" in result.errors[0].message
+
+
 def test_weak_pyproject_table_flagged(tmp_path):
     module = tmp_path / "m.py"
     module.write_text("def g(x: int) -> int:\n    return x + 1\n")
