@@ -48,3 +48,20 @@ def test_contact_below_threshold_verifies(tmp_path, capsys):
     )
     assert status == 0
     assert "below_threshold" in capsys.readouterr().out
+
+
+NEG_INDEX = (
+    "#@ verified\n"
+    "#@ requires len(l) > 0\n"
+    "#@ ensures result == l[len(l) - 1]\n"
+    "def last(l: list[int]) -> int:\n"
+    "    return l[-1]\n"
+)
+
+
+def test_negative_indexing_verifies_python_exactly(tmp_path, capsys):
+    src = tmp_path / "last.py"
+    src.write_text(NEG_INDEX)
+    status = cmd_verify([src], tmp_path / "out", time_limit=30, types=False)
+    assert status == 0
+    assert "VERIFIED" in capsys.readouterr().out

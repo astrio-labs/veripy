@@ -27,9 +27,9 @@ def test_method_signature_and_types():
 
 def test_forall_lowering_and_auto_bounds_invariant():
     dfy = _encode(BELOW)
-    assert "forall i :: (0 <= i < |l|) ==> ((l[i] < t))" in dfy
+    assert "forall i :: (0 <= i < |l|) ==> ((l[PyIndex(i, |l|)] < t))" in dfy
     assert "invariant i_lo <= i <= PyMax(i_lo, i_hi)" in dfy
-    assert "invariant (forall k :: (0 <= k < i) ==> ((l[k] < t)))" in dfy
+    assert "invariant (forall k :: (0 <= k < i) ==> ((l[PyIndex(k, |l|)] < t)))" in dfy
 
 
 def test_range_bounds_hoisted_once():
@@ -101,12 +101,36 @@ def test_param_rebinding_rejected():
     )
 
 
-def test_negative_index_rejected():
-    _expect_encode_error(
+def test_negative_index_normalized_via_pyindex():
+    src = (
         "#@ requires len(l) > 0\n#@ ensures result == l[-1]\n"
-        "def f(l: list[int]) -> int:\n    return l[-1]\n",
-        "negative indexing",
+        "def f(l: list[int]) -> int:\n    return l[-1]\n"
     )
+    dfy = _encode(src)
+    assert "PyIndex((-1), |l|)" in dfy
+
+
+def test_dynamic_index_wrapped_in_pyindex():
+    # A variable index can be negative at runtime; Python normalizes, so the
+    # lowering must too (a bare Dafny index would mis-report correct code).
+    src = (
+        "#@ requires -len(l) <= i < len(l)\n"
+        "#@ ensures result == l[i]\n"
+        "def f(l: list[int], i: int) -> int:\n    return l[i]\n"
+    )
+    dfy = _encode(src)
+    assert "l[PyIndex(i, |l|)]" in dfy
+
+
+def test_indexing_is_uniformly_wrapped():
+    # Uniform wrapping (even for l[0]) keeps quantifier triggers matchable —
+    # mixed bare/wrapped index terms break witness instantiation.
+    src = (
+        "#@ requires len(l) > 0\n#@ ensures result == l[0]\n"
+        "def f(l: list[int]) -> int:\n    return l[0]\n"
+    )
+    dfy = _encode(src)
+    assert "l[PyIndex(0, |l|)]" in dfy
 
 
 def test_non_range_for_rejected():
@@ -153,7 +177,7 @@ def test_char_comparison_allowed():
         "#@ ensures result == (s[0] < s[1])\n"
         "def f(s: str) -> bool:\n    return s[0] < s[1]\n"
     )
-    assert "s[0] < s[1]" in _encode(src)
+    assert "s[PyIndex(0, |s|)] < s[PyIndex(1, |s|)]" in _encode(src)
 
 
 def test_loop_index_read_after_loop_rejected():

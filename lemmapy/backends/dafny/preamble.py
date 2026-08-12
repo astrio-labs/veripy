@@ -8,10 +8,11 @@ The divisibility lemma pack (needed for e.g. gcd's maximality ensures, which
 times out without it) is designated future preamble work — see ROADMAP.
 """
 
-PREAMBLE_VERSION = "0.1"
+PREAMBLE_VERSION = "0.2"
 
 PREAMBLE = """\
-// LemmaPy Dafny preamble v0.1 -- Python-exact arithmetic (ARCHITECTURE §7.1).
+// LemmaPy Dafny preamble v0.2 -- Python-exact arithmetic and indexing
+// (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int
   requires b != 0
@@ -28,4 +29,12 @@ function PyFloorDiv(a: int, b: int): int
 function PyMin(a: int, b: int): int { if a <= b then a else b }
 function PyMax(a: int, b: int): int { if a >= b then a else b }
 function PyAbs(a: int): int { if a >= 0 then a else -a }
+
+// Python index normalization: s[i] with -|s| <= i < 0 means s[|s| + i].
+// The requires clause is exactly Python's IndexError condition.
+function PyIndex(i: int, n: int): int
+  requires -n <= i < n
+{
+  if i < 0 then i + n else i
+}
 """

@@ -2,7 +2,8 @@
 
 Scope (deliberately small; everything else is a detected, explained
 rejection):
-- types: int, bool, str, list[int|str|bool] (reads only: len, indexing)
+- types: int, bool, str, list[int|str|bool] (reads only: len, indexing —
+  including negative indices, normalized Python-exactly via PyIndex)
 - statements: assignment (incl. parallel tuple), if/elif/else, while,
   `for i in range(...)` (lowered to while with an auto bounds invariant),
   return
@@ -303,18 +304,14 @@ class _MethodEncoder:
             case ast.Subscript(value=value, slice=index):
                 if isinstance(index, ast.Slice):
                     raise _err(node, "slicing is outside the slice-1 encoder")
-                negative_literal = (
-                    isinstance(index, ast.Constant)
-                    and isinstance(index.value, int)
-                    and index.value < 0
-                ) or (
-                    isinstance(index, ast.UnaryOp)
-                    and isinstance(index.op, ast.USub)
-                    and isinstance(index.operand, ast.Constant)
-                )
-                if negative_literal:
-                    raise _err(node, "negative indexing is outside the slice-1 encoder")
-                return f"{self.expr(value)}[{self.expr(index)}]"
+                base = self.expr(value)
+                idx = self.expr(index)
+                # Python normalizes negative indices from the end; Dafny does
+                # not. PyIndex carries Python's exact semantics (its requires
+                # is exactly Python's IndexError condition). Applied UNIFORMLY
+                # — special-casing literals produces mixed bare/wrapped terms
+                # that break quantifier trigger matching.
+                return f"{base}[PyIndex({idx}, |{base}|)]"
             case _:
                 raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder")
 
