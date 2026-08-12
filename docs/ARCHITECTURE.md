@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status: planned architecture — no component is implemented yet.** The first half of this document describes the system we intend to build: components, data flow, and what is trusted vs. validated vs. verified. The numbered sections (§1–§9, "The soundness design") specify the mechanisms those components implement and the argument for why the result can be trusted. The system half will be revised against reality as code lands (see [ROADMAP.md](ROADMAP.md)); the soundness half is the design's source of truth.
+> **Status: planned architecture, M0 slice built** (spec parser + runtime backend; the rest is not implemented yet). The first half of this document describes the system we intend to build: components, data flow, and what is trusted vs. validated vs. verified. The numbered sections (§1–§9, "The soundness design") specify the mechanisms those components implement and the argument for why the result can be trusted. The system half will be revised against reality as code lands (see [ROADMAP.md](ROADMAP.md)); the soundness half is the design's source of truth.
 
 ## Pipeline overview
 
@@ -95,21 +95,24 @@ Explicit, in three tiers:
 
 Deliberately **not built**: a VC generator, an SMT solver, a Python parser or type checker, a deep semantics of Python (v2 research track mechanizes the *fragment* semantics in Lean, which also future-proofs a Lean/Laurel backend).
 
-## Proposed repository layout
+## Repository layout
+
+Directories marked *(planned)* do not exist yet; the rest are built (M0).
 
 ```
-verifier/
-  frontend/        # spec parser, conformance checker, ownership dataflow
-  ir/              # fragment IR (thin)
+lemmapy/
+  frontend/        # spec extraction + parser; conformance checker & ownership dataflow (planned)
+  ir/              # fragment IR, thin (planned)
   backends/
-    dafny/         # encoder, preamble/, driver
-    runtime/       # M0: CrossHair/icontract emission
-  guards/          # guard generator + runtime support library
-  report/          # verification report generation
-  agent/           # proof-repair loop harness
-  difftest/        # translation-validation harness
+    dafny/         # encoder, preamble/, driver (planned)
+    runtime/       # M0: icontract/CrossHair emission
+  guards/          # guard generator + runtime support library (planned)
+  report/          # verification report generation (planned)
+  agent/           # proof-repair loop harness (planned)
+  difftest/        # translation-validation harness (planned)
 docs/              # this file and friends
-examples/          # annotated, verified examples (the real documentation)
+examples/          # annotated examples (the real documentation)
+tests/
 ```
 
 ---

@@ -38,7 +38,7 @@ These rules are identical to the discipline the agent loop's output must satisfy
 
 ### Held-out headline set: the Python-derived suite
 
-The Python-sourced mirror of the LemmaScript benchmark — same format, rules, and runner; source language is the only variable. Built from our own toolchain's output, so it samples the proof-idiom distribution our users actually face (`PyMod`/`PyFloorDiv`, `Truthy_*`, seq/map container models, `Option` narrowing VCs, bounds VCs from index desugaring). Working name: `<toolchain>-dafny-benchmark` (project name pending).
+The Python-sourced mirror of the LemmaScript benchmark — same format, rules, and runner; source language is the only variable. Built from our own toolchain's output, so it samples the proof-idiom distribution our users actually face (`PyMod`/`PyFloorDiv`, `Truthy_*`, seq/map container models, `Option` narrowing VCs, bounds VCs from index desugaring). Working name: `lemmapy-dafny-benchmark`.
 
 **Construction pipeline:**
 
