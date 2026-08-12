@@ -14,8 +14,13 @@ project's settings — **except weakness**. A config whose `typeCheckingMode`
 is weaker than "strict" cannot lower the gate: those files fail with a
 `lemmapy-strict-required` diagnostic instead of being checked meaninglessly.
 An unset mode is acceptable because basedpyright's default ("recommended") is
-stricter than "strict". (Per-execution-environment mode overrides inside the
-config are not inspected — an M0 approximation.) If basedpyright cannot run,
+stricter than "strict". The same fail-closed rule applies per path:
+`executionEnvironments` entries are honored for *structural* settings
+(root/pythonVersion/pythonPlatform/extraPaths), but an environment that
+overrides diagnostic settings for a gated file fails that file — path-varying
+diagnostics defeat the claim "this file was checked strictly". Top-level
+per-rule overrides are not policed: they are uniform and visible in one
+place, i.e. the project's own auditable choice. If basedpyright cannot run,
 the gate reports unavailable and `lemmapy check` FAILS — skipping type
 analysis is only possible via the explicit `--no-types` opt-out.
 """
@@ -88,6 +93,62 @@ def _governing_config_dir(path: Path) -> Path | None:
 # stricter tiers). Anything else cannot satisfy the gate.
 _STRICT_OK_MODES = frozenset({"strict", "recommended", "all"})
 
+# executionEnvironments keys that configure the environment rather than
+# weaken diagnostics; anything else in an environment entry fails the gate
+# for files under that root.
+_ENV_STRUCTURAL_KEYS = frozenset({"root", "pythonVersion", "pythonPlatform", "extraPaths"})
+
+
+def _load_config(config_dir: Path) -> dict:
+    """The governing config as a dict; {} when missing or unreadable (the
+    unreadable case already fails the gate via _config_mode)."""
+    cfg = config_dir / "pyrightconfig.json"
+    if cfg.exists():
+        try:
+            text = cfg.read_text(encoding="utf-8", errors="replace")
+            text = re.sub(r"^\s*//.*$", "", text, flags=re.M)
+            data = json.loads(text)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+    pyproject = config_dir / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return {}
+        for table in ("basedpyright", "pyright"):
+            tool = data.get("tool", {}).get(table)
+            if isinstance(tool, dict):
+                return tool
+    return {}
+
+
+def _diagnostic_override_envs(
+    config: dict, config_dir: Path, files: list[Path]
+) -> dict[Path, str]:
+    """Map each file covered by an executionEnvironment that overrides
+    diagnostic settings to a description of the override."""
+    flagged: dict[Path, str] = {}
+    envs = config.get("executionEnvironments")
+    if not isinstance(envs, list):
+        return flagged
+    for env in envs:
+        if not isinstance(env, dict):
+            continue
+        overrides = sorted(set(env) - _ENV_STRUCTURAL_KEYS)
+        root = env.get("root")
+        if not overrides or not isinstance(root, str):
+            continue
+        env_root = (config_dir / root).resolve()
+        for path in files:
+            if path == env_root or env_root in path.parents:
+                flagged[path] = (
+                    f"executionEnvironment {root!r} overrides diagnostic "
+                    f"settings ({', '.join(overrides)})"
+                )
+    return flagged
+
 
 def _config_mode(config_dir: Path) -> str | None:
     """The governing config's typeCheckingMode; None if unset (basedpyright's
@@ -136,6 +197,25 @@ def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
     version: str | None = None
     for config_dir, group in groups.items():
         if config_dir is not None:
+            flagged = _diagnostic_override_envs(_load_config(config_dir), config_dir, group)
+            for path, reason in flagged.items():
+                diagnostics.append(
+                    TypeDiagnostic(
+                        file=str(path),
+                        line=1,
+                        severity="error",
+                        message=(
+                            f"{reason} in {config_dir}; the LemmaPy type gate "
+                            f"cannot certify strictness under path-specific "
+                            f"diagnostic overrides — remove them for gated "
+                            f"files, or skip type checking with --no-types"
+                        ),
+                        rule="lemmapy-strict-required",
+                    )
+                )
+            group = [p for p in group if p not in flagged]
+            if not group:
+                continue
             mode = _config_mode(config_dir)
             if mode is not None and mode not in _STRICT_OK_MODES:
                 # A weak project config cannot lower the gate: fail these

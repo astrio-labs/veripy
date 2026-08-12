@@ -112,6 +112,31 @@ def test_recommended_mode_satisfies_the_gate(tmp_path):
     assert not any(d.rule == "lemmapy-strict-required" for d in result.errors)
 
 
+def test_execution_environment_diagnostic_override_flagged(tmp_path):
+    module = tmp_path / "m.py"
+    module.write_text("def f(x):\n    return x + 1\n")
+    (tmp_path / "pyrightconfig.json").write_text(
+        '{"typeCheckingMode": "strict", "executionEnvironments": '
+        '[{"root": ".", "reportUnknownParameterType": "none"}]}\n'
+    )
+    result = run_type_gate([module])
+    assert result.available
+    assert result.errors
+    assert all(d.rule == "lemmapy-strict-required" for d in result.errors)
+
+
+def test_structural_execution_environment_allowed(tmp_path):
+    module = tmp_path / "m.py"
+    module.write_text("def g(x: int) -> int:\n    return x + 1\n")
+    (tmp_path / "pyrightconfig.json").write_text(
+        '{"typeCheckingMode": "strict", "executionEnvironments": '
+        '[{"root": ".", "pythonVersion": "3.12"}]}\n'
+    )
+    result = run_type_gate([module])
+    assert result.available
+    assert not result.errors, [d.message for d in result.errors]
+
+
 def test_weak_pyproject_table_flagged(tmp_path):
     module = tmp_path / "m.py"
     module.write_text("def g(x: int) -> int:\n    return x + 1\n")
