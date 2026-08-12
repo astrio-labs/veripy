@@ -1,0 +1,5 @@
+{
+    "typeCheckingMode": "strict",
+    "include": ["examples"],
+    "exclude": ["**/__pycache__", ".venv", "build", ".forall"]
+}
