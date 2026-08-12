@@ -1,6 +1,123 @@
-# Soundness Architecture: Verifying a Typed Python Fragment via Shallow Embedding into Dafny
+# Architecture
 
-Companion to [`approach-tradeoffs.md`](approach-tradeoffs.md). That document selects the option (shallow embedding, optionally lightly hybrid; typed island; Dafny-first; `#@` specs; value semantics); this one specifies the mechanisms that make the selection sound, and answers the question directly: *Python is very dynamically typed — how will you solve that for a shallow embedding?*
+> **Status: planned architecture — no component is implemented yet.** The first half of this document describes the system we intend to build: components, data flow, and what is trusted vs. validated vs. verified. The numbered sections (§1–§9, "The soundness design") specify the mechanisms those components implement and the argument for why the result can be trusted. The system half will be revised against reality as code lands (see [ROADMAP.md](ROADMAP.md)); the soundness half is the design's source of truth.
+
+## Pipeline overview
+
+One annotated Python source file flows through the toolchain; nothing is ever hand-edited downstream except the additions-only proof file.
+
+```mermaid
+flowchart TD
+    SRC["Annotated Python source<br/>(.py with #@ specs)"] --> PARSE["Front-end<br/>CPython ast + spec parser"]
+    PARSE --> CONF["Conformance checker<br/>basedpyright strict + allowlist AST pass<br/>+ ownership dataflow"]
+    CONF -- "reject: line-precise diagnostic" --> DIAG["'outside the fragment because X, try Y'"]
+    CONF -- accept --> IR["Fragment IR<br/>(thin, backend-neutral)"]
+    IR --> ENC["Dafny encoder"]
+    ENC --> STUB["model stub .dfy<br/>(regenerated every run)"]
+    ENC --> PROOF["proof file .dfy<br/>(additions-only, human/LLM-owned)"]
+    PRE["Versioned Dafny preamble<br/>(PyMod, PySlice, Truthy_*, container models)"] --> VERIFY
+    STUB --> VERIFY["Verifier driver<br/>dafny verify (Boogie/Z3)"]
+    PROOF --> VERIFY
+    VERIFY -- failures --> AGENT["LLM proof-repair loop<br/>(edits proof file only)"]
+    AGENT --> VERIFY
+    VERIFY -- verified --> REPORT["Verification report<br/>(A1–A7, per-boundary assumed clauses,<br/>trusted-contract count, guard modes)"]
+    IR --> GUARD["Guard generator"]
+    GUARD --> WRAP["Generated wrapper modules<br/>(deep checks, copy-in, blame)"]
+    STUB --> DT["Translation-validation harness<br/>dafny translate py + Hypothesis"]
+    SRC --> DT
+    IR --> M0["M0 runtime backend<br/>#@ specs → CrossHair / icontract"]
+```
+
+## Components
+
+### Spec parser (`#@` language)
+
+Parses spec comments (`requires`, `ensures`, `invariant`, `decreases`, `mutates`, `extern`, ghost constructs `forall`/`exists`/`old()`/`result`), name-resolves against basedpyright's symbol table for the enclosing scope, and type-checks spec expressions under the same conformance rules as code. Malformed or ill-typed specs are conformance errors, not runtime surprises. Spec expressions reuse the body expression encoder wherever syntax overlaps — one encoder to validate, not two (§6 below).
+
+### Conformance checker
+
+Two passes over files opted in via `#@ verified` (or a manifest):
+
+1. **basedpyright strict** — solves dynamic *typing*; version-pinned and trusted (assumption A7).
+2. **Allowlist AST pass** (libcst/`ast` joined with type info) — solves dynamic *semantics*: admits only constructs with a row in the lowering catalog, enforces the escape-hatch/reflection/sealing/import rules, and runs the **ownership dataflow pass** that licenses the value-semantics lowering (rules 1–7 in §3.2 below).
+
+Checker and encoder are held in agreement mechanically: the encoder hard-fails on any construct without a catalog rule, so divergence is a release-blocking bug. Diagnostics are the product surface — every rejection is line-precise with a suggested fix.
+
+### Encoder (Python fragment → Dafny)
+
+Emits **two files per module**:
+
+- a **model stub** (`.dfy`) — translated bodies and contracts, regenerated on every run, never hand-edited;
+- an **additions-only proof file** (`.dfy`) — lemmas, asserts, and hints, owned by the human or the agent loop, surviving regeneration.
+
+This split is what makes the regenerate-and-reprove workflow (and agent integration) tractable. The encoder lowers via the catalog (§7 below): clean rules, exactly-right desugarings (`PyFloorDiv`/`PyMod`, slice clamping, truthiness), and Tier 2 curated models from the **versioned preamble** — one auditable file of stdlib models, lemmas, and its own differential test corpus.
+
+Between the front-end and the encoder sits a thin, backend-neutral **fragment IR**. Its only job is to keep the emitter swappable — Dafny is the v1 target; Strata's Laurel is the candidate second target (watchpoints in [ROADMAP.md](ROADMAP.md)). The IR is not a research artifact and stays as small as possible.
+
+### Guard generator
+
+For each exported island function, the raw verified function becomes module-private (`_f`) and a generated wrapper is the only public surface (§4 below):
+
+- deep structural type check (full traversal, exact types — `type(x) is list`, not `isinstance`);
+- executable subset of `#@ requires` run directly; non-executable clauses reported per-boundary as *assumed*;
+- copy-in to island-owned representations (discharges the ownership premise against external aliasing);
+- blame-carrying `BoundaryContractViolation` errors;
+- cost-ladder modes, never silent: check-once-then-own, validated-source tokens, trusted-caller elision, labeled sampling mode;
+- island-integrity hardening: frozen/slotted dataclasses, sealed classes, module `__setattr__` traps, `__code__` self-checks.
+
+### Verifier driver and report
+
+Invokes `dafny verify` on stub + proof file + preamble, maps failures back to Python source positions, and emits the **verification report**: per-function verdicts, assumptions A1–A7 verbatim, per-boundary assumed clauses, Tier 3 trusted-contract count ("verified modulo N trusted contracts"), and the guard mode per entry point. The report is the artifact that makes the guarantee honest; a function is "verified" only if the conformance checker and Dafny both pass on the same commit.
+
+### LLM proof-repair loop
+
+When verification fails, an agent reads the driver's structured failure output (failed obligation, source span, counterexample when available) and edits **only the proof file** — adding asserts, lemmas, invariant strengthenings — then re-runs the driver. The loop's interface (machine-readable failures in, additions-only edits out) is a first-class design constraint throughout, not a bolt-on; proof-completion rate without human edits is the headline DX metric. M0's CrossHair counterexamples feed this loop as concrete test cases.
+
+### Translation-validation harness
+
+The encoder is the largest trusted component, so it is validated per-program rather than only argued about (§6 below): Dafny compiles the model back to Python (`dafny translate py`), and Hypothesis — with strategies derived from typed signatures and executable `#@ requires` — differentially tests original vs. compiled model modulo a value adapter (CPython `list`/`dict`/`str` ↔ Dafny `Seq`/`Map`/string). ~200 examples per entry point per PR, coverage-guided runs nightly, counterexamples shrunk and filed as encoder bugs. Executable `ensures` clauses are runtime-checked under test to cover the spec-translation path the body diff cannot see.
+
+### M0 runtime backend
+
+The same `#@` specs compile to CrossHair/icontract runtime checks, giving counterexample-producing results on real dynamic Python before any prover integration exists. This de-risks the spec surface first and remains a permanent fallback mode for code outside the fragment.
+
+## Trusted computing base
+
+Explicit, in three tiers:
+
+| Tier | Component | Status |
+| --- | --- | --- |
+| **Trusted** | Dafny → Boogie → Z3 | Battle-tested, unverified; accepted cost of buying automation |
+| **Trusted** | basedpyright type judgments (A7), pinned CPython (A4), spec-to-contract translation | Pinned versions; spec path mitigated by runtime-checked `ensures` under test |
+| **Trusted** | Tier 2 preamble models, Tier 3 extern contracts | One auditable file + differential corpus; extern contracts counted in the report |
+| **Validated** | The encoder | Continuous differential testing against CPython |
+| **Verified** | Island code | The point of the exercise |
+
+Deliberately **not built**: a VC generator, an SMT solver, a Python parser or type checker, a deep semantics of Python (v2 research track mechanizes the *fragment* semantics in Lean, which also future-proofs a Lean/Laurel backend).
+
+## Proposed repository layout
+
+```
+verifier/
+  frontend/        # spec parser, conformance checker, ownership dataflow
+  ir/              # fragment IR (thin)
+  backends/
+    dafny/         # encoder, preamble/, driver
+    runtime/       # M0: CrossHair/icontract emission
+  guards/          # guard generator + runtime support library
+  report/          # verification report generation
+  agent/           # proof-repair loop harness
+  difftest/        # translation-validation harness
+docs/              # this file and friends
+examples/          # annotated, verified examples (the real documentation)
+```
+
+---
+
+## The soundness design
+
+
+The selected design — shallow embedding (optionally lightly hybrid), typed island, Dafny-first, `#@` specs, value semantics — is taken as given here; this document specifies the mechanisms that make the selection sound, and answers the question directly: *Python is very dynamically typed — how will you solve that for a shallow embedding?*
 
 The short answer: dynamic typing decomposes into four distinct threats, and "run Pyright before lowering" addresses only the first. The architecture below assigns each threat an independently checkable mechanism with its own artifact in the toolchain. The result is a precise claim:
 
@@ -297,19 +414,4 @@ Each "not claimed" is either detected and rejected, guarded, or stated — never
 
 ---
 
-## 10. Phasing
-
-**M0 (parallel, weeks-scale):** compile the same `#@` specs to CrossHair/icontract checks; run on real dynamic Python for counterexample-producing results now. De-risks the spec surface, produces early evidence, and later feeds counterexamples to the LLM proof loop. Corpus study: run the conformance rules read-only over typed OSS repos to measure fragment coverage and prioritize rules.
-
-**v1 (mandatory):**
-- Conformance checker (basedpyright strict + libcst rule pass + ownership dataflow) — also *shrinks* the encoder's input language.
-- Guard generator: deep exact-type checks, executable preconditions, copy-in, trusted-caller elision, blame errors.
-- Dafny preamble: `PyMod`/`PyFloorDiv`, `PyIndex`/`PySlice`, `Truthy_*`, `Option`, container/str method models — one versioned file with lemmas and its differential test corpus.
-- Assumption list A1–A7 in the verification report.
-- Differential harness (§6) in CI.
-
-**v1.5:** `Outcome`/`:-` exceptions; mutable dataclass methods under ownership rules; broader str surface; validated-source tokens; likely admissions from corpus telemetry (expected order: `try/except`, dataclass methods, str breadth, generators).
-
-**v2 / research track:** behavioral subtyping via Dafny traits (single inheritance); generators as verified state machines; sequentializable-async carve-out; mechanized fragment semantics in Lean (also unlocks the shared-IR Lean backend); limited-local-mutation extension of the ownership discipline; proof of the gradual-verification target theorem (§4.5) over the fragment semantics.
-
-**Evaluation plan.** Four measurements anchor the claims: (1) *fragment coverage* — fraction of functions/LOC accepted by the conformance rules across N typed OSS repos (M0, read-only); (2) *verification benchmark* — a fixed suite of spec'd functions (HumanEval/MBPP-style tasks plus a named algorithm set) that v1 must verify end-to-end; (3) *guard overhead* — micro/macro benchmarks per rung of the §4.4 ladder on the same suite, reported against the Takikawa et al. warning; (4) *LLM proof completion* — rate of proofs finished without human edits, the headline DX metric.
+*Phasing and milestones for building these mechanisms: [ROADMAP.md](ROADMAP.md).*
