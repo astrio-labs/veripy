@@ -53,12 +53,26 @@ def _module_names(module: ast.Module) -> frozenset[str]:
     return frozenset(names)
 
 
-def _params(node: ast.FunctionDef) -> tuple[str, ...]:
+RESERVED_PARAMS = frozenset({"result", "OLD"})
+
+
+def _safe_params(node: ast.FunctionDef) -> tuple[tuple[str, ...], str | None]:
+    """Named parameters plus a fragment diagnostic (None if the signature is fine).
+
+    A bad signature only matters for functions that carry specs — unannotated
+    variadic helpers elsewhere in the module must not abort processing.
+    """
     a = node.args
+    names = tuple(p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs))
     if a.vararg or a.kwarg:
-        # Outside the fragment; the conformance checker owns this later.
-        raise ValueError(f"{node.name}: *args/**kwargs are outside the fragment")
-    return tuple(p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs))
+        return names, "*args/**kwargs are outside the fragment"
+    reserved = [n for n in names if n in RESERVED_PARAMS]
+    if reserved:
+        return names, (
+            f"parameter name(s) {', '.join(reserved)} collide with the spec "
+            f"language (`result` and `OLD` are reserved); rename the parameter"
+        )
+    return names, None
 
 
 def _local_names(node: ast.FunctionDef) -> frozenset[str]:
@@ -87,10 +101,13 @@ def parse_source(source: str, filename: str = "<string>") -> ModuleSpecs:
     ]
     consumed: set[int] = set()
     specs: list[FunctionSpec] = []
+    signature_errors: dict[int, str] = {}  # index into specs -> diagnostic
 
-    for node in functions:
+    for index, node in enumerate(functions):
         anchor = node.decorator_list[0].lineno if node.decorator_list else node.lineno
-        params = _params(node)
+        params, params_error = _safe_params(node)
+        if params_error is not None:
+            signature_errors[index] = params_error
         spec = FunctionSpec(
             name=node.name,
             lineno=node.lineno,
@@ -158,6 +175,14 @@ def parse_source(source: str, filename: str = "<string>") -> ModuleSpecs:
             spec.clauses.append(parse_clause(
                 kind, rest, cline, spec.params, module_names,
                 extra_names=_local_names(node),
+            ))
+
+    # A bad signature is an error only on functions that actually carry specs.
+    for index, message in signature_errors.items():
+        spec = specs[index]
+        if spec.clauses:
+            spec.clauses.append(Clause(
+                kind="signature", raw=spec.name, line=spec.lineno, error=message,
             ))
 
     for spec in specs:

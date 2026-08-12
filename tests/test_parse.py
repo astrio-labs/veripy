@@ -128,3 +128,39 @@ def test_orphan_comment_reported():
     src = "#@ requires x > 0\n\n\ndef f(x: int) -> int:\n    return x\n"
     specs = parse_source(src)
     assert specs.orphans and "not attached" in specs.orphans[0].error
+
+
+def test_unspecced_variadic_sibling_does_not_abort():
+    src = (
+        "def helper(*args, **kwargs):\n"
+        "    return args, kwargs\n"
+        "\n"
+        "\n"
+        "#@ requires x > 0\n"
+        "def f(x: int) -> int:\n"
+        "    return x\n"
+    )
+    specs = parse_source(src)
+    assert [fn.name for fn in specs.functions] == ["f"]
+    assert not specs.functions[0].errors
+
+
+def test_specced_variadic_reports_error():
+    src = "#@ ensures result >= 0\ndef f(*args) -> int:\n    return len(args)\n"
+    specs = parse_source(src)
+    (fn,) = specs.functions
+    assert any(c.error and "outside the fragment" in c.error for c in fn.clauses)
+
+
+def test_reserved_param_name_rejected():
+    src = "#@ ensures result >= 0\ndef f(result: int) -> int:\n    return result\n"
+    specs = parse_source(src)
+    (fn,) = specs.functions
+    assert any(c.error and "reserved" in c.error for c in fn.clauses)
+
+
+def test_reserved_old_param_rejected():
+    src = "#@ ensures result >= 0\ndef f(OLD: int) -> int:\n    return OLD\n"
+    specs = parse_source(src)
+    (fn,) = specs.functions
+    assert any(c.error and "reserved" in c.error for c in fn.clauses)

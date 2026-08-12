@@ -66,3 +66,26 @@ def test_old_snapshot_catches_wrong_impl(tmp_path):
     module = _load_checked(BROKEN_BUMP, tmp_path, "broken_bump")
     with pytest.raises(icontract.errors.ViolationError):
         module.bump(1)
+
+
+FUTURE_SRC = '''"""Module docstring survives emission."""
+from __future__ import annotations
+
+
+#@ ensures result >= 0
+def square(x: int) -> int:
+    return x * x
+'''
+
+
+def test_future_imports_stay_first_and_docstring_survives(tmp_path):
+    # A `from __future__` import after our injected imports would be a
+    # SyntaxError, so exec_module succeeding is the real assertion.
+    module = _load_checked(FUTURE_SRC, tmp_path, "future_mod")
+    assert module.__doc__ == "Module docstring survives emission."
+    assert module.square(3) == 9
+
+
+def test_docstring_only_module_emits(tmp_path):
+    checked_source_module = _load_checked('"""Just a docstring."""\n', tmp_path, "doc_only")
+    assert checked_source_module.__doc__ == "Just a docstring."
