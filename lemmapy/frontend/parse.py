@@ -4,6 +4,7 @@ The spec expression language is Python's expression grammar extended with:
 
     forall X in D[, Y in E ...] :: BODY   ->  all((BODY) for X in (D) ...)
     exists X in D[, Y in E ...] :: BODY   ->  any((BODY) for X in (D) ...)
+    A <==> B                              ->  bool(A) == bool(B)  (loosest)
     A ==> B                               ->  (not (A)) or (B)   (right-assoc)
     result                                    (ensures only)
     old(param)                                (ensures only)
@@ -171,6 +172,12 @@ def desugar(src: str) -> str:
         gens = " ".join(f"for {var} in ({dom})" for var, dom in binders)
         fn = "all" if keyword == "forall" else "any"
         return f"{fn}(({inner}) {gens})"
+
+    # <==> binds loosest and must be split before ==> (which is a substring).
+    split = _split_top_once(s, "<==>")
+    if split is not None:
+        left, right = split
+        return f"bool({desugar(left)}) == bool({desugar(right)})"
 
     split = _split_top_once(s, "==>")
     if split is not None:

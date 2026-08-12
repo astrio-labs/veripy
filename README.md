@@ -80,5 +80,7 @@ The result is a precise, honest guarantee: *verified properties hold for every e
 | SUBSET.md | The versioned fragment definition (seeded from the lowering catalog) | planned |
 | DECISIONS.md | Resolved design decisions with rationale and revisit tripwires | planned |
 | RELATED-WORK.md | The verification landscape and positioning | planned |
-| [SPEC-GRAMMAR.md](docs/SPEC-GRAMMAR.md) | The `#@` spec language, grammar v0: clauses, expression syntax, desugaring rules, decisions | ✅ (v0 draft) |
+| [SPEC-GRAMMAR.md](docs/SPEC-GRAMMAR.md) | The `#@` spec language: clauses, expression syntax, desugaring rules, decisions | ✅ (v0.1, frozen) |
+| [GRAMMAR-CONTACT.md](docs/GRAMMAR-CONTACT.md) | The M0 exit exercise: 20 annotated HumanEval/MBPP tasks, mutation-tested; friction findings and the freeze decision | ✅ |
+| [CORPUS-RESULTS.md](docs/CORPUS-RESULTS.md) | Fragment-coverage numbers: nine OSS repos + the HumanEval/MBPP greenfield contrast | ✅ |
 | [EVALUATION.md](docs/EVALUATION.md) | Research questions, the proof-completion benchmark family, measurement plan | ✅ (partial draft) |
