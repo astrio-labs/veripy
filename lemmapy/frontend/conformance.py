@@ -209,6 +209,10 @@ def _collect_module_scope(module: ast.Module) -> tuple[ModuleScope, list[Fire]]:
                         forbidden[local] = "F-CAST"
                     elif alias.name == "__import__":
                         forbidden[local] = "F-DYNIMPORT"
+                    elif root == "builtins" and alias.name in _REFLECTION_CALLS:
+                        forbidden[local] = "F-EVAL"
+                    elif root == "builtins" and alias.name in _REFLECTION_INTROSPECT:
+                        forbidden[local] = "F-REFL"
             collect(child)
 
     collect(module)
@@ -321,8 +325,12 @@ class _FunctionScanner:
                 names.add(stmt.id)
         return names
 
-    def _is_module_level(self, name: str) -> bool:
-        return name in self.scope.names and name not in self.local_names
+    def _is_module_level(self, name: str, locals_: frozenset[str]) -> bool:
+        return (
+            name in self.scope.names
+            and name not in self.local_names
+            and name not in locals_
+        )
 
     # -- signature / definition-level rules --------------------------------
 
@@ -407,11 +415,23 @@ class _FunctionScanner:
             else:
                 self._scan_children(child)
 
-    def _scan_expr_tree(self, root: ast.AST) -> None:
-        call_func_ids = {
-            id(n.func) for n in ast.walk(root) if isinstance(n, ast.Call)
-        }
-        for node in ast.walk(root):
+    def _scan_expr_tree(self, root: ast.AST, locals_: frozenset[str] = frozenset()) -> None:
+        # Collect this scope's nodes without descending into lambda bodies —
+        # a lambda's parameters are locals of the lambda, not of us, so its
+        # body is scanned recursively with those parameters in scope.
+        nodes: list[ast.AST] = []
+        lambdas: list[ast.Lambda] = []
+        stack: list[ast.AST] = [root]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, ast.Lambda):
+                lambdas.append(current)
+                continue
+            nodes.append(current)
+            stack.extend(ast.iter_child_nodes(current))
+
+        call_func_ids = {id(n.func) for n in nodes if isinstance(n, ast.Call)}
+        for node in nodes:
             match node:
                 case ast.Constant() as c:
                     if isinstance(c.value, bool):
@@ -426,10 +446,6 @@ class _FunctionScanner:
                     self.fire("X-YIELD", node)
                 case ast.NamedExpr():
                     self.fire("X-WALRUS", node)
-                case ast.Lambda():
-                    # Lambdas are in-fragment (pure); nested defs are not
-                    # reachable here (statements are intercepted upstream).
-                    pass
                 case ast.BinOp(op=op):
                     if isinstance(op, ast.Div):
                         self.fire("T-DIV", node)
@@ -443,24 +459,38 @@ class _FunctionScanner:
                         ):
                             self.fire("T-IS", node)
                 case ast.Subscript(value=ast.Name(id=base), ctx=ast.Store()):
-                    if self._is_module_level(base):
+                    if self._is_module_level(base, locals_):
                         self.fire("T-GLOBAL", node, detail=f"{base}[...] = ...")
                 case ast.Attribute() as attr_node:
-                    self._scan_attribute(attr_node)
+                    self._scan_attribute(attr_node, locals_)
                 case ast.Name(ctx=ast.Load()) as name_node if id(name_node) not in call_func_ids:
-                    self._scan_name_load(name_node)
+                    self._scan_name_load(name_node, locals_)
                 case ast.Call() as call_node:
-                    self._scan_call(call_node)
+                    self._scan_call(call_node, locals_)
                 case _:
                     pass
 
-    def _scan_attribute(self, node: ast.Attribute) -> None:
+        for lam in lambdas:
+            for default in [*lam.args.defaults, *lam.args.kw_defaults]:
+                if default is not None:
+                    self._scan_expr_tree(default, locals_)  # defaults evaluate in our scope
+            params = frozenset(
+                a.arg for a in (*lam.args.posonlyargs, *lam.args.args, *lam.args.kwonlyargs)
+            )
+            if lam.args.vararg:
+                params |= {lam.args.vararg.arg}
+            if lam.args.kwarg:
+                params |= {lam.args.kwarg.arg}
+            self._scan_expr_tree(lam.body, locals_ | params)
+
+    def _scan_attribute(self, node: ast.Attribute, locals_: frozenset[str]) -> None:
         attr = node.attr
         if attr.startswith("__") and attr.endswith("__"):
             self.fire("F-DUNDER-ATTR", node, detail=attr)
         base = node.value
         if isinstance(base, ast.Name):
-            root = self.scope.module_roots.get(base.id, base.id if base.id not in self.local_names else "")
+            shadowed = base.id in self.local_names or base.id in locals_
+            root = self.scope.module_roots.get(base.id, base.id if not shadowed else "")
             if root == "sys" and attr == "modules":
                 self.fire("F-DYNIMPORT", node, detail="sys.modules")
             elif root in _FORBIDDEN_MODULES:
@@ -469,14 +499,14 @@ class _FunctionScanner:
                 self.fire("F-CAST", node)
         if isinstance(node.ctx, ast.Store):
             self.fire("X-ATTR-STORE", node, detail=attr)
-            if isinstance(base, ast.Name) and self._is_module_level(base.id):
+            if isinstance(base, ast.Name) and self._is_module_level(base.id, locals_):
                 self.fire("T-GLOBAL", node, detail=f"{base.id}.{attr} = ...")
 
-    def _scan_name_load(self, node: ast.Name) -> None:
+    def _scan_name_load(self, node: ast.Name, locals_: frozenset[str]) -> None:
         """Bare references to forbidden callables (rebinding launders them:
         `run = eval; run(s)`)."""
         name = node.id
-        if name in self.local_names:
+        if name in self.local_names or name in locals_:
             return
         if name in _REFLECTION_CALLS:
             self.fire("F-EVAL", node, detail=name)
@@ -489,7 +519,7 @@ class _FunctionScanner:
         elif name in self.scope.forbidden:
             self.fire(self.scope.forbidden[name], node, detail=name)
 
-    def _scan_call(self, node: ast.Call) -> None:
+    def _scan_call(self, node: ast.Call, locals_: frozenset[str]) -> None:
         if any(isinstance(a, ast.Starred) for a in node.args) or any(
             kw.arg is None for kw in node.keywords
         ):
@@ -498,7 +528,7 @@ class _FunctionScanner:
         func = node.func
         if isinstance(func, ast.Name):
             name = func.id
-            if name in self.local_names:
+            if name in self.local_names or name in locals_:
                 return  # locally bound callables are the local's business
             if name in _REFLECTION_CALLS:
                 self.fire("F-EVAL", node, detail=name)
@@ -518,7 +548,9 @@ class _FunctionScanner:
             base = func.value
             root = (
                 self.scope.module_roots.get(base.id, base.id)
-                if isinstance(base, ast.Name) and base.id not in self.local_names
+                if isinstance(base, ast.Name)
+                and base.id not in self.local_names
+                and base.id not in locals_
                 else ""
             )
             base_forbidden = (
@@ -530,7 +562,11 @@ class _FunctionScanner:
             # _scan_attribute during the same walk; avoid doubling up here.
             if base_forbidden:
                 return
-            if func.attr in MUTATING_METHODS and isinstance(base, ast.Name) and self._is_module_level(base.id):
+            if (
+                func.attr in MUTATING_METHODS
+                and isinstance(base, ast.Name)
+                and self._is_module_level(base.id, locals_)
+            ):
                 self.fire("T-GLOBAL", node, detail=f"{base.id}.{func.attr}(...)")
             if func.attr not in MODELED_METHODS:
                 self.fire("U-METHOD", node, detail=func.attr)
@@ -580,12 +616,17 @@ def survey_source(source: str, path: str = "<string>") -> FileReport:
 
 def survey_paths(paths: list[Path]) -> list[FileReport]:
     reports: list[FileReport] = []
+    seen: set[Path] = set()
     for path in paths:
         if path.is_dir():
             files = sorted(path.rglob("*.py"))
         else:
             files = [path]
         for file in files:
+            resolved = file.resolve()
+            if resolved in seen:
+                continue  # overlapping inputs (dir + file inside it) count once
+            seen.add(resolved)
             try:
                 source = file.read_text(encoding="utf-8", errors="replace")
             except OSError as exc:

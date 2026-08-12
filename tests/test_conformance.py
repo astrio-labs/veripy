@@ -1,4 +1,4 @@
-from lemmapy.frontend.conformance import aggregate, survey_source
+from lemmapy.frontend.conformance import aggregate, survey_paths, survey_source
 
 
 def _fires(src: str, qualname: str | None = None) -> set[str]:
@@ -371,3 +371,41 @@ def test_async_fires_once_even_with_awaits():
     src = "async def f(x):\n    await x\n    await x\n"
     (fn,) = survey_source(src).functions
     assert sum(1 for f in fn.fires if f.rule == "X-ASYNC") == 1
+
+
+def test_builtins_aliased_eval_fires():
+    src = (
+        "from builtins import eval as run\n"
+        "def f(s: str):\n"
+        "    return run(s)\n"
+    )
+    assert "F-EVAL" in _fires(src)
+
+
+def test_lambda_calling_own_param_accepted():
+    src = (
+        "def f(v: int) -> int:\n"
+        "    g = lambda cb: cb(v)\n"
+        "    return g(abs)\n"
+    )
+    (fn,) = survey_source(src).functions
+    assert fn.accepted, [f.rule for f in fn.fires]
+
+
+def test_lambda_param_shadowing_does_not_leak_out():
+    # A call to the lambda's parameter name from OUTSIDE the lambda must
+    # still fire U-CALL (regression guard for the earlier scope fix).
+    src = (
+        "def f(xs):\n"
+        "    g = lambda q: q + 1\n"
+        "    return q(xs)\n"
+    )
+    assert "U-CALL" in _fires(src)
+
+
+def test_overlapping_paths_counted_once(tmp_path):
+    (tmp_path / "m.py").write_text("def f(x: int) -> int:\n    return x\n")
+    reports = survey_paths([tmp_path, tmp_path / "m.py"])
+    stats = aggregate(reports)
+    assert stats["files"] == 1
+    assert stats["functions"] == 1
