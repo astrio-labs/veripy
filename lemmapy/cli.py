@@ -84,6 +84,22 @@ def cmd_check(paths: list[Path], types: bool = True) -> int:
 
 
 def cmd_emit(paths: list[Path], outdir: Path) -> int:
+    # Distinct inputs with the same stem would overwrite each other's
+    # emitted module (and hunt would then analyze the survivor under every
+    # original label) — fail closed instead.
+    by_stem: dict[str, list[Path]] = {}
+    for path in paths:
+        by_stem.setdefault(path.stem, []).append(path)
+    collisions = {stem: ps for stem, ps in by_stem.items() if len(ps) > 1}
+    if collisions:
+        for stem, ps in collisions.items():
+            print(
+                f"emit: output name collision — {', '.join(map(str, ps))} would all "
+                f"emit {stem}_checked.py; emit them separately or into distinct --outdir",
+                file=sys.stderr,
+            )
+        return 1
+
     outdir.mkdir(parents=True, exist_ok=True)
     status = 0
     for path in paths:
@@ -180,16 +196,19 @@ def cmd_hunt(paths: list[Path], outdir: Path, per_condition_timeout: int) -> int
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         output = (proc.stdout + proc.stderr).strip()
+        # CrossHair exit codes: 0 = clean, 1 = counterexamples, 2 = error.
         if proc.returncode == 0:
             print(f"{path}: no counterexamples found")
-        elif output:
+        elif proc.returncode == 1:
             findings += 1
             print(f"{path}: COUNTEREXAMPLE")
             for line in output.splitlines():
                 print(f"  {line}")
         else:
             trouble += 1
-            print(f"{path}: crosshair exited {proc.returncode} with no output", file=sys.stderr)
+            print(f"{path}: crosshair exited {proc.returncode}", file=sys.stderr)
+            for line in output.splitlines():
+                print(f"  {line}", file=sys.stderr)
     if trouble:
         return 2
     return 1 if findings else 0
