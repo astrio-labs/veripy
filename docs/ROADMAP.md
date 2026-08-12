@@ -22,11 +22,11 @@ Prove the spec surface and gather fragment evidence *before* any prover integrat
 The end-to-end pipeline on the v1 fragment. All four soundness layers present from the first release — none is optional ([ARCHITECTURE.md §2](ARCHITECTURE.md)).
 
 - [ ] Conformance checker: basedpyright strict + allowlist AST pass + ownership dataflow (§3)
-- [ ] Fragment IR (thin) + Dafny encoder: two-file output (regenerated stub + additions-only proof file)
-- [ ] Versioned Dafny preamble: `PyMod` / `PyFloorDiv`, `PyIndex` / `PySlice`, `Truthy_*`, `Option`, container/str models — with lemmas and its own differential test corpus
+- [ ] Fragment IR (thin) + Dafny encoder: two-file output (regenerated stub + additions-only proof file) — **slice 1 shipped**: clean-bucket encoder (`lemmapy verify`), single self-contained stub with a STUB END marker (additions-only enforced diff-wise, benchmark-style); 6 functions verified end-to-end incl. loop invariants; seeded clamp bug caught statically with the failure mapped to the Python line
+- [ ] Versioned Dafny preamble: `PyMod` / `PyFloorDiv`, `PyIndex` / `PySlice`, `Truthy_*`, `Option`, container/str models — with lemmas and its own differential test corpus. **v0.1 shipped** (`PyMod`/`PyFloorDiv`/`PyMin`/`PyMax`/`PyAbs`); the divisibility lemma pack is the known next need — gcd's maximality ensures times out without it (the designated first proof-additions benchmark case)
 - [ ] Guard generator: deep exact-type checks, executable preconditions, copy-in, trusted-caller elision, blame errors (§4)
 - [ ] Island integrity hardening + assumptions A1–A7 in the verification report (§5)
-- [ ] Verifier driver: failure mapping back to Python source; verification report (per-boundary assumed clauses, trusted-contract counts, guard modes)
+- [ ] Verifier driver: failure mapping back to Python source ✅ (slice 1); verification report (per-boundary assumed clauses, trusted-contract counts, guard modes) pending
 - [ ] Translation-validation harness in CI: `dafny translate py` + Hypothesis differential loop (§6)
 - [ ] Fragment semantics note: big-step semantics for the fragment + simulation statement (paper, not mechanized)
 

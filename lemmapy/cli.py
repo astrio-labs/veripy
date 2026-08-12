@@ -12,6 +12,8 @@ from pathlib import Path
 from .frontend.conformance import RULES, aggregate, survey_paths
 from .frontend.extract import parse_source
 from .frontend.typegate import run_type_gate
+from .backends.dafny.driver import verify_dafny_file
+from .backends.dafny.encoder import EncodeError, encode_module
 from .backends.runtime.emit import emit_checked
 
 _NOT_ENFORCED = ("invariant", "decreases")
@@ -214,6 +216,62 @@ def cmd_hunt(paths: list[Path], outdir: Path, per_condition_timeout: int) -> int
     return 1 if findings else 0
 
 
+def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = True) -> int:
+    """Encode to Dafny and verify: the M1 pipeline (clean-bucket fragment)."""
+    outdir.mkdir(parents=True, exist_ok=True)
+    failed = 0
+    trouble = 0
+    if types:
+        # The A7 first pass applies to verification too: an untyped or
+        # ill-typed file must not reach the encoder.
+        gate = run_type_gate(paths)
+        if not gate.available:
+            print(
+                f"type gate: FAILED to run ({gate.error}); "
+                f"pass --no-types to skip type checking explicitly",
+                file=sys.stderr,
+            )
+            return 2
+        if gate.errors:
+            for d in gate.errors:
+                print(f"{d.file}:{d.line} {d.severity}: {d.message}", file=sys.stderr)
+            print(f"type gate: {len(gate.errors)} error(s); nothing verified", file=sys.stderr)
+            return 2
+    for path in paths:
+        source = path.read_text()
+        specs = parse_source(source, filename=str(path))
+        if specs.errors or specs.orphans:
+            print(f"{path}: spec errors; run `lemmapy check` first", file=sys.stderr)
+            trouble += 1
+            continue
+        try:
+            encoded = encode_module(source, specs, module_name=path.name)
+        except EncodeError as exc:
+            loc = f":{exc.line}" if exc.line is not None else ""
+            print(f"{path}{loc}: cannot encode: {exc.message}", file=sys.stderr)
+            trouble += 1
+            continue
+        stub = outdir / f"{path.stem}.dfy"
+        stub.write_text(encoded.dafny_source)
+        result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
+        if result.error is not None:
+            print(f"{path}: dafny trouble: {result.error}", file=sys.stderr)
+            trouble += 1
+            continue
+        if result.ok:
+            print(f"{path}: VERIFIED ({', '.join(encoded.methods)}) -> {stub}")
+        else:
+            failed += 1
+            print(f"{path}: VERIFICATION FAILED -> {stub}")
+            for d in result.diagnostics:
+                if d.severity == "error":
+                    where = f"{path}:{d.py_line}" if d.py_line is not None else f"{stub}:{d.dafny_line}"
+                    print(f"  {where}: {d.message}")
+    if trouble:
+        return 2
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lemmapy",
@@ -245,6 +303,15 @@ def main(argv: list[str] | None = None) -> int:
     p_hunt.add_argument("-o", "--outdir", type=Path, default=Path("build/checked"))
     p_hunt.add_argument("--per-condition-timeout", type=int, default=20)
 
+    p_verify = sub.add_parser(
+        "verify",
+        help="encode the fragment to Dafny and verify (M1 clean-bucket slice)",
+    )
+    p_verify.add_argument("files", nargs="+", type=Path)
+    p_verify.add_argument("-o", "--outdir", type=Path, default=Path("build/dafny"))
+    p_verify.add_argument("--time-limit", type=int, default=30)
+    p_verify.add_argument("--no-types", action="store_true", help="skip the basedpyright type gate")
+
     p_survey = sub.add_parser(
         "survey",
         help="read-only fragment-coverage survey over files/directories (M0, RQ1)",
@@ -260,6 +327,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_emit(args.files, args.outdir)
     if args.command == "hunt":
         return cmd_hunt(args.files, args.outdir, args.per_condition_timeout)
+    if args.command == "verify":
+        return cmd_verify(args.files, args.outdir, args.time_limit, types=not args.no_types)
     if args.command == "survey":
         return cmd_survey(args.paths, args.top, args.json)
     return 2

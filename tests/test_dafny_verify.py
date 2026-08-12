@@ -1,0 +1,50 @@
+"""End-to-end `lemmapy verify` integration tests (need dafny on PATH)."""
+
+from pathlib import Path
+
+import pytest
+
+from lemmapy.backends.dafny.driver import find_dafny
+from lemmapy.cli import cmd_verify
+
+pytestmark = pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+
+REPO = Path(__file__).resolve().parent.parent
+EXAMPLES = REPO / "examples"
+
+FIXED_CLAMP = (
+    "#@ verified\n"
+    "#@ requires lo <= hi\n"
+    "#@ ensures lo <= result <= hi\n"
+    "#@ ensures result == x or result == lo or result == hi\n"
+    "def clamp(x: int, lo: int, hi: int) -> int:\n"
+    "    return min(max(x, lo), hi)\n"
+)
+
+
+def test_bump_verifies(tmp_path, capsys):
+    assert cmd_verify([EXAMPLES / "bump.py"], tmp_path, time_limit=30) == 0
+    assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_seeded_clamp_bug_fails_statically(tmp_path, capsys):
+    status = cmd_verify([EXAMPLES / "clamp.py"], tmp_path, time_limit=30)
+    out = capsys.readouterr().out
+    assert status == 1
+    assert "VERIFICATION FAILED" in out
+    assert "clamp.py:9" in out  # mapped back to the Python return line
+
+
+def test_fixed_clamp_verifies(tmp_path, capsys):
+    src = tmp_path / "clamp_fixed.py"
+    src.write_text(FIXED_CLAMP)
+    assert cmd_verify([src], tmp_path / "out", time_limit=30) == 0
+    assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_contact_below_threshold_verifies(tmp_path, capsys):
+    status = cmd_verify(
+        [EXAMPLES / "contact" / "he_humaneval_52.py"], tmp_path, time_limit=30
+    )
+    assert status == 0
+    assert "below_threshold" in capsys.readouterr().out

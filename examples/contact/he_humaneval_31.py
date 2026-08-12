@@ -9,7 +9,6 @@ def is_prime(n: int) -> bool:
     if n < 2:
         return False
     for k in range(2, n - 1):
-        #@ invariant 2 <= k <= n - 2
         #@ invariant forall j in range(2, k) :: n % j != 0
         if n % k == 0:
             return False

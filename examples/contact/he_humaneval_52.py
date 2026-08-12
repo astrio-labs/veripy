@@ -5,7 +5,6 @@
 #@ ensures result == (forall i in range(len(l)) :: l[i] < t)
 def below_threshold(l: list[int], t: int) -> bool:
     for i in range(len(l)):
-        #@ invariant 0 <= i < len(l)
         #@ invariant forall k in range(i) :: l[k] < t
         if l[i] >= t:
             return False
