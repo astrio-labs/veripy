@@ -9,7 +9,7 @@ Prove the spec surface and gather fragment evidence *before* any prover integrat
 - [x] `#@` spec grammar v0 ([SPEC-GRAMMAR.md](SPEC-GRAMMAR.md)): `requires` / `ensures` / `invariant` / `decreases`, ghost `forall` / `exists` / `old()` / `result` (`mutates` / `extern` reserved, not yet in grammar)
 - [ ] Spec parser: parse ✅, name-resolve against basedpyright (v0 uses scope-approximate resolution), type-check spec expressions
 - [x] Compile the same specs to CrossHair / icontract runtime checks (`lemmapy emit`); CrossHair finds counterexamples from specs alone
-- [ ] Corpus study: run the conformance rules **read-only** over typed OSS repos; measure fragment coverage; telemetry on which rules fire ranks what v1.5 should admit
+- [x] Corpus study, initial run: `lemmapy survey` (read-only AST rule pass, no type info yet) over black/attrs/rich — results and caveats in [CORPUS-RESULTS.md](CORPUS-RESULTS.md); repeat with basedpyright-backed rules and a broader corpus
 
 **Exit criteria:** specs execute as runtime contracts on real code with counterexamples produced; fragment-coverage numbers exist for ≥ a handful of typed OSS repos; the grammar has survived contact with real functions without redesign.
 
