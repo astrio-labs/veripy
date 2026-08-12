@@ -403,6 +403,28 @@ def test_lambda_param_shadowing_does_not_leak_out():
     assert "U-CALL" in _fires(src)
 
 
+def test_module_qualified_builtins_fire():
+    src = (
+        "import builtins\n"
+        "def f(s: str, o, n: str):\n"
+        "    x = builtins.eval(s)\n"
+        "    return builtins.getattr(o, n), x\n"
+    )
+    fires = _fires(src)
+    assert "F-EVAL" in fires
+    assert "F-REFL" in fires
+
+
+def test_rebound_qualified_builtin_fires():
+    src = (
+        "import builtins as b\n"
+        "def f(s: str):\n"
+        "    run = b.eval\n"
+        "    return run(s)\n"
+    )
+    assert "F-EVAL" in _fires(src)
+
+
 def test_overlapping_paths_counted_once(tmp_path):
     (tmp_path / "m.py").write_text("def f(x: int) -> int:\n    return x\n")
     reports = survey_paths([tmp_path, tmp_path / "m.py"])

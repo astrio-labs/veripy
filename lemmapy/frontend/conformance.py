@@ -497,6 +497,12 @@ class _FunctionScanner:
                 self.fire("F-DYNIMPORT", node, detail=f"{root}.{attr}")
             elif root == "typing" and attr == "cast":
                 self.fire("F-CAST", node)
+            elif root == "builtins" and attr in _REFLECTION_CALLS:
+                self.fire("F-EVAL", node, detail=f"builtins.{attr}")
+            elif root == "builtins" and attr in _REFLECTION_INTROSPECT:
+                self.fire("F-REFL", node, detail=f"builtins.{attr}")
+            elif root == "builtins" and attr == "float":
+                self.fire("T-FLOAT", node, detail="builtins.float")
         if isinstance(node.ctx, ast.Store):
             self.fire("X-ATTR-STORE", node, detail=attr)
             if isinstance(base, ast.Name) and self._is_module_level(base.id, locals_):
@@ -557,6 +563,11 @@ class _FunctionScanner:
                 root in _FORBIDDEN_MODULES
                 or (root == "sys" and func.attr == "modules")
                 or (root == "typing" and func.attr == "cast")
+                or (root == "builtins" and (
+                    func.attr in _REFLECTION_CALLS
+                    or func.attr in _REFLECTION_INTROSPECT
+                    or func.attr == "float"
+                ))
             )
             # F-DYNIMPORT/F-CAST on the attribute itself is fired by
             # _scan_attribute during the same walk; avoid doubling up here.
