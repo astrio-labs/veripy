@@ -1,0 +1,90 @@
+"""Verifier driver: run `dafny verify` on an emitted stub and map results
+back to Python source lines."""
+
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+_DIAG_RE = re.compile(r"^(?P<file>.+?\.dfy)\((?P<line>\d+),(?P<col>\d+)\): (?P<sev>Error|Warning)(?::| ) ?(?P<msg>.*)$")
+_RELATED_RE = re.compile(r"^(?P<file>.+?\.dfy)\((?P<line>\d+),(?P<col>\d+)\): Related location: ?(?P<msg>.*)$")
+_SUMMARY_RE = re.compile(r"finished with (?P<ok>\d+) verified, (?P<bad>\d+) error")
+
+
+@dataclass
+class Diagnostic:
+    dafny_line: int
+    py_line: int | None
+    severity: str
+    message: str
+
+
+@dataclass
+class VerifyResult:
+    ok: bool
+    diagnostics: list[Diagnostic] = field(default_factory=list)
+    summary: str = ""
+    raw: str = ""
+    error: str | None = None  # tool-level failure (dafny missing/crashed)
+
+
+def find_dafny() -> str | None:
+    return shutil.which("dafny")
+
+
+def _map_line(line_map: dict[int, int], dafny_line: int) -> int | None:
+    """Exact hit, else the nearest mapped line above (statements span lines)."""
+    if dafny_line in line_map:
+        return line_map[dafny_line]
+    candidates = [dl for dl in line_map if dl < dafny_line]
+    return line_map[max(candidates)] if candidates else None
+
+
+def verify_dafny_file(
+    path: Path, line_map: dict[int, int], time_limit: int = 30
+) -> VerifyResult:
+    exe = find_dafny()
+    if exe is None:
+        return VerifyResult(ok=False, error="dafny not found on PATH")
+    cmd = [exe, "verify", "--verification-time-limit", str(time_limit), str(path)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=time_limit * 20 + 120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return VerifyResult(ok=False, error=f"dafny failed to run: {exc}")
+    output = proc.stdout + proc.stderr
+    diagnostics: list[Diagnostic] = []
+    for raw_line in output.splitlines():
+        stripped = raw_line.strip()
+        related = _RELATED_RE.match(stripped)
+        if related and diagnostics:
+            # Dafny reports e.g. a failing postcondition at the return path,
+            # with the actual ensures clause in a Related location line —
+            # fold it into the previous diagnostic so the report points at
+            # the spec clause, not just the return statement.
+            rline = int(related.group("line"))
+            r_py = _map_line(line_map, rline)
+            last = diagnostics[-1]
+            if r_py is not None:
+                last.message += f" (related: source line {r_py})"
+                if last.py_line is None:
+                    last.py_line = r_py
+            continue
+        m = _DIAG_RE.match(stripped)
+        if m:
+            dline = int(m.group("line"))
+            diagnostics.append(Diagnostic(
+                dafny_line=dline,
+                py_line=_map_line(line_map, dline),
+                severity=m.group("sev").lower(),
+                message=m.group("msg").strip(),
+            ))
+    summary_match = _SUMMARY_RE.search(output)
+    summary = summary_match.group(0) if summary_match else ""
+    ok = proc.returncode == 0
+    if not ok and not diagnostics and not summary:
+        return VerifyResult(ok=False, error=f"dafny exited {proc.returncode}: {output[:400]}", raw=output)
+    return VerifyResult(ok=ok, diagnostics=diagnostics, summary=summary, raw=output)

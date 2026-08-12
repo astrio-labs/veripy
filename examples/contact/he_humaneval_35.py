@@ -12,7 +12,6 @@ indices so the loop invariant can name the processed prefix.
 def max_element(l: list[int]) -> int:
     m: int = l[0]
     for i in range(len(l)):
-        #@ invariant 0 <= i < len(l)
         #@ invariant forall k in range(i) :: l[k] <= m
         #@ invariant exists k in range(len(l)) :: m == l[k]
         if l[i] > m:
