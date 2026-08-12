@@ -7,7 +7,7 @@
 Prove the spec surface and gather fragment evidence *before* any prover integration.
 
 - [x] `#@` spec grammar v0 ([SPEC-GRAMMAR.md](SPEC-GRAMMAR.md)): `requires` / `ensures` / `invariant` / `decreases`, ghost `forall` / `exists` / `old()` / `result` (`mutates` / `extern` reserved, not yet in grammar)
-- [ ] Spec parser: parse ✅, name-resolve against basedpyright (v0 uses scope-approximate resolution), type-check spec expressions
+- [ ] Spec parser: parse ✅; `lemmapy check` gates files on basedpyright strict (the A7 first pass) ✅; spec-expression name resolution against the checker's symbol table still scope-approximate
 - [x] Compile the same specs to CrossHair / icontract runtime checks (`lemmapy emit`); CrossHair finds counterexamples from specs alone
 - [x] Corpus study, initial run: `lemmapy survey` (read-only AST rule pass, no type info yet) over black/attrs/rich — results and caveats in [CORPUS-RESULTS.md](CORPUS-RESULTS.md); repeat with basedpyright-backed rules and a broader corpus
 

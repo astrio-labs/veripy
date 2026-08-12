@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status: planned architecture, M0 slice built** (spec parser + runtime backend; the rest is not implemented yet). The first half of this document describes the system we intend to build: components, data flow, and what is trusted vs. validated vs. verified. The numbered sections (§1–§9, "The soundness design") specify the mechanisms those components implement and the argument for why the result can be trusted. The system half will be revised against reality as code lands (see [ROADMAP.md](ROADMAP.md)); the soundness half is the design's source of truth.
+> **Status: planned architecture, M0 slice built** (spec parser, runtime backend, read-only conformance survey, basedpyright type gate; the rest is not implemented yet). The first half of this document describes the system we intend to build: components, data flow, and what is trusted vs. validated vs. verified. The numbered sections (§1–§9, "The soundness design") specify the mechanisms those components implement and the argument for why the result can be trusted. The system half will be revised against reality as code lands (see [ROADMAP.md](ROADMAP.md)); the soundness half is the design's source of truth.
 
 ## Pipeline overview
 
@@ -101,7 +101,7 @@ Directories marked *(planned)* do not exist yet; the rest are built (M0).
 
 ```
 lemmapy/
-  frontend/        # spec extraction + parser; conformance checker & ownership dataflow (planned)
+  frontend/        # spec parser, conformance survey, basedpyright type gate; M1 checker & ownership dataflow (planned)
   ir/              # fragment IR, thin (planned)
   backends/
     dafny/         # encoder, preamble/, driver (planned)

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .frontend.conformance import RULES, aggregate, survey_paths
 from .frontend.extract import parse_source
+from .frontend.typegate import run_type_gate
 from .backends.runtime.emit import emit_checked
 
 _NOT_ENFORCED = ("invariant", "decreases")
@@ -42,12 +43,40 @@ def _report(path: Path) -> int:
     return errors
 
 
-def cmd_check(paths: list[Path]) -> int:
+def cmd_check(paths: list[Path], types: bool = True) -> int:
     total_errors = 0
     for path in paths:
         total_errors += _report(path)
+
+    if types:
+        gate = run_type_gate(paths)
+        if not gate.available:
+            # An unrunnable gate is a failure, not a pass — skipping type
+            # analysis must be an explicit choice (--no-types).
+            print(
+                f"\ntype gate: FAILED to run ({gate.error}); "
+                f"pass --no-types to skip type checking explicitly",
+                file=sys.stderr,
+            )
+            total_errors += 1
+        else:
+            print(
+                f"\ntype gate (basedpyright {gate.version or '?'}): "
+                f"{len(gate.errors)} error(s), {len(gate.warnings)} warning(s)"
+            )
+            cwd = Path.cwd()
+            for d in gate.diagnostics:
+                file = Path(d.file)
+                try:
+                    file = file.relative_to(cwd)
+                except ValueError:
+                    pass
+                rule = f"  [{d.rule}]" if d.rule else ""
+                print(f"  {file}:{d.line} {d.severity}: {d.message}{rule}")
+            total_errors += len(gate.errors)
+
     if total_errors:
-        print(f"\n{total_errors} spec error(s).", file=sys.stderr)
+        print(f"\n{total_errors} error(s).", file=sys.stderr)
         return 1
     return 0
 
@@ -126,8 +155,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_check = sub.add_parser("check", help="parse #@ specs and report diagnostics")
+    p_check = sub.add_parser(
+        "check",
+        help="parse #@ specs and report diagnostics; gates on basedpyright",
+    )
     p_check.add_argument("files", nargs="+", type=Path)
+    p_check.add_argument(
+        "--no-types",
+        action="store_true",
+        help="skip the basedpyright type gate",
+    )
 
     p_emit = sub.add_parser("emit", help="emit icontract-checked copies of modules")
     p_emit.add_argument("files", nargs="+", type=Path)
@@ -143,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "check":
-        return cmd_check(args.files)
+        return cmd_check(args.files, types=not args.no_types)
     if args.command == "emit":
         return cmd_emit(args.files, args.outdir)
     if args.command == "survey":
