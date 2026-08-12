@@ -23,8 +23,10 @@ per-rule overrides are not policed: they are uniform and visible in one
 place, i.e. the project's own auditable choice. Config inheritance via
 `extends` is resolved before any of these checks (child keys override base
 keys, pyright's semantics); an unreadable link or a cycle in the chain fails
-closed. Known approximation: executionEnvironment roots from an extended base
-are resolved against the governing config's directory. If basedpyright cannot
+closed. executionEnvironment roots are checked under both the declaring
+config's directory and the governing config's directory — coverage under
+either flags the file, so the over-approximation fails closed regardless of
+which resolution the checker applies. If basedpyright cannot
 run, the gate reports unavailable and `lemmapy check` FAILS — skipping type
 analysis is only possible via the explicit `--no-types` opt-out.
 """
@@ -33,7 +35,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -103,12 +104,82 @@ _STRICT_OK_MODES = frozenset({"strict", "recommended", "all"})
 _ENV_STRUCTURAL_KEYS = frozenset({"root", "pythonVersion", "pythonPlatform", "extraPaths"})
 
 
+def _strip_jsonc(text: str) -> str:
+    """Reduce pyright's JSONC (// and /* */ comments, trailing commas) to
+    strict JSON. String-aware; two passes so a comment sitting between a
+    trailing comma and its closing bracket is handled."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+
+    # Second pass: drop trailing commas (comments are already gone).
+    text2 = "".join(out)
+    out2: list[str] = []
+    i, n = 0, len(text2)
+    in_str = False
+    while i < n:
+        c = text2[i]
+        if in_str:
+            out2.append(c)
+            if c == "\\" and i + 1 < n:
+                out2.append(text2[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out2.append(c)
+            i += 1
+            continue
+        if c == ",":
+            j = i + 1
+            while j < n and text2[j] in " \t\r\n":
+                j += 1
+            if j < n and text2[j] in "}]":
+                i += 1
+                continue
+        out2.append(c)
+        i += 1
+    return "".join(out2)
+
+
 def _read_config_json(path: Path) -> dict | None:
-    """Parse one pyrightconfig-style JSON file; None = unreadable."""
+    """Parse one pyrightconfig-style JSONC file; None = unreadable."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
-        text = re.sub(r"^\s*//.*$", "", text, flags=re.M)  # pyright allows comments
-        data = json.loads(text)
+        data = json.loads(_strip_jsonc(text))
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
@@ -124,6 +195,7 @@ def _resolve_extends(path: Path, seen: frozenset[Path]) -> dict | None:
     data = _read_config_json(real)
     if data is None:
         return None
+    _tag_env_declaring_dir(data, real.parent)
     extends = data.get("extends")
     if isinstance(extends, str):
         base = _resolve_extends(real.parent / extends, seen | {real})
@@ -131,6 +203,19 @@ def _resolve_extends(path: Path, seen: frozenset[Path]) -> dict | None:
             return None
         return {**base, **{k: v for k, v in data.items() if k != "extends"}}
     return data
+
+
+_DECLARING_DIR_KEY = "_lemmapy_declaring_dir"
+
+
+def _tag_env_declaring_dir(config: dict, declaring_dir: Path) -> None:
+    """Remember which config file declared each executionEnvironment, so its
+    relative root can later be resolved against the declaring directory."""
+    envs = config.get("executionEnvironments")
+    if isinstance(envs, list):
+        for env in envs:
+            if isinstance(env, dict):
+                env.setdefault(_DECLARING_DIR_KEY, str(declaring_dir))
 
 
 def _load_config(config_dir: Path) -> dict | None:
@@ -148,6 +233,7 @@ def _load_config(config_dir: Path) -> dict | None:
         for table in ("basedpyright", "pyright"):
             tool = data.get("tool", {}).get(table)
             if isinstance(tool, dict):
+                _tag_env_declaring_dir(tool, config_dir)
                 extends = tool.get("extends")
                 if isinstance(extends, str):
                     base = _resolve_extends(config_dir / extends, frozenset())
@@ -170,13 +256,21 @@ def _diagnostic_override_envs(
     for env in envs:
         if not isinstance(env, dict):
             continue
-        overrides = sorted(set(env) - _ENV_STRUCTURAL_KEYS)
+        overrides = sorted(set(env) - _ENV_STRUCTURAL_KEYS - {_DECLARING_DIR_KEY})
         root = env.get("root")
         if not overrides or not isinstance(root, str):
             continue
-        env_root = (config_dir / root).resolve()
+        # Resolve the root against BOTH the declaring config's directory and
+        # the governing config's directory: coverage under either flags the
+        # file. Over-approximating fails closed no matter which resolution
+        # the checker actually applies for inherited environments.
+        candidate_dirs = {config_dir}
+        declaring = env.get(_DECLARING_DIR_KEY)
+        if isinstance(declaring, str):
+            candidate_dirs.add(Path(declaring))
+        env_roots = {(d / root).resolve() for d in candidate_dirs}
         for path in files:
-            if path == env_root or env_root in path.parents:
+            if any(path == r or r in path.parents for r in env_roots):
                 flagged[path] = (
                     f"executionEnvironment {root!r} overrides diagnostic "
                     f"settings ({', '.join(overrides)})"

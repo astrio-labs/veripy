@@ -182,6 +182,44 @@ def test_extends_missing_base_fails_closed(tmp_path):
     assert "unreadable" in result.errors[0].message
 
 
+def test_jsonc_config_parses(tmp_path):
+    module = tmp_path / "m.py"
+    module.write_text("def g(x: int) -> int:\n    return x + 1\n")
+    (tmp_path / "pyrightconfig.json").write_text(
+        '{\n'
+        '  /* block comment */\n'
+        '  "typeCheckingMode": "strict", // inline comment\n'
+        '  "reportUnusedParameter": false,\n'
+        '}\n'
+    )
+    result = run_type_gate([module])
+    assert result.available
+    assert not any(d.rule == "lemmapy-strict-required" for d in result.errors), [
+        d.message for d in result.errors
+    ]
+
+
+def test_inherited_env_root_resolved_against_declaring_dir(tmp_path):
+    # Base config lives in cfg/ and declares an override for root "pkg" —
+    # i.e. cfg/pkg relative to the file that declared it. The gated module
+    # lives exactly there; resolving only against the governing dir (tmp)
+    # would miss it.
+    cfg_dir = tmp_path / "cfg"
+    pkg_dir = cfg_dir / "pkg"
+    pkg_dir.mkdir(parents=True)
+    module = pkg_dir / "m.py"
+    module.write_text("def f(x):\n    return x + 1\n")
+    (cfg_dir / "base.json").write_text(
+        '{"typeCheckingMode": "strict", "executionEnvironments": '
+        '[{"root": "pkg", "reportUnknownParameterType": "none"}]}\n'
+    )
+    (tmp_path / "pyrightconfig.json").write_text('{"extends": "./cfg/base.json"}\n')
+    result = run_type_gate([module])
+    assert result.available
+    assert result.errors
+    assert all(d.rule == "lemmapy-strict-required" for d in result.errors)
+
+
 def test_weak_pyproject_table_flagged(tmp_path):
     module = tmp_path / "m.py"
     module.write_text("def g(x: int) -> int:\n    return x + 1\n")
