@@ -1,19 +1,19 @@
-# A Verification Toolchain for Typed Python
+# LemmaPy
 
-> **Status: design phase.** The architecture and soundness design are documented; implementation has not started. Nothing here is released. Spec syntax shown below is illustrative and may change.
+> **Status: early development (M0).** The design docs are complete and the M0 walking skeleton works: `#@` specs parse ([grammar v0](docs/SPEC-GRAMMAR.md)) and compile to runtime contracts that CrossHair searches for counterexamples. The Dafny proof backend (M1) is not started. Not yet released; no license granted yet.
 
-Developers (and LLM agents) annotate **production Python** with specifications in `#@` comments. The toolchain translates a precisely defined typed fragment into [Dafny](https://dafny.org/), where an SMT-backed verifier discharges the proofs — with LLM assistance for the ones automation misses. The Python file stays the source of truth: CPython ignores the annotations, and no code is rewritten in another language.
+Developers (and LLM agents) annotate **production Python** with specifications in `#@` comments. The toolchain translates a precisely defined typed fragment into [Dafny](https://dafny.org/), where an SMT-backed verifier discharges the proofs — with LLM assistance for the ones automation misses. The Python file stays the source of truth: CPython ignores the annotations, and no code is rewritten in another language. LemmaPy is a sibling of MidSpiral's **LemmaScript**, which delivers the same workflow for TypeScript.
 
 ```python
 #@ verified
-#@ requires forall i, j :: 0 <= i < j < len(xs) ==> xs[i] <= xs[j]
+#@ requires forall i in range(len(xs) - 1) :: xs[i] <= xs[i + 1]
 #@ ensures result == -1 or (0 <= result < len(xs) and xs[result] == target)
 def binary_search(xs: list[int], target: int) -> int:
     lo, hi = 0, len(xs)
     while lo < hi:
         #@ invariant 0 <= lo <= hi <= len(xs)
-        #@ invariant forall k :: 0 <= k < lo ==> xs[k] < target
-        #@ invariant forall k :: hi <= k < len(xs) ==> xs[k] > target
+        #@ invariant forall k in range(lo) :: xs[k] < target
+        #@ invariant forall k in range(hi, len(xs)) :: xs[k] > target
         mid = (lo + hi) // 2
         if xs[mid] < target:
             lo = mid + 1
@@ -24,9 +24,25 @@ def binary_search(xs: list[int], target: int) -> int:
     return -1
 ```
 
+## Try it (M0)
+
+```bash
+pip install -e ".[dev]"
+```
+
+```bash
+lemmapy check examples/clamp.py && lemmapy emit examples/clamp.py
+```
+
+```bash
+crosshair check build/checked/clamp_checked.py --analysis_kind icontract
+```
+
+The last command prints `false when calling clamp(-1, 0, 0)` — a concrete counterexample to the seeded bug in [examples/clamp.py](examples/clamp.py), found from the `#@` specs alone, with no test written. `invariant`/`decreases` clauses are parsed and recorded but enforced only by the proof backend (M1).
+
 ## Why this is not "just run a verifier on Python"
 
-Python is dynamically typed, and a type checker's acceptance is not soundness. The project's central claim is that dynamic typing decomposes into four distinct threats, each answered by an independently checkable mechanism ([ARCHITECTURE.md](ARCHITECTURE.md)):
+Python is dynamically typed, and a type checker's acceptance is not soundness. The project's central claim is that dynamic typing decomposes into four distinct threats, each answered by an independently checkable mechanism ([ARCHITECTURE.md](docs/ARCHITECTURE.md)):
 
 | Threat | Mechanism |
 | --- | --- |
@@ -59,9 +75,10 @@ The result is a precise, honest guarantee: *verified properties hold for every e
 
 | Document | Contents | Status |
 | --- | --- | --- |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture (components, data flow, trusted computing base, repo layout) and the soundness design (four layers, ownership rules, guard anatomy, assumptions A1–A7, lowering catalog) | ✅ (planned) |
-| [ROADMAP.md](ROADMAP.md) | Milestones M0 → v2 with exit criteria; backend watchpoints | ✅ |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture (components, data flow, trusted computing base, repo layout) and the soundness design (four layers, ownership rules, guard anatomy, assumptions A1–A7, lowering catalog) | ✅ (planned) |
+| [ROADMAP.md](docs/ROADMAP.md) | Milestones M0 → v2 with exit criteria; backend watchpoints | ✅ |
 | SUBSET.md | The versioned fragment definition (seeded from the lowering catalog) | planned |
 | DECISIONS.md | Resolved design decisions with rationale and revisit tripwires | planned |
 | RELATED-WORK.md | The verification landscape and positioning | planned |
-| [EVALUATION.md](EVALUATION.md) | Research questions, the proof-completion benchmark family, measurement plan | ✅ (partial draft) |
+| [SPEC-GRAMMAR.md](docs/SPEC-GRAMMAR.md) | The `#@` spec language, grammar v0: clauses, expression syntax, desugaring rules, decisions | ✅ (v0 draft) |
+| [EVALUATION.md](docs/EVALUATION.md) | Research questions, the proof-completion benchmark family, measurement plan | ✅ (partial draft) |
