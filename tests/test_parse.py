@@ -22,6 +22,20 @@ def test_desugar_implication_right_assoc():
     assert desugar("a ==> b ==> c") == "(not (a)) or ((not (b)) or (c))"
 
 
+def test_desugar_iff():
+    assert desugar("x > 0 <==> y > 0") == "bool(x > 0) == bool(y > 0)"
+
+
+def test_desugar_iff_binds_loosest():
+    got = desugar("a ==> b <==> c")
+    assert got == "bool((not (a)) or (b)) == bool(c)"
+
+
+def test_desugar_iff_with_quantifier_operand():
+    got = desugar("done <==> forall i in range(n) :: xs[i] >= 0")
+    assert got == "bool(done) == bool(all((xs[i] >= 0) for i in (range(n))))"
+
+
 def test_desugar_multi_binder_with_implication_body():
     got = desugar("forall i in r, j in s :: p(i) ==> q(j)")
     assert got == "all(((not (p(i))) or (q(j))) for i in (r) for j in (s))"

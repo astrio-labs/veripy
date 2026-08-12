@@ -1,6 +1,6 @@
-# `#@` Spec Grammar — v0
+# `#@` Spec Grammar — v0.1
 
-> **Status: v0 draft, in active use by the M0 walking skeleton.** Freezing this grammar (after it survives contact with real functions) is an M0 exit criterion ([ROADMAP.md](ROADMAP.md)). Every change lands here first.
+> **Status: frozen (v0.1)** after the grammar-contact exercise — 20 real HumanEval/MBPP tasks annotated, verified, and mutation-tested with one additive change (`<==>`); findings and deferred extensions in [GRAMMAR-CONTACT.md](GRAMMAR-CONTACT.md). Every change lands here first.
 
 Specs are comments beginning `#@`. CPython ignores them; the spec parser does not.
 
@@ -22,13 +22,14 @@ The **contract block** is the contiguous run of `#@` lines ending on the line di
 
 | Construct | Meaning | Desugars to |
 | --- | --- | --- |
-| `A ==> B` | implication (right-associative, lowest precedence) | `(not (A)) or (B)` |
+| `A <==> B` | biconditional (loosest precedence, below `==>`) | `bool(A) == bool(B)` |
+| `A ==> B` | implication (right-associative) | `(not (A)) or (B)` |
 | `forall x in D[, y in E …] :: BODY` | universal over finite iterable domain(s) | `all((BODY) for x in (D) …)` |
 | `exists x in D[, y in E …] :: BODY` | existential over finite iterable domain(s) | `any((BODY) for x in (D) …)` |
 | `result` | the function's return value | *(ensures only)* |
 | `old(p)` | value of parameter `p` at function entry (deep copy) | *(ensures only; `p` must be a bare parameter name in v0)* |
 
-A quantifier's body extends to the end of the expression (Dafny convention); parenthesize to limit it. Implications written inside a call's argument list must be parenthesized. `<==>` (iff) is not in v0 — write both directions.
+A quantifier's body extends to the end of the expression (Dafny convention); parenthesize to limit it. Implications written inside a call's argument list must be parenthesized. Prefer `<==>` over hand-written `(A) == (B)` for iffs: the explicit form silently becomes a chained comparison if the parentheses are dropped — the trap that motivated adding `<==>` in v0.1.
 
 Plain Python's `all(... for ...)` / `any(... for ...)` are equally valid and equivalent; `forall`/`exists` are readability sugar. Names available in specs: the function's parameters, quantifier-bound variables, module-level names, and a safe builtin allowlist (`len`, `range`, `sum`, `min`, `max`, `abs`, `sorted`, `all`, `any`, …).
 
@@ -45,9 +46,10 @@ Plain Python's `all(... for ...)` / `any(... for ...)` are equally valid and equ
 spec_comment ::= "#@" clause
 clause       ::= "verified"
                | ("requires" | "ensures" | "invariant" | "decreases") expr
-expr         ::= quant | impl
+expr         ::= quant | iff
 quant        ::= ("forall" | "exists") binder ("," binder)* "::" expr
 binder       ::= NAME "in" py_expr
+iff          ::= impl ("<==>" expr)?            # loosest
 impl         ::= py_expr ("==>" expr)?          # right-associative
 py_expr      ::= <Python expression grammar>, names as restricted above
 ```

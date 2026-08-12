@@ -6,12 +6,14 @@
 
 Prove the spec surface and gather fragment evidence *before* any prover integration.
 
-- [x] `#@` spec grammar v0 ([SPEC-GRAMMAR.md](SPEC-GRAMMAR.md)): `requires` / `ensures` / `invariant` / `decreases`, ghost `forall` / `exists` / `old()` / `result` (`mutates` / `extern` reserved, not yet in grammar)
-- [ ] Spec parser: parse ✅; `lemmapy check` gates files on basedpyright strict (the A7 first pass) ✅; spec-expression name resolution against the checker's symbol table still scope-approximate
-- [x] Compile the same specs to CrossHair / icontract runtime checks (`lemmapy emit`); CrossHair finds counterexamples from specs alone
-- [x] Corpus study, initial run: `lemmapy survey` (read-only AST rule pass, no type info yet) over black/attrs/rich — results and caveats in [CORPUS-RESULTS.md](CORPUS-RESULTS.md); repeat with basedpyright-backed rules and a broader corpus
+- [x] `#@` spec grammar — **v0.1, frozen** after the grammar-contact exercise ([SPEC-GRAMMAR.md](SPEC-GRAMMAR.md), [GRAMMAR-CONTACT.md](GRAMMAR-CONTACT.md)): `requires` / `ensures` / `invariant` / `decreases`, `forall` / `exists` / `old()` / `result` / `<==>` (`mutates` / `extern` reserved)
+- [x] Spec parser: parse ✅; `lemmapy check` gates files on basedpyright strict (the A7 first pass) ✅; spec-expression resolution against the checker's symbol table **re-scoped to M1**, where it lives inside the conformance checker (scope-approximate resolution held up across the 20-task contact corpus)
+- [x] Compile the same specs to CrossHair / icontract runtime checks (`lemmapy emit`, `lemmapy hunt`); CrossHair finds counterexamples from specs alone
+- [x] Corpus study: `lemmapy survey` (read-only AST rule pass, no type info yet) over nine typed OSS repos plus the HumanEval/MBPP greenfield contrast — results and caveats in [CORPUS-RESULTS.md](CORPUS-RESULTS.md); repeat with basedpyright-backed rules in M1
 
 **Exit criteria:** specs execute as runtime contracts on real code with counterexamples produced; fragment-coverage numbers exist for ≥ a handful of typed OSS repos; the grammar has survived contact with real functions without redesign.
+
+**Status: exit criteria met (August 2026)** — 20-task contact corpus with mutation-tested specs and adversarial verification ([GRAMMAR-CONTACT.md](GRAMMAR-CONTACT.md)); nine-repo coverage numbers plus the 65% HumanEval / 67% MBPP greenfield contrast; grammar frozen at v0.1 with one additive change (`<==>`).
 
 **De-risks:** spec surface DX (the biggest product bet) and fragment scope (the biggest research bet) — both cheaply, before the encoder exists.
 

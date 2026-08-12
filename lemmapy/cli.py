@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -147,6 +149,52 @@ def cmd_survey(paths: list[Path], top: int, json_out: Path | None) -> int:
     return 0
 
 
+def _find_crosshair() -> str | None:
+    exe = shutil.which("crosshair")
+    if exe:
+        return exe
+    candidate = Path(sys.executable).parent / "crosshair"
+    return str(candidate) if candidate.exists() else None
+
+
+def cmd_hunt(paths: list[Path], outdir: Path, per_condition_timeout: int) -> int:
+    """Emit checked modules and let CrossHair hunt for counterexamples."""
+    status = cmd_emit(paths, outdir)
+    if status:
+        return status
+    exe = _find_crosshair()
+    if exe is None:
+        print(
+            "hunt: crosshair not found — install with `pip install 'lemmapy[dev]'`",
+            file=sys.stderr,
+        )
+        return 2
+    findings = 0
+    trouble = 0
+    for path in paths:
+        checked = outdir / f"{path.stem}_checked.py"
+        cmd = [
+            exe, "check", str(checked),
+            "--analysis_kind", "icontract",
+            "--per_condition_timeout", str(per_condition_timeout),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        output = (proc.stdout + proc.stderr).strip()
+        if proc.returncode == 0:
+            print(f"{path}: no counterexamples found")
+        elif output:
+            findings += 1
+            print(f"{path}: COUNTEREXAMPLE")
+            for line in output.splitlines():
+                print(f"  {line}")
+        else:
+            trouble += 1
+            print(f"{path}: crosshair exited {proc.returncode} with no output", file=sys.stderr)
+    if trouble:
+        return 2
+    return 1 if findings else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lemmapy",
@@ -170,6 +218,14 @@ def main(argv: list[str] | None = None) -> int:
     p_emit.add_argument("files", nargs="+", type=Path)
     p_emit.add_argument("-o", "--outdir", type=Path, default=Path("build/checked"))
 
+    p_hunt = sub.add_parser(
+        "hunt",
+        help="emit checked modules and search for counterexamples with CrossHair",
+    )
+    p_hunt.add_argument("files", nargs="+", type=Path)
+    p_hunt.add_argument("-o", "--outdir", type=Path, default=Path("build/checked"))
+    p_hunt.add_argument("--per-condition-timeout", type=int, default=20)
+
     p_survey = sub.add_parser(
         "survey",
         help="read-only fragment-coverage survey over files/directories (M0, RQ1)",
@@ -183,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_check(args.files, types=not args.no_types)
     if args.command == "emit":
         return cmd_emit(args.files, args.outdir)
+    if args.command == "hunt":
+        return cmd_hunt(args.files, args.outdir, args.per_condition_timeout)
     if args.command == "survey":
         return cmd_survey(args.paths, args.top, args.json)
     return 2
