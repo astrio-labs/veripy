@@ -78,6 +78,47 @@ def test_files_from_different_projects_use_own_configs(tmp_path):
 
     result = run_type_gate([strict_dir / "m.py", basic_dir / "m.py"])
     assert result.available
-    error_files = {d.file for d in result.errors}
-    assert any("strict_proj" in f for f in error_files)
-    assert not any("basic_proj" in f for f in error_files)
+    # The strict project's file is actually type-checked...
+    strict_errors = [
+        d for d in result.errors
+        if "strict_proj" in d.file and d.rule != "lemmapy-strict-required"
+    ]
+    assert strict_errors
+    # ...while the weak project's file fails the gate rather than being
+    # checked meaninglessly under its own lax settings.
+    basic_errors = [d for d in result.errors if "basic_proj" in d.file]
+    assert basic_errors
+    assert all(d.rule == "lemmapy-strict-required" for d in basic_errors)
+
+
+def test_weak_config_cannot_lower_the_gate(tmp_path):
+    module = tmp_path / "m.py"
+    module.write_text("def g(x: int) -> int:\n    return x + 1\n")
+    (tmp_path / "pyrightconfig.json").write_text('{"typeCheckingMode": "off"}\n')
+    result = run_type_gate([module])
+    assert result.available
+    assert result.errors
+    assert result.errors[0].rule == "lemmapy-strict-required"
+
+
+def test_recommended_mode_satisfies_the_gate(tmp_path):
+    module = tmp_path / "m.py"
+    module.write_text("def g(x: int) -> int:\n    return x + 1\n")
+    (tmp_path / "pyrightconfig.json").write_text(
+        '{"typeCheckingMode": "recommended", "reportUnusedParameter": false}\n'
+    )
+    result = run_type_gate([module])
+    assert result.available
+    assert not any(d.rule == "lemmapy-strict-required" for d in result.errors)
+
+
+def test_weak_pyproject_table_flagged(tmp_path):
+    module = tmp_path / "m.py"
+    module.write_text("def g(x: int) -> int:\n    return x + 1\n")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pyright]\ntypeCheckingMode = "basic"\n'
+    )
+    result = run_type_gate([module])
+    assert result.available
+    assert result.errors
+    assert result.errors[0].rule == "lemmapy-strict-required"

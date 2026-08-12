@@ -6,23 +6,29 @@ by the AST allowlist pass (solves dynamic *semantics*). This module wires the
 first pass into `lemmapy check`: a file's functions are not clean unless
 basedpyright reports zero errors for that file.
 
-Strictness comes from the governing pyright configuration: files are grouped
-by their nearest `pyrightconfig.json` (or `pyproject.toml` with a
+Project settings come from the governing pyright configuration: files are
+grouped by their nearest `pyrightconfig.json` (or `pyproject.toml` with a
 [tool.pyright]/[tool.basedpyright] table) and each group is checked in its own
 project context, so one command spanning several projects applies each
-project's settings. LemmaPy projects are expected to set
-`"typeCheckingMode": "strict"` (this repo's own config does). If basedpyright
-cannot run, the gate reports unavailable and `lemmapy check` FAILS — skipping
-type analysis is only possible via the explicit `--no-types` opt-out.
+project's settings — **except weakness**. A config whose `typeCheckingMode`
+is weaker than "strict" cannot lower the gate: those files fail with a
+`lemmapy-strict-required` diagnostic instead of being checked meaninglessly.
+An unset mode is acceptable because basedpyright's default ("recommended") is
+stricter than "strict". (Per-execution-environment mode overrides inside the
+config are not inspected — an M0 approximation.) If basedpyright cannot run,
+the gate reports unavailable and `lemmapy check` FAILS — skipping type
+analysis is only possible via the explicit `--no-types` opt-out.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -78,6 +84,39 @@ def _governing_config_dir(path: Path) -> Path | None:
     return None
 
 
+# Modes at least as strong as "strict" ("recommended"/"all" are basedpyright's
+# stricter tiers). Anything else cannot satisfy the gate.
+_STRICT_OK_MODES = frozenset({"strict", "recommended", "all"})
+
+
+def _config_mode(config_dir: Path) -> str | None:
+    """The governing config's typeCheckingMode; None if unset (basedpyright's
+    default "recommended" then applies); "<unreadable>" if the config cannot
+    be parsed (treated as failing the gate — fail closed)."""
+    cfg = config_dir / "pyrightconfig.json"
+    if cfg.exists():
+        try:
+            text = cfg.read_text(encoding="utf-8", errors="replace")
+            text = re.sub(r"^\s*//.*$", "", text, flags=re.M)  # pyright allows comments
+            data = json.loads(text)
+        except (OSError, json.JSONDecodeError):
+            return "<unreadable>"
+        mode = data.get("typeCheckingMode")
+        return mode if isinstance(mode, str) else None
+    pyproject = config_dir / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return "<unreadable>"
+        for table in ("basedpyright", "pyright"):
+            tool = data.get("tool", {}).get(table, {})
+            if isinstance(tool, dict) and "typeCheckingMode" in tool:
+                return str(tool["typeCheckingMode"])
+        return None
+    return None
+
+
 def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
     exe = find_basedpyright()
     if exe is None:
@@ -96,6 +135,27 @@ def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
     diagnostics: list[TypeDiagnostic] = []
     version: str | None = None
     for config_dir, group in groups.items():
+        if config_dir is not None:
+            mode = _config_mode(config_dir)
+            if mode is not None and mode not in _STRICT_OK_MODES:
+                # A weak project config cannot lower the gate: fail these
+                # files explicitly rather than checking them meaninglessly.
+                diagnostics.extend(
+                    TypeDiagnostic(
+                        file=str(p),
+                        line=1,
+                        severity="error",
+                        message=(
+                            f"governing pyright config ({config_dir}) sets "
+                            f"typeCheckingMode={mode!r}; the LemmaPy type gate "
+                            f"requires 'strict' or stricter — raise the mode, "
+                            f"or skip type checking explicitly with --no-types"
+                        ),
+                        rule="lemmapy-strict-required",
+                    )
+                    for p in group
+                )
+                continue
         cwd = config_dir or Path(os.path.commonpath([str(p.parent) for p in group]))
         cmd = [exe, "--outputjson", *[str(p) for p in group]]
         try:

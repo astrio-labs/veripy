@@ -61,7 +61,7 @@ def cmd_check(paths: list[Path], types: bool = True) -> int:
             total_errors += 1
         else:
             print(
-                f"\ntype gate (basedpyright {gate.version}): "
+                f"\ntype gate (basedpyright {gate.version or '?'}): "
                 f"{len(gate.errors)} error(s), {len(gate.warnings)} warning(s)"
             )
             cwd = Path.cwd()
