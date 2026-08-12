@@ -51,7 +51,14 @@ def cmd_check(paths: list[Path], types: bool = True) -> int:
     if types:
         gate = run_type_gate(paths)
         if not gate.available:
-            print(f"\ntype gate: skipped ({gate.error})")
+            # An unrunnable gate is a failure, not a pass — skipping type
+            # analysis must be an explicit choice (--no-types).
+            print(
+                f"\ntype gate: FAILED to run ({gate.error}); "
+                f"pass --no-types to skip type checking explicitly",
+                file=sys.stderr,
+            )
+            total_errors += 1
         else:
             print(
                 f"\ntype gate (basedpyright {gate.version}): "

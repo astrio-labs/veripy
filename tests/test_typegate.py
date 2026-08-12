@@ -52,3 +52,32 @@ def test_cli_no_types_skips_gate(tmp_path, capsys):
     out = capsys.readouterr().out
     assert status == 0
     assert "type gate" not in out
+
+
+def test_unavailable_gate_fails_check(tmp_path, capsys, monkeypatch):
+    from lemmapy.frontend import typegate
+
+    monkeypatch.setattr(typegate, "find_basedpyright", lambda: None)
+    module = _strict_project(tmp_path, "def g(x: int) -> int:\n    return x\n")
+    status = cmd_check([module], types=True)
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "FAILED to run" in captured.err
+
+
+def test_files_from_different_projects_use_own_configs(tmp_path):
+    untyped = "def f(x):\n    return x + 1\n"
+    strict_dir = tmp_path / "strict_proj"
+    basic_dir = tmp_path / "basic_proj"
+    strict_dir.mkdir()
+    basic_dir.mkdir()
+    (strict_dir / "pyrightconfig.json").write_text('{"typeCheckingMode": "strict"}\n')
+    (basic_dir / "pyrightconfig.json").write_text('{"typeCheckingMode": "basic"}\n')
+    (strict_dir / "m.py").write_text(untyped)
+    (basic_dir / "m.py").write_text(untyped)
+
+    result = run_type_gate([strict_dir / "m.py", basic_dir / "m.py"])
+    assert result.available
+    error_files = {d.file for d in result.errors}
+    assert any("strict_proj" in f for f in error_files)
+    assert not any("basic_proj" in f for f in error_files)
