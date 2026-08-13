@@ -198,7 +198,6 @@ def _full_stack_available() -> bool:
     return find_dafny() is not None and _find_crosshair() is not None
 
 
-@pytest.mark.skipif(not _full_stack_available(), reason="full toolchain not installed")
 def test_cmd_benchmark_exit_status_mirrors_scorecard(tmp_path, monkeypatch):
     # CI gates on the exit code: 0 all-pass, 1 failed rungs, 2 tool errors.
     import lemmapy.cli as cli
@@ -219,6 +218,7 @@ def test_cmd_benchmark_exit_status_mirrors_scorecard(tmp_path, monkeypatch):
         assert got == expected, f"{status}: expected exit {expected}, got {got}"
 
 
+@pytest.mark.skipif(not _full_stack_available(), reason="full toolchain not installed")
 def test_bump_climbs_the_full_ladder(tmp_path):
     from lemmapy.benchmark.runner import run_task
 
