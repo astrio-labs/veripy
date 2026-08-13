@@ -515,6 +515,16 @@ def main(argv: list[str] | None = None) -> int:
         help="write the verification report (per-function verdicts, "
              "assumptions A1-A7, guard modes) as JSON",
     )
+    p_verify.add_argument(
+        "--json", type=Path, default=None, dest="json_out",
+        help="write structured failures (obligation kind, spans, sidecar "
+             "state) — the agent interface consumed by `lemmapy repair`",
+    )
+    p_verify.add_argument(
+        "--hunt-counterexamples", action="store_true",
+        help="with --json: run CrossHair on failing modules to attach a "
+             "concrete counterexample when one exists",
+    )
 
     p_difftest = sub.add_parser(
         "difftest",
@@ -554,6 +564,61 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "hunt":
         return cmd_hunt(args.files, args.outdir, args.per_condition_timeout)
     if args.command == "verify":
+        if args.json_out is not None:
+            from .agentio import dump, verify_structured_many
+
+            if not args.no_types:
+                gate = run_type_gate(args.files)
+                if not gate.available or gate.errors:
+                    # The agent asked for JSON; a gate failure is still a
+                    # structured payload, never a silent empty run.
+                    by_file: dict[str, list] = {str(p): [] for p in args.files}
+                    # basedpyright reports resolved paths; map diagnostics
+                    # back to EVERY spelling the caller used for that file
+                    # (m.py and ./m.py must both carry their diagnostics).
+                    resolved: dict[str, list[str]] = {}
+                    for p in args.files:
+                        resolved.setdefault(str(Path(p).resolve()), []).append(str(p))
+                    for d in (gate.errors if gate.available else []):
+                        keys = resolved.get(str(Path(d.file).resolve()), [d.file])
+                        for key in keys:
+                            by_file.setdefault(key, []).append(
+                                {"kind": "type", "py_line": d.line,
+                                 "message": d.message})
+                    payloads = [
+                        {"schema": "lemmapy-failures/1", "file": f,
+                         "status": "gate-error", "functions": [],
+                         "failures": fails or (
+                             [] if gate.available else
+                             [{"kind": "type", "py_line": None,
+                               "message": f"type gate unavailable: {gate.error}"}]),
+                         "sidecar": None}
+                        for f, fails in by_file.items()
+                    ]
+                    try:
+                        dump(payloads, args.json_out)
+                    except OSError as exc:
+                        print(f"cannot write {args.json_out}: {exc}", file=sys.stderr)
+                        return 2
+                    print("type gate failed; structured payloads written to "
+                          f"{args.json_out}; fix types or pass --no-types",
+                          file=sys.stderr)
+                    return 2
+            payloads = verify_structured_many(
+                args.files, args.outdir, time_limit=args.time_limit,
+                hunt_counterexamples=args.hunt_counterexamples)
+            try:
+                dump(payloads, args.json_out)
+            except OSError as exc:
+                print(f"cannot write {args.json_out}: {exc}", file=sys.stderr)
+                return 2
+            for p in payloads:
+                print(f"{p['file']}: {p['status']} ({len(p['failures'])} failure(s))")
+            print(f"structured failures -> {args.json_out}")
+            if any(p["status"] in ("tool-error", "spec-error", "encode-error")
+                   for p in payloads):
+                return 2
+            return 1 if any(p["status"] == "failed" for p in payloads) else 0
         return cmd_verify(args.files, args.outdir, args.time_limit,
                           types=not args.no_types, report=args.report)
     if args.command == "difftest":
