@@ -84,6 +84,65 @@ def test_ok_payload_and_cli_exit_codes(tmp_path, capsys):
     assert payloads[0]["status"] == "failed"
 
 
+def test_malformed_source_is_a_structured_payload(tmp_path):
+    src = tmp_path / "m.py"
+    src.write_text("def broken(:\n")
+    payload = verify_structured(src, tmp_path / "out")
+    assert payload["status"] == "spec-error"
+    assert payload["failures"][0]["kind"] == "syntax"
+
+
+def test_unwritable_outdir_is_a_tool_error(tmp_path):
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    blocker = tmp_path / "blocked"
+    blocker.write_text("")  # a file where the outdir must be a directory
+    payload = verify_structured(src, blocker / "sub")
+    assert payload["status"] == "tool-error"
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_same_stem_files_get_distinct_stubs(tmp_path):
+    from lemmapy.agentio import verify_structured_many
+
+    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+    a_dir.mkdir(), b_dir.mkdir()
+    (a_dir / "m.py").write_text(GOOD)
+    (b_dir / "m.py").write_text(BROKEN_CLAMP)
+    payloads = verify_structured_many(
+        [a_dir / "m.py", b_dir / "m.py"], tmp_path / "out")
+    assert payloads[0]["stub"] != payloads[1]["stub"]
+    assert payloads[0]["status"] == "ok" and payloads[1]["status"] == "failed"
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_sidecar_region_failures_not_attributed_to_functions(tmp_path):
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    (tmp_path / "m.proofs.dfy").write_text(
+        "lemma Bogus(x: int)\n  ensures x > 0\n{\n}\n")
+    payload = verify_structured(src, tmp_path / "out")
+    assert payload["status"] == "failed"
+    assert all(f["region"] == "sidecar" and f["function"] is None
+               for f in payload["failures"])
+
+
+def test_gate_failure_still_writes_json(tmp_path, capsys):
+    from lemmapy.frontend.typegate import find_basedpyright
+
+    if find_basedpyright() is None:
+        pytest.skip("basedpyright not installed")
+    (tmp_path / "pyrightconfig.json").write_text('{"typeCheckingMode": "strict"}\n')
+    src = tmp_path / "m.py"
+    src.write_text("#@ ensures result >= 0 or result < 0\ndef f(x):\n    return x\n")
+    out = tmp_path / "failures.json"
+    status = main(["verify", str(src), "-o", str(tmp_path / "o"),
+                   "--json", str(out)])
+    assert status == 2
+    payloads = json.loads(out.read_text())
+    assert payloads and payloads[0]["status"] == "gate-error"
+
+
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_sidecar_state_travels_with_the_payload(tmp_path):
     src = tmp_path / "m.py"
