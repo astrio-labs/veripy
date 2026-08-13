@@ -63,6 +63,17 @@ def test_null_byte_is_a_diagnostic_not_a_dead_server():
     assert "unparseable" in msg or "null bytes" in msg
 
 
+def test_module_scope_failure_is_one_diagnostic_all_nonconformant():
+    # A builtin-shadowing module binding breaks the model for the whole
+    # module: every function is nonconformant, but the diagnostic appears
+    # exactly once, not once per function.
+    src = "sum = 5\n\n" + GOOD + "\n\n" + GOOD.replace("bump", "bump2")
+    diags, statuses = analyze(src, "m.py")
+    shadow = [d for d in diags if "shadows a builtin" in d["message"]]
+    assert len(shadow) == 1
+    assert [s["status"] for s in statuses] == ["nonconformant", "nonconformant"]
+
+
 def test_mixed_module_statuses_are_per_function():
     # One nonconformant function must not contaminate its neighbor.
     diags, statuses = analyze(GOOD + "\n\n" + BAD, "m.py")

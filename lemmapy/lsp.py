@@ -56,8 +56,21 @@ def analyze(text: str, filename: str) -> tuple[list[dict[str, Any]], list[dict[s
     for clause in [*specs.errors, *specs.orphans]:
         if clause.error:
             diagnostics.append(_diagnostic(clause.line, f"spec: {clause.error}"))
+    # Module-scope validation (builtin-shadow scan, duplicate defs) runs
+    # ONCE via an empty-specs encode: one diagnostic, and every function is
+    # honestly nonconformant -- without repeating the message per function.
+    module_error = False
+    try:
+        encode_module(text, ModuleSpecs(functions=[], orphans=[]),
+                      module_name=filename)
+    except EncodeError as exc:
+        module_error = True
+        diagnostics.append(_diagnostic(exc.line or 1, f"fragment: {exc.message}"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        module_error = True
+        diagnostics.append(_diagnostic(1, f"fragment: {exc}"))
     for fn in specs.functions:
-        broken = any(c.error for c in fn.clauses)
+        broken = module_error or any(c.error for c in fn.clauses)
         if not broken:
             try:
                 # Sidecar-less on purpose: the LSP sees buffers, not files;
