@@ -459,6 +459,21 @@ def test_foreach_invariant_referencing_target_rejected():
     )
 
 
+def test_expression_selected_iterable_still_freezes():
+    # `for v in (xs if flag else [2])` iterates xs on one path — appending
+    # to xs mid-loop must be rejected even though the iterable is not a
+    # bare name (CPython's live iterator vs the lowering's snapshot).
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(flag: bool) -> list[int]:\n"
+        "    xs: list[int] = [1]\n"
+        "    for v in (xs if flag else [2]):\n"
+        "        xs.append(v)\n"
+        "    return xs\n",
+        "iterating",
+    )
+
+
 def test_nested_foreach_same_list_keeps_freeze():
     # The inner loop over the same list must not thaw the outer iteration.
     _expect_encode_error(

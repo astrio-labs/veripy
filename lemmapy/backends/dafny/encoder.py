@@ -903,12 +903,18 @@ class _MethodEncoder:
         mv = self._mangle(var)
         self.emit(f"{indent}  var {mv} := {snap}[{idx}];", stmt.lineno)
         pre_owned = set(self.owned)
-        # Freeze the iterated name; only unfreeze if WE froze it, so nested
-        # loops over the same list cannot thaw an enclosing iteration.
-        frozen_added = None
-        if isinstance(stmt.iter, ast.Name) and stmt.iter.id not in self.frozen:
-            frozen_added = stmt.iter.id
-            self.frozen.add(frozen_added)
+        # Freeze every list-typed name the iterable expression mentions — not
+        # just a bare-Name iterable. `for v in (xs if flag else [2])` iterates
+        # xs on one path, so xs must be unappendable for the loop's duration.
+        # Only unfreeze what WE froze, so nested loops over the same list
+        # cannot thaw an enclosing iteration.
+        frozen_added: set[str] = set()
+        for n in ast.walk(stmt.iter):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) \
+                    and self._is_seqish(self.types.get(n.id)) \
+                    and n.id not in self.frozen:
+                frozen_added.add(n.id)
+                self.frozen.add(n.id)
         self.scopes.append({var})
         self.types[var] = it_type[4:-1]
         try:
@@ -916,8 +922,7 @@ class _MethodEncoder:
                 self.stmt(body_stmt, indent + "  ")
         finally:
             self.scopes.pop()
-            if frozen_added is not None:
-                self.frozen.discard(frozen_added)
+            self.frozen -= frozen_added
         self.owned &= pre_owned
         self.emit(f"{indent}  {idx} := {idx} + 1;")
         self.emit(f"{indent}}}")
