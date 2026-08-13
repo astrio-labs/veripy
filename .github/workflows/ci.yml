@@ -1,0 +1,54 @@
+# LemmaPy CI: the differential harness and full suite run on every PR
+# (an M1 exit criterion). Two tiers so the fast signal is never blocked
+# on the prover install.
+name: ci
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Tier 1 — no Dafny: parser, encoder, guards, benchmark mechanics,
+  # conformance. Dafny-dependent tests skip themselves (find_dafny gate).
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Unit tests (Dafny-dependent tests self-skip)
+        run: python -m pytest tests/ -q
+
+  # Tier 2 — full pipeline: Dafny proofs + the translation-validation
+  # harness (difftest) over the corpus.
+  prove:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-dotnet@6bd8b7f7774af54e05809fcc5431931b3eb1ddee  # v4.0.1
+        with:
+          dotnet-version: "8.0.x"
+      - name: Install Dafny
+        run: |
+          dotnet tool install --global dafny --version 4.11.0
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Full suite (proofs + difftest)
+        run: python -m pytest tests/ -q
+      - name: Benchmark scorecard (quick tier)
+        run: lemmapy benchmark --quick
