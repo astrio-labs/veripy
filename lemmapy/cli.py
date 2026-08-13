@@ -304,6 +304,26 @@ def cmd_difftest(paths: list[Path], outdir: Path, examples: int) -> int:
     return 2 if trouble else 0
 
 
+def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
+                 mutant_cap: int, quick: bool) -> int:
+    from .benchmark.runner import render_report, run_benchmark, scores_to_json
+
+    kwargs = dict(mutant_cap=mutant_cap, hunt_timeout=5,
+                  dafny_time_limit=60, difftest_examples=60)
+    if quick:
+        kwargs.update(mutant_cap=min(mutant_cap, 3), difftest_examples=20)
+    scores = run_benchmark(tasks, outdir, **kwargs)
+    if not scores:
+        print(f"no tasks found under {tasks}", file=sys.stderr)
+        return 2
+    print(render_report(scores))
+    if report is not None:
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps(scores_to_json(scores), indent=1))
+        print(f"\nreport -> {report}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lemmapy",
@@ -352,6 +372,17 @@ def main(argv: list[str] | None = None) -> int:
     p_difftest.add_argument("-o", "--outdir", type=Path, default=Path("build/difftest"))
     p_difftest.add_argument("-n", "--examples", type=int, default=100)
 
+    p_benchmark = sub.add_parser(
+        "benchmark",
+        help="run lemmapy-benchmark: assurance-ladder scoring over annotated-Python tasks",
+    )
+    p_benchmark.add_argument("--tasks", type=Path, default=Path("benchmark/tasks"))
+    p_benchmark.add_argument("-o", "--outdir", type=Path, default=Path("build/benchmark"))
+    p_benchmark.add_argument("--report", type=Path, default=None)
+    p_benchmark.add_argument("--mutant-cap", type=int, default=8)
+    p_benchmark.add_argument("--quick", action="store_true",
+                            help="small mutant panels and example counts (CI mode)")
+
     p_survey = sub.add_parser(
         "survey",
         help="read-only fragment-coverage survey over files/directories (M0, RQ1)",
@@ -371,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_verify(args.files, args.outdir, args.time_limit, types=not args.no_types)
     if args.command == "difftest":
         return cmd_difftest(args.files, args.outdir, args.examples)
+    if args.command == "benchmark":
+        return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
     if args.command == "survey":
         return cmd_survey(args.paths, args.top, args.json)
     return 2

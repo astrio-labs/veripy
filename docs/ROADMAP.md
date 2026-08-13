@@ -38,7 +38,7 @@ The differentiating layer: proofs that finish themselves, and rejections that te
 
 - [ ] Structured failure output from the verifier driver (obligation, span, counterexample) — the agent interface
 - [ ] LLM proof-repair loop: read failures, edit proof file only, re-verify, iterate; M0 counterexamples fed in as test cases
-- [ ] Tune the loop against the [LemmaScript Dafny benchmark](https://github.com/midspiral/lemmascript-dafny-benchmark) (33 proof-completion tasks, MIT) using its runner and validator discipline (additions-only, contracts untouched, no `assume`/axioms, pinned Dafny) — works before our encoder exists, so this can start alongside M0
+- [ ] Tune the loop against **benchmark-derived proof-repair exams** ([BENCHMARK.md](BENCHMARK.md)): strip the proof additions from golden tasks and score R4-restoration under frozen specs — our own corpus, our own harness, no competitor infrastructure
 - [ ] Diagnostics quality pass: every conformance rejection line-precise with a fixit ("outside the fragment because X, try Y")
 - [ ] Editor surface (LSP or equivalent): verified/unverified status per function, spec hovers, rejection diagnostics inline
 
