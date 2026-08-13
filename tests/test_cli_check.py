@@ -68,6 +68,21 @@ def test_unspecced_module_skips_fragment(tmp_path):
     assert "fragment:" not in out
 
 
+def test_undecodable_sidecar_is_a_controlled_failure(tmp_path):
+    # Invalid UTF-8 in the sidecar must be a check failure, not a traceback.
+    src = tmp_path / "m.py"
+    src.write_text(CONFORMANT)
+    (tmp_path / "m.proofs.dfy").write_bytes(b"\xff\xfelemma {")
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        status = cmd_check([src], types=False)
+    assert status == 1
+    assert "unreadable proof sidecar" in buf.getvalue()
+
+
 def test_broken_sidecar_reported_by_check(tmp_path):
     src = tmp_path / "m.py"
     src.write_text(CONFORMANT)

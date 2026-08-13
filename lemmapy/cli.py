@@ -65,6 +65,11 @@ def _fragment_check(path: Path) -> int:
         loc = f"{path}:{e.line}" if e.line else str(path)
         print(f"  fragment: {loc}: {e.message}")
         return 1
+    except (OSError, UnicodeDecodeError) as e:
+        # An unreadable/undecodable proof sidecar is a controlled check
+        # failure, not a traceback.
+        print(f"  fragment: {path}: unreadable proof sidecar: {e}")
+        return 1
     names = ", ".join(fn.name for fn in specs.functions)
     print(f"  fragment: conformant ({names})")
     return 0
@@ -277,6 +282,10 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
         except EncodeError as exc:
             loc = f":{exc.line}" if exc.line is not None else ""
             print(f"{path}{loc}: cannot encode: {exc.message}", file=sys.stderr)
+            trouble += 1
+            continue
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"{path}: unreadable proof sidecar: {exc}", file=sys.stderr)
             trouble += 1
             continue
         stub = outdir / f"{path.stem}.dfy"
