@@ -297,7 +297,9 @@ def _dafny_type(ann: ast.expr | None, where: ast.AST) -> str:
         case ast.BinOp(left=ast.Constant(value=None), op=ast.BitOr(), right=right):
             return f"PyOpt<{_dafny_type(right, where)}>"
         case _:
-            raise _err(where, f"type {ast.unparse(ann)!r} is outside the slice-1 encoder")
+            raise _err(where, f"type {ast.unparse(ann)!r} is outside the slice-1 encoder "
+                       f"-- fragment types are int, bool, str, list[T], and "
+                       f"Optional[T] / T | None")
 
 
 def _opt_inner(tdesc: str | None) -> str | None:
@@ -645,7 +647,8 @@ class _MethodEncoder:
             case ast.ListComp():
                 raise _err(node, "only single-generator, filterless list comprehensions are in the slice encoder")
             case _:
-                raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder")
+                raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder "
+                                 f"-- see the admitted-construct table in docs/SEMANTICS.md")
 
     def _list_comp(self, node: ast.ListComp | ast.GeneratorExp, elt: ast.expr,
                    comp: ast.comprehension, require_int_elt: bool = False) -> str:
@@ -802,7 +805,8 @@ class _MethodEncoder:
     def _call(self, node: ast.Call) -> str:
         func = node.func
         if not isinstance(func, ast.Name):
-            raise _err(node, "method calls are outside the slice-1 encoder")
+            raise _err(node, "method calls are outside the slice-1 encoder -- only "
+                             "`xs.append(v)` statements are modeled")
         name = func.id
         args = node.args
         if node.keywords:
@@ -1300,7 +1304,9 @@ class _MethodEncoder:
                 else:
                     self._for_each(stmt, indent)
             case _:
-                raise _err(stmt, f"statement {type(stmt).__name__} is outside the slice-1 encoder")
+                raise _err(stmt, f"statement {type(stmt).__name__} is outside the slice-1 encoder "
+                                 f"-- admitted: assignment, if/else, while, for over "
+                                 f"range/list, assert, return, append; see docs/SEMANTICS.md")
 
     def _loop_clauses(self, loop: ast.While | ast.For, indent: str, extra: tuple[str, ...] = ()) -> None:
         for inv in extra:
