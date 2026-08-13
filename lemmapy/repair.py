@@ -125,6 +125,34 @@ def make_engine(spec: str) -> Engine:
     raise ValueError(f"unknown engine {spec!r} (use 'claude' or 'file:<dir>')")
 
 
+def _acquire_apply_lock(lock: Path):
+    """O_EXCL lock stamped with our PID. A lock whose owner is dead (the
+    process died between create and unlink) is reaped once, so an orphaned
+    lock cannot block applies forever."""
+    import os
+
+    for _ in range(2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            return fd
+        except FileExistsError:
+            try:
+                pid = int(lock.read_text().strip() or "0")
+            except (OSError, ValueError):
+                pid = 0
+            if pid > 0:
+                try:
+                    os.kill(pid, 0)
+                    return None  # owner alive: genuine contention
+                except PermissionError:
+                    return None  # some process owns that pid
+                except OSError:
+                    pass  # owner dead: reap
+            lock.unlink(missing_ok=True)
+    return None
+
+
 def _apply_sidecar(user_sidecar: Path, text: str,
                    expected_prior: str | None) -> str:
     """Write the verified sidecar beside the source: lock-serialized,
@@ -137,9 +165,8 @@ def _apply_sidecar(user_sidecar: Path, text: str,
     import tempfile
 
     lock = user_sidecar.with_name(user_sidecar.name + ".lock")
-    try:
-        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
+    fd = _acquire_apply_lock(lock)
+    if fd is None:
         return ("verified; apply skipped: another repair is applying to "
                 "this sidecar — rerun to apply")
     try:
@@ -216,6 +243,18 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
         if payload["status"] == "ok":
             text = work_sidecar.read_text() if work_sidecar.exists() else None
             if apply and text is not None:
+                try:
+                    live = path.read_text()
+                except OSError:
+                    live = None
+                if live != source:
+                    # The proof holds for the snapshot this loop verified;
+                    # installing it beside a changed source would misclaim.
+                    return RepairOutcome(
+                        True, attempt,
+                        "verified for the source as of repair start; apply "
+                        "skipped: the source changed during this repair — "
+                        "rerun", text, history)
                 reason = _apply_sidecar(user_sidecar, text, initial_sidecar)
                 return RepairOutcome(True, attempt, reason, text, history)
             return RepairOutcome(True, attempt, "verified", text, history)
