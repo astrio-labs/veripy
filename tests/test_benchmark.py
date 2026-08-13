@@ -87,7 +87,11 @@ def test_mixed_survivor_and_error_panel_reports_error(tmp_path, monkeypatch):
     task_dir = tmp_path / "t"
     task_dir.mkdir()
     (task_dir / "task.py").write_text(
-        "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+        "#@ ensures result >= 0 or result < 0\n"
+        "def f(x: int) -> int:\n"
+        "    if x > 0:\n"
+        "        return x + 1\n"
+        "    return x - 2\n"
     )
     (task_dir / "meta.json").write_text('{"id": "t"}')
 
