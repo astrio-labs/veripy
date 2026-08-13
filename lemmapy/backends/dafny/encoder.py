@@ -169,7 +169,7 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
             )
     lemmas: set[str] = set()
     depth = 0
-    expecting_decl = True
+    expecting_decl = True  # at file start and after every body closes
     current_decl_has_body = True  # vacuously, before any declaration
     idx = 0
     while idx < len(words):
@@ -193,12 +193,10 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
             depth = max(0, depth - 1)
             if depth == 0:
                 expecting_decl = True
-        elif depth == 0 and expecting_decl and w not in ("", None):
-            if w not in _SIDECAR_DECL_KEYWORDS:
-                raise EncodeError(
-                    f"proof sidecar {name}: top-level {w!r} is not a ghost "
-                    f"declaration (lemma/function/predicate)"
-                )
+        elif depth == 0 and w in _SIDECAR_DECL_KEYWORDS:
+            # A declaration keyword at depth 0 ALWAYS starts a new
+            # declaration — checking the previous one here means a bodiless
+            # lemma cannot be retroactively "proved" by its successor's body.
             if not current_decl_has_body:
                 raise EncodeError(
                     f"proof sidecar {name}: a declaration without a body is an "
@@ -212,6 +210,11 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
                 lemmas.add(words[idx + 1])
             expecting_decl = False
             current_decl_has_body = False
+        elif depth == 0 and expecting_decl:
+            raise EncodeError(
+                f"proof sidecar {name}: top-level {w!r} is not a ghost "
+                f"declaration (lemma/function/predicate)"
+            )
         idx += 1
     if not current_decl_has_body:
         raise EncodeError(
@@ -294,10 +297,12 @@ class _Scope:
 
 class _MethodEncoder:
     def __init__(self, node: ast.FunctionDef, spec: FunctionSpec,
-                 proof_lemmas: frozenset[str] = frozenset()):
+                 proof_lemmas: frozenset[str] = frozenset(),
+                 source_lines: list[str] | None = None):
         self.node = node
         self.spec = spec
         self.proof_lemmas = proof_lemmas
+        self.source_lines = source_lines or []
         self.lines: list[str] = []
         self.line_map: dict[int, int] = {}  # emitted index -> python line
         self.params: set[str] = {
@@ -966,8 +971,19 @@ class _MethodEncoder:
                         visit(body, s.lineno, next_boundary)
                     case ast.If(body=body, orelse=orelse):
                         if orelse:
-                            visit(body, s.lineno, orelse[0].lineno)
-                            visit(orelse, body[-1].end_lineno or s.lineno, next_boundary)
+                            # The then/else territories split at the `else:`
+                            # line — a clause LEADING the else branch must not
+                            # be claimed as TRAILING the then branch (same
+                            # column, so only the else line disambiguates).
+                            else_line = orelse[0].lineno
+                            for ln in range((body[-1].end_lineno or s.lineno) + 1,
+                                            orelse[0].lineno):
+                                if 0 < ln <= len(self.source_lines) \
+                                        and re.match(r"\s*else\s*:", self.source_lines[ln - 1]):
+                                    else_line = ln
+                                    break
+                            visit(body, s.lineno, else_line)
+                            visit(orelse, else_line, next_boundary)
                         else:
                             visit(body, s.lineno, next_boundary)
                     case _:
@@ -1390,7 +1406,7 @@ def encode_module(
         node = functions.get((spec.name, spec.lineno))
         if node is None:
             raise EncodeError(f"cannot locate function {spec.name!r}", spec.lineno)
-        enc = _MethodEncoder(node, spec, proof_lemmas)
+        enc = _MethodEncoder(node, spec, proof_lemmas, source_lines=source.split("\n"))
         enc.encode()
         offset = len(lines)
         lines.extend(enc.lines)
