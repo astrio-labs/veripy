@@ -54,6 +54,23 @@ def test_syntax_error_is_a_diagnostic_not_a_crash():
     assert diags and "syntax error" in diags[0]["message"]
 
 
+def test_null_byte_is_a_diagnostic_not_a_dead_server():
+    # SyntaxError on 3.12+, ValueError on older Pythons — either way a
+    # diagnostic, never a dead server.
+    diags, _ = analyze("def f():\x00\n    pass\n", "m.py")
+    assert diags
+    msg = diags[0]["message"]
+    assert "unparseable" in msg or "null bytes" in msg
+
+
+def test_mixed_module_statuses_are_per_function():
+    # One nonconformant function must not contaminate its neighbor.
+    diags, statuses = analyze(GOOD + "\n\n" + BAD, "m.py")
+    by_name = {s["name"]: s["status"] for s in statuses}
+    assert by_name == {"bump": "conformant", "f": "nonconformant"}
+    assert len(diags) == 1
+
+
 def test_full_session_publish_and_status():
     uri = "file:///tmp/m.py"
     replies = _run([

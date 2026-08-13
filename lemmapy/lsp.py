@@ -22,6 +22,7 @@ from urllib.parse import unquote, urlparse
 
 from .backends.dafny.encoder import EncodeError, encode_module
 from .frontend.extract import parse_source
+from .frontend.parse import ModuleSpecs
 
 
 def _diagnostic(line: int, message: str, severity: int = 1) -> dict[str, Any]:
@@ -38,7 +39,9 @@ def _diagnostic(line: int, message: str, severity: int = 1) -> dict[str, Any]:
 
 
 def analyze(text: str, filename: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(diagnostics, function statuses) from the fast pipeline."""
+    """(diagnostics, function statuses) from the fast pipeline. Conformance
+    is judged PER FUNCTION (each spec'd function is encoded on its own), so
+    one nonconformant function never contaminates its neighbors' status."""
     diagnostics: list[dict[str, Any]] = []
     statuses: list[dict[str, Any]] = []
     try:
@@ -46,35 +49,33 @@ def analyze(text: str, filename: str) -> tuple[list[dict[str, Any]], list[dict[s
     except SyntaxError as exc:
         diagnostics.append(_diagnostic(exc.lineno or 1, f"syntax error: {exc.msg}"))
         return diagnostics, statuses
+    except ValueError as exc:
+        # e.g. a null character in the buffer -- a diagnostic, not a dead server.
+        diagnostics.append(_diagnostic(1, f"unparseable buffer: {exc}"))
+        return diagnostics, statuses
     for clause in [*specs.errors, *specs.orphans]:
         if clause.error:
             diagnostics.append(_diagnostic(clause.line, f"spec: {clause.error}"))
-    conformant = True
-    encode_error: EncodeError | None = None
-    if specs.functions and not diagnostics:
-        try:
-            # The dry-run is sidecar-less on purpose: the LSP sees buffers,
-            # not files; unknown `#@ proof` targets surface as diagnostics.
-            encode_module(text, specs, module_name=filename)
-        except EncodeError as exc:
-            conformant = False
-            encode_error = exc
-            diagnostics.append(_diagnostic(
-                exc.line or 1, f"fragment: {exc.message}"))
-        except (OSError, UnicodeDecodeError) as exc:
-            conformant = False
-            diagnostics.append(_diagnostic(1, f"fragment: {exc}"))
     for fn in specs.functions:
-        broken = any(c.error for c in fn.clauses) or (
-            encode_error is not None
-            and encode_error.line is not None
-            and fn.lineno <= encode_error.line
-        )
+        broken = any(c.error for c in fn.clauses)
+        if not broken:
+            try:
+                # Sidecar-less on purpose: the LSP sees buffers, not files;
+                # unknown `#@ proof` targets surface as diagnostics.
+                encode_module(text, ModuleSpecs(functions=[fn], orphans=[]),
+                              module_name=filename)
+            except EncodeError as exc:
+                broken = True
+                diagnostics.append(_diagnostic(
+                    exc.line or fn.lineno, f"fragment: {exc.message}"))
+            except (OSError, UnicodeDecodeError, ValueError) as exc:
+                broken = True
+                diagnostics.append(_diagnostic(fn.lineno, f"fragment: {exc}"))
         statuses.append({
             "name": fn.name,
             "line": fn.lineno,
             "markedVerified": fn.verified,
-            "status": "nonconformant" if (not conformant or broken) else "conformant",
+            "status": "nonconformant" if broken else "conformant",
         })
     return diagnostics, statuses
 
