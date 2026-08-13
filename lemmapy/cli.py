@@ -452,6 +452,27 @@ def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False) -> i
     return status
 
 
+def cmd_repair(path: Path, outdir: Path, engine_spec: str, max_iterations: int,
+               time_limit: int, apply: bool) -> int:
+    from .repair import make_engine, repair_file
+
+    try:
+        engine = make_engine(engine_spec)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    outcome = repair_file(path, outdir, engine, max_iterations=max_iterations,
+                          time_limit=time_limit, apply=apply)
+    if outcome.verified:
+        detail = f" — {outcome.reason}" if outcome.reason != "verified" else ""
+        print(f"{path}: VERIFIED after {outcome.iterations} repair "
+              f"iteration(s){detail}")
+        return 0
+    print(f"{path}: NOT verified — {outcome.reason} "
+          f"({outcome.iterations} iteration(s))", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lemmapy",
@@ -545,6 +566,22 @@ def main(argv: list[str] | None = None) -> int:
     p_benchmark.add_argument("--quick", action="store_true",
                             help="small mutant panels and example counts (CI mode)")
 
+    p_repair = sub.add_parser(
+        "repair",
+        help="LLM proof-repair loop: verify, feed structured failures to an "
+             "engine that may edit ONLY the proof sidecar, re-verify, iterate",
+    )
+    p_repair.add_argument("file", type=Path)
+    p_repair.add_argument("-o", "--outdir", type=Path, default=Path("build/repair"))
+    p_repair.add_argument("--engine", default="claude",
+                          help="'claude' (headless CLI) or 'file:<dir>' "
+                               "(scripted attempts, for tests/replays)")
+    p_repair.add_argument("--max-iterations", type=int, default=4)
+    p_repair.add_argument("--time-limit", type=int, default=30)
+    p_repair.add_argument("--apply", action="store_true",
+                          help="on success, write the sidecar next to the "
+                               "source (previous content saved as .bak)")
+
     p_survey = sub.add_parser(
         "survey",
         help="read-only fragment-coverage survey over files/directories (M0, RQ1)",
@@ -621,6 +658,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if any(p["status"] == "failed" for p in payloads) else 0
         return cmd_verify(args.files, args.outdir, args.time_limit,
                           types=not args.no_types, report=args.report)
+    if args.command == "repair":
+        return cmd_repair(args.file, args.outdir, args.engine,
+                          args.max_iterations, args.time_limit, args.apply)
     if args.command == "difftest":
         return cmd_difftest(args.files, args.outdir, args.examples)
     if args.command == "benchmark":
