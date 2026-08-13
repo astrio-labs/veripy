@@ -1,6 +1,6 @@
-# `#@` Spec Grammar — v0.1
+# `#@` Spec Grammar — v0.2
 
-> **Status: frozen (v0.1)** after the grammar-contact exercise — 20 real HumanEval/MBPP tasks annotated, verified, and mutation-tested with one additive change (`<==>`); findings and deferred extensions in [GRAMMAR-CONTACT.md](GRAMMAR-CONTACT.md). Every change lands here first.
+> **Status: v0.2** — v0.1 (frozen after the grammar-contact exercise) plus the `#@ proof` clause — 20 real HumanEval/MBPP tasks annotated, verified, and mutation-tested with one additive change (`<==>`); findings and deferred extensions in [GRAMMAR-CONTACT.md](GRAMMAR-CONTACT.md). Every change lands here first.
 
 Specs are comments beginning `#@`. CPython ignores them; the spec parser does not.
 
@@ -48,6 +48,7 @@ Plain Python's `all(... for ...)` / `any(... for ...)` are equally valid and equ
 spec_comment ::= "#@" clause
 clause       ::= "verified"
                | ("requires" | "ensures" | "invariant" | "decreases") expr
+               | "proof" NAME "(" [py_expr ("," py_expr)*] ")"
 expr         ::= quant | iff
 quant        ::= ("forall" | "exists") binder ("," binder)* "::" expr
 binder       ::= NAME "in" py_expr
