@@ -135,6 +135,7 @@ def diff_functions(
     ret_tdesc,
     requires_sources: list[str],
     examples: int,
+    kwonly_names: frozenset[str] = frozenset(),
 ) -> FunctionDiff:
     from hypothesis import HealthCheck, assume, given, settings
     from hypothesis import strategies as st
@@ -157,7 +158,12 @@ def diff_functions(
             except Exception:
                 ok = False
             assume(ok)
-        expected = original_fn(*copy.deepcopy(list(args)))
+        # Keyword-only parameters must be passed by name to the ORIGINAL
+        # (the compiled Dafny method takes everything positionally).
+        fresh = copy.deepcopy(list(args))
+        positional = [v for n, v in zip(param_names, fresh) if n not in kwonly_names]
+        keywords = {n: v for n, v in zip(param_names, fresh) if n in kwonly_names}
+        expected = original_fn(*positional, **keywords)
         dafny_args = [to_dafny(a, t) for a, t in zip(args, param_tdescs)]
         got = from_dafny(compiled_fn(*dafny_args), ret_tdesc)
         if expected != got:
@@ -268,6 +274,7 @@ def difftest_file(path: Path, outdir: Path, examples: int = 100) -> DiffResult:
             original_fn, compiled_fn,
             [p.arg for p in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)],
             param_tdescs, ret_tdesc, requires_sources, examples,
+            kwonly_names=frozenset(p.arg for p in node.args.kwonlyargs),
         )
         diff.name = spec.name
         result.functions.append(diff)

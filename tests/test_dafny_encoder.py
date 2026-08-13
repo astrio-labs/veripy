@@ -87,6 +87,25 @@ def _expect_encode_error(source: str, needle: str):
     assert needle in exc.value.message
 
 
+def test_keyword_only_params_encode_as_ordinary_params():
+    src = (
+        "#@ requires lo <= hi\n"
+        "#@ ensures lo <= result <= hi\n"
+        "def clamp_kw(x: int, *, lo: int, hi: int) -> int:\n"
+        "    return min(max(x, lo), hi)\n"
+    )
+    dfy = _encode(src)
+    assert "method clamp_kw(x: int, lo: int, hi: int) returns (result: int)" in dfy
+
+
+def test_actual_defaults_still_rejected():
+    _expect_encode_error(
+        "#@ ensures result >= 0\n"
+        "def f(x: int, *, k: int = 3) -> int:\n    return x + k\n",
+        "defaults",
+    )
+
+
 def test_float_annotation_rejected():
     _expect_encode_error(
         "#@ ensures result >= 0 or result < 0\ndef f(x: float) -> float:\n    return x\n",
