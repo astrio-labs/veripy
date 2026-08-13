@@ -63,6 +63,21 @@ def test_null_byte_is_a_diagnostic_not_a_dead_server():
     assert "unparseable" in msg or "null bytes" in msg
 
 
+def test_tokenizer_error_is_a_diagnostic_not_a_dead_server(monkeypatch):
+    # The spec-comment scan can raise TokenError on in-progress buffers
+    # that ast.parse would accept; the server must publish, not die.
+    import lemmapy.lsp as lsp_mod
+    from tokenize import TokenError
+
+    def boom(text, filename):
+        raise TokenError("EOF in multi-line statement", (1, 0))
+
+    monkeypatch.setattr(lsp_mod, "parse_source", boom)
+    diags, statuses = analyze("x = 1\n", "m.py")
+    assert diags and "unparseable" in diags[0]["message"]
+    assert statuses == []
+
+
 def test_module_scope_failure_is_one_diagnostic_all_nonconformant():
     # A builtin-shadowing module binding breaks the model for the whole
     # module: every function is nonconformant, but the diagnostic appears

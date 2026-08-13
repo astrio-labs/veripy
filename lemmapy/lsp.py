@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
+from tokenize import TokenError
 from typing import Any, BinaryIO
 from urllib.parse import unquote, urlparse
 
@@ -49,8 +50,10 @@ def analyze(text: str, filename: str) -> tuple[list[dict[str, Any]], list[dict[s
     except SyntaxError as exc:
         diagnostics.append(_diagnostic(exc.lineno or 1, f"syntax error: {exc.msg}"))
         return diagnostics, statuses
-    except ValueError as exc:
-        # e.g. a null character in the buffer -- a diagnostic, not a dead server.
+    except (ValueError, TokenError) as exc:
+        # Null characters (ValueError on older Pythons) or a spec-comment
+        # tokenizer failure on an in-progress buffer -- a diagnostic,
+        # never a dead server.
         diagnostics.append(_diagnostic(1, f"unparseable buffer: {exc}"))
         return diagnostics, statuses
     for clause in [*specs.errors, *specs.orphans]:
