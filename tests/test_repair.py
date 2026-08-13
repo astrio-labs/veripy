@@ -97,16 +97,18 @@ def test_apply_is_lock_serialized_and_backup_preserves_first(tmp_path):
     sidecar = tmp_path / "m.proofs.dfy"
     lock = tmp_path / "m.proofs.dfy.lock"
 
-    # Contention: a lock held by a LIVE process means nothing is written,
-    # with a clear reason. (A dead-owner or junk lock is reaped instead —
-    # see test_orphaned_lock_is_reaped_live_lock_respected.)
+    # Contention: a HELD flock means nothing is written, with a clear
+    # reason. (A leftover lock file with no holder is inert — see
+    # test_orphaned_lock_file_is_inert_held_flock_blocks.)
+    import fcntl
     import os
-    lock.write_text(str(os.getpid()))
+    held = os.open(lock, os.O_CREAT | os.O_WRONLY)
+    fcntl.flock(held, fcntl.LOCK_EX)
     outcome = repair_file(src, tmp_path / "o1", make_engine(f"file:{attempts}"),
                           apply=True)
     assert outcome.verified and "apply skipped" in outcome.reason
     assert not sidecar.exists()
-    lock.unlink()
+    os.close(held)
 
     # First-backup-wins: the earliest .bak (closest to the user's original)
     # survives later applies. The pre-existing sidecars are whitelist-legal
@@ -122,7 +124,6 @@ def test_apply_is_lock_serialized_and_backup_preserves_first(tmp_path):
     repair_file(src, tmp_path / "o3", make_engine(f"file:{attempts}"), apply=True)
     assert sidecar.read_text() == GOOD
     assert bak.read_text() == original  # not clobbered by the second apply
-    assert not lock.exists()  # lock released
 
 
 def test_apply_first_wins_when_sidecar_changed_mid_repair(tmp_path):
@@ -130,16 +131,18 @@ def test_apply_first_wins_when_sidecar_changed_mid_repair(tmp_path):
     # ran: nothing is overwritten (first-apply-wins), with a clear reason.
     from lemmapy.repair import _apply_sidecar
 
+    src = tmp_path / "m.py"
+    src.write_text("frozen")
     sidecar = tmp_path / "m.proofs.dfy"
     concurrent = "lemma Other(x: int)\n  ensures x == x\n{\n}\n"
     sidecar.write_text(concurrent)
-    reason = _apply_sidecar(sidecar, GOOD, expected_prior=None)
+    reason = _apply_sidecar(sidecar, GOOD, None, src, "frozen")
     assert "apply skipped" in reason and "concurrent" in reason
     assert sidecar.read_text() == concurrent  # untouched
     # Matching prior applies normally; identical content is a no-op.
-    reason = _apply_sidecar(sidecar, GOOD, expected_prior=concurrent)
+    reason = _apply_sidecar(sidecar, GOOD, concurrent, src, "frozen")
     assert reason == "verified (sidecar applied)"
-    assert _apply_sidecar(sidecar, GOOD, expected_prior=GOOD) \
+    assert _apply_sidecar(sidecar, GOOD, GOOD, src, "frozen") \
         == "verified (sidecar already up to date)"
 
 
@@ -161,24 +164,40 @@ def test_source_changed_mid_repair_skips_apply(tmp_path):
     assert not (tmp_path / "m.proofs.dfy").exists()
 
 
-def test_orphaned_lock_is_reaped_live_lock_respected(tmp_path):
+def test_orphaned_lock_file_is_inert_held_flock_blocks(tmp_path):
+    # A leftover .lock file whose holder died does not block (the kernel
+    # released the flock with the process); only a live flock holder does.
+    import fcntl
     import os
 
     from lemmapy.repair import _apply_sidecar
 
+    src = tmp_path / "m.py"
+    src.write_text("x")
     sidecar = tmp_path / "m.proofs.dfy"
     lock = tmp_path / "m.proofs.dfy.lock"
-    # Dead owner: reaped, apply proceeds.
-    lock.write_text("999999999")
-    assert _apply_sidecar(sidecar, GOOD, expected_prior=None) \
+    lock.write_text("junk from a dead process")
+    assert _apply_sidecar(sidecar, GOOD, None, src, "x") \
         == "verified (sidecar applied)"
-    assert sidecar.read_text() == GOOD and not lock.exists()
-    # Live owner (us): genuine contention, apply skipped.
+    assert sidecar.read_text() == GOOD
     sidecar.unlink()
-    lock.write_text(str(os.getpid()))
-    reason = _apply_sidecar(sidecar, GOOD, expected_prior=None)
+    held = os.open(lock, os.O_CREAT | os.O_WRONLY)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    reason = _apply_sidecar(sidecar, GOOD, None, src, "x")
     assert "apply skipped" in reason and not sidecar.exists()
-    lock.unlink()
+    os.close(held)
+
+
+def test_source_recheck_under_the_lock(tmp_path):
+    # The live source is compared under the lock at the last instant: a
+    # mismatch means nothing is written.
+    from lemmapy.repair import _apply_sidecar
+
+    src = tmp_path / "m.py"
+    src.write_text("edited meanwhile")
+    sidecar = tmp_path / "m.proofs.dfy"
+    reason = _apply_sidecar(sidecar, GOOD, None, src, "what the loop verified")
+    assert "source changed" in reason and not sidecar.exists()
 
 
 def test_unrepairable_source_stops_immediately(tmp_path):
