@@ -464,9 +464,9 @@ def cmd_repair(path: Path, outdir: Path, engine_spec: str, max_iterations: int,
     outcome = repair_file(path, outdir, engine, max_iterations=max_iterations,
                           time_limit=time_limit, apply=apply)
     if outcome.verified:
-        applied = " (sidecar applied)" if apply else ""
+        detail = f" — {outcome.reason}" if outcome.reason != "verified" else ""
         print(f"{path}: VERIFIED after {outcome.iterations} repair "
-              f"iteration(s){applied}")
+              f"iteration(s){detail}")
         return 0
     print(f"{path}: NOT verified — {outcome.reason} "
           f"({outcome.iterations} iteration(s))", file=sys.stderr)

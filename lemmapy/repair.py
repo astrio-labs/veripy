@@ -125,6 +125,38 @@ def make_engine(spec: str) -> Engine:
     raise ValueError(f"unknown engine {spec!r} (use 'claude' or 'file:<dir>')")
 
 
+def _apply_sidecar(user_sidecar: Path, text: str) -> str:
+    """Write the verified sidecar beside the source: lock-serialized,
+    atomic, and first-backup-wins (the earliest `.bak` is the content
+    closest to the user's original, so later applies never clobber it).
+    On lock contention nothing is written — both racers verified the same
+    frozen source, so the caller can simply rerun."""
+    import os
+    import tempfile
+
+    lock = user_sidecar.with_name(user_sidecar.name + ".lock")
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return ("verified; apply skipped: another repair is applying to "
+                "this sidecar — rerun to apply")
+    try:
+        if user_sidecar.exists() and user_sidecar.read_text() != text:
+            bak = user_sidecar.with_name(user_sidecar.name + ".bak")
+            if not bak.exists():
+                bak.write_text(user_sidecar.read_text())
+        tmp = tempfile.NamedTemporaryFile(
+            "w", dir=user_sidecar.parent, prefix=user_sidecar.name + ".",
+            suffix=".tmp", delete=False)
+        with tmp:
+            tmp.write(text)
+        os.replace(tmp.name, user_sidecar)
+        return "verified (sidecar applied)"
+    finally:
+        os.close(fd)
+        lock.unlink(missing_ok=True)
+
+
 @dataclass
 class RepairOutcome:
     verified: bool
@@ -174,10 +206,8 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
         if payload["status"] == "ok":
             text = work_sidecar.read_text() if work_sidecar.exists() else None
             if apply and text is not None:
-                if user_sidecar.exists() and user_sidecar.read_text() != text:
-                    user_sidecar.with_suffix(".dfy.bak").write_text(
-                        user_sidecar.read_text())
-                user_sidecar.write_text(text)
+                reason = _apply_sidecar(user_sidecar, text)
+                return RepairOutcome(True, attempt, reason, text, history)
             return RepairOutcome(True, attempt, "verified", text, history)
         if not _repairable(payload):
             return RepairOutcome(False, attempt,
