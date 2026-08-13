@@ -1,6 +1,6 @@
-# The Gauntlet — LemmaPy's Benchmark
+# lemmapy-benchmark
 
-> **Status: v0 — runner and 10-task seed corpus shipped.** `lemmapy gauntlet`
+> **Status: v0 — runner and 10-task seed corpus shipped.** `lemmapy benchmark`
 > runs it; the scorecard below regenerates with `--report`.
 
 ## Why not a skeleton-completion benchmark
@@ -60,7 +60,7 @@ the corpus can be published as a spec suite others port to their tools.
 ## Task format
 
 ```
-gauntlet/tasks/<id>/
+benchmark/tasks/<id>/
   task.py           # annotated Python — the single source of truth
   task.proofs.dfy   # optional ghost lemma sidecar (whitelist-validated)
   meta.json         # {id, origin, license}
@@ -102,7 +102,7 @@ report. Survivors are guilty until adjudicated, never silently dropped.
 
 ## Scoring and reproducibility
 
-`lemmapy gauntlet [--quick] [--report FILE]` prints the ladder table and
+`lemmapy benchmark [--quick] [--report FILE]` prints the ladder table and
 writes a JSON scorecard. Mutant panels are deterministic (ordered AST walk,
 splice-based so `#@` comments survive verbatim). Surviving mutants may be
 semantically equivalent rather than spec gaps — they are reported

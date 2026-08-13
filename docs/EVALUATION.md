@@ -17,9 +17,9 @@ RQ4 is the headline DX metric and gets the most design attention here.
 
 ---
 
-## The Gauntlet (RQ4 and the headline)
+## lemmapy-benchmark (RQ4 and the headline)
 
-The native benchmark is **the Gauntlet** ([GAUNTLET.md](GAUNTLET.md)): tasks
+The native benchmark is **lemmapy-benchmark** ([BENCHMARK.md](BENCHMARK.md)): tasks
 are annotated-Python modules scored on the assurance ladder (gate → hunt →
 mutant panel → encode → prove → fidelity), with **spec strength measured
 mechanically** via deterministic mutant kill rates — a dimension no
@@ -34,7 +34,7 @@ infrastructure; we do not build on it. It remains useful only as a
 difficulty-calibration reference. A cross-tool "olympics" (OpenJML, Verus,
 Frama-C, …) is out of scope — competitor-authored comparisons cap their own
 credibility (that is VerifyThis/SV-COMP territory, which works because of
-neutral governance) — but Gauntlet task *contracts* are source-language-
+neutral governance) — but benchmark task *contracts* are source-language-
 neutral and can be published as a portable spec suite others port to their
 tools.
 
@@ -42,7 +42,7 @@ tools.
 and [MBPP-DFY](https://github.com/Mondego/dafny-synthesis) stay as public
 comparability anchors for the proof-repair exam (numbers reported side by
 side, never averaged; both public-since-2024, so contamination is assumed
-and stated). The Gauntlet's own tasks are freshly authored/adapted with
+and stated). The benchmark's own tasks are freshly authored/adapted with
 per-task license metadata; the golden corpus is the held-out set, and any
 tuning happens on derived exams over a disjoint task split.
 

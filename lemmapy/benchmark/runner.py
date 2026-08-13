@@ -1,4 +1,4 @@
-"""The Gauntlet: LemmaPy's native benchmark runner.
+"""lemmapy-benchmark: the native benchmark runner.
 
 A task is one annotated-Python module (`task.py`, optionally with a
 `task.proofs.dfy` lemma sidecar). Every task is scored on the ASSURANCE
@@ -162,6 +162,14 @@ def run_task(
             f"{score.mutants_killed}/{score.mutants_total} killed; "
             f"survivors: {'; '.join(score.survivors[:3])}",
         ))
+    elif score.mutants_killed != score.mutants_total:
+        # Mutants whose analysis ERRORED are neither killed nor survivors —
+        # an incomplete panel must not read as a passing one.
+        score.rungs.append(Rung(
+            "mutants", ERROR,
+            f"{score.mutants_killed}/{score.mutants_total} killed; "
+            f"{score.mutants_total - score.mutants_killed} analysis error(s)",
+        ))
     else:
         score.rungs.append(Rung("mutants", PASS, f"{score.mutants_killed}/{score.mutants_total} killed"))
 
@@ -208,7 +216,7 @@ def run_task(
     return score
 
 
-def run_gauntlet(tasks_root: Path, workdir: Path, **kwargs) -> list[TaskScore]:
+def run_benchmark(tasks_root: Path, workdir: Path, **kwargs) -> list[TaskScore]:
     scores = []
     for task_dir in sorted(p for p in tasks_root.iterdir() if (p / "task.py").exists()):
         scores.append(run_task(task_dir, workdir / task_dir.name, **kwargs))

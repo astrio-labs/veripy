@@ -1,4 +1,4 @@
-"""Deterministic mutant generation for Gauntlet spec-strength scoring.
+"""Deterministic mutant generation for lemmapy-benchmark spec-strength scoring.
 
 Each mutant is ONE small, plausible bug spliced into the original source
 TEXT (not unparsed AST — the `#@` spec comments must survive verbatim).
