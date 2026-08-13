@@ -125,12 +125,14 @@ def make_engine(spec: str) -> Engine:
     raise ValueError(f"unknown engine {spec!r} (use 'claude' or 'file:<dir>')")
 
 
-def _apply_sidecar(user_sidecar: Path, text: str) -> str:
+def _apply_sidecar(user_sidecar: Path, text: str,
+                   expected_prior: str | None) -> str:
     """Write the verified sidecar beside the source: lock-serialized,
-    atomic, and first-backup-wins (the earliest `.bak` is the content
-    closest to the user's original, so later applies never clobber it).
-    On lock contention nothing is written — both racers verified the same
-    frozen source, so the caller can simply rerun."""
+    atomic, first-backup-wins (the earliest `.bak` is the content closest
+    to the user's original), and first-APPLY-wins — if the sidecar changed
+    while this repair ran (a concurrent repair applied its own verified
+    proof), nothing is overwritten: rerunning verifies against the applied
+    proof at iteration zero and reconciles."""
     import os
     import tempfile
 
@@ -141,6 +143,13 @@ def _apply_sidecar(user_sidecar: Path, text: str) -> str:
         return ("verified; apply skipped: another repair is applying to "
                 "this sidecar — rerun to apply")
     try:
+        current = user_sidecar.read_text() if user_sidecar.exists() else None
+        if current == text:
+            return "verified (sidecar already up to date)"
+        if current != expected_prior:
+            return ("verified; apply skipped: the sidecar changed during "
+                    "this repair (a concurrent repair applied) — rerun to "
+                    "reconcile")
         if user_sidecar.exists() and user_sidecar.read_text() != text:
             bak = user_sidecar.with_name(user_sidecar.name + ".bak")
             if not bak.exists():
@@ -189,6 +198,7 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
     work_src = work / path.name
     work_src.write_text(path.read_text())
     user_sidecar = path.with_name(path.stem + ".proofs.dfy")
+    initial_sidecar = user_sidecar.read_text() if user_sidecar.exists() else None
     work_sidecar = work / f"{path.stem}.proofs.dfy"
     if user_sidecar.exists():
         work_sidecar.write_text(user_sidecar.read_text())
@@ -206,7 +216,7 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
         if payload["status"] == "ok":
             text = work_sidecar.read_text() if work_sidecar.exists() else None
             if apply and text is not None:
-                reason = _apply_sidecar(user_sidecar, text)
+                reason = _apply_sidecar(user_sidecar, text, initial_sidecar)
                 return RepairOutcome(True, attempt, reason, text, history)
             return RepairOutcome(True, attempt, "verified", text, history)
         if not _repairable(payload):
