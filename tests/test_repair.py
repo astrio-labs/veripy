@@ -44,6 +44,39 @@ def test_claude_engine_denies_tools():
     assert cmd.index("prompt text") < cmd.index("--disallowedTools")
 
 
+def test_claude_engine_runs_in_empty_sandbox(monkeypatch):
+    # The other half of measurement integrity: the subprocess must run in
+    # an isolated EMPTY directory, not the repository (where a tool-bearing
+    # or path-guessing engine once found the golden sidecar).
+    import lemmapy.repair as repair_mod
+
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        import os
+
+        seen["cwd"] = kwargs.get("cwd")
+        seen["entries"] = os.listdir(kwargs["cwd"])
+
+        class Proc:
+            returncode = 0
+            stdout = "lemma L()\n{\n}\n"
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(repair_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(repair_mod.shutil, "which", lambda name: "/fake/claude")
+    request = {"rules": "r", "attempt": 0, "source": "s",
+               "failures": {}, "sidecar": "", "history": []}
+    out = repair_mod.claude_engine(request)
+    assert out == "lemma L()\n{\n}\n"
+    assert seen["cwd"] is not None
+    assert Path(seen["cwd"]).name.startswith("lemmapy-engine-")
+    assert seen["entries"] == []  # nothing to find in the sandbox
+    assert Path(seen["cwd"]).resolve() != Path.cwd().resolve()
+
+
 def test_make_engine_specs():
     assert callable(make_engine("claude"))
     assert callable(make_engine("file:/tmp/x"))
