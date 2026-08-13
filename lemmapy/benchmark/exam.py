@@ -1,0 +1,78 @@
+"""Proof-repair exams (M2, BENCHMARK.md): strip the proof additions from
+golden tasks and score their restoration under frozen specs.
+
+An exam variant is the golden task WITHOUT its `.proofs.dfy` sidecar; the
+`#@ proof` clauses stay in the (frozen) source, so encoding fails until the
+engine supplies a sidecar defining exactly the lemmas those clauses name —
+the R4 rung must be re-earned through the same whitelist and prover as the
+golden proof. Specs are frozen: the engine can only add proof, never
+weaken the property.
+
+Only sidecar-bearing tasks sit the exam: executable proof-hint asserts are
+part of the admitted source (they are runtime checks too), and the repair
+loop's contract is that the source is frozen.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from ..repair import Engine, repair_file
+
+
+@dataclass
+class ExamScore:
+    task_id: str
+    restored: bool
+    iterations: int
+    reason: str
+    golden_lemmas: list[str] = field(default_factory=list)
+
+
+def exam_tasks(tasks_root: Path) -> list[Path]:
+    """Golden tasks that carry proof additions to strip."""
+    return sorted(
+        p.parent for p in tasks_root.glob("*/task.proofs.dfy")
+    )
+
+
+def run_repair_exam(tasks_root: Path, workdir: Path, engine: Engine,
+                    max_iterations: int = 4, time_limit: int = 60) -> list[ExamScore]:
+    from ..backends.dafny.encoder import load_proof_sidecar
+
+    scores: list[ExamScore] = []
+    for task_dir in exam_tasks(tasks_root):
+        task_id = task_dir.name
+        exam_dir = workdir / task_id
+        exam_dir.mkdir(parents=True, exist_ok=True)
+        stripped = exam_dir / "task.py"
+        stripped.write_text((task_dir / "task.py").read_text())
+        # No sidecar is copied: that is the exam.
+        golden = load_proof_sidecar(task_dir / "task.py")
+        outcome = repair_file(stripped, exam_dir / "repair", engine,
+                              max_iterations=max_iterations,
+                              time_limit=time_limit)
+        scores.append(ExamScore(
+            task_id=task_id,
+            restored=outcome.verified,
+            iterations=outcome.iterations,
+            reason=outcome.reason,
+            golden_lemmas=sorted(golden.lemmas),
+        ))
+    return scores
+
+
+def render_exam_report(scores: list[ExamScore]) -> str:
+    if not scores:
+        return "proof-repair exam: no sidecar-bearing tasks to examine"
+    lines = [f"{'task':<22} restored  iterations  golden-lemmas"]
+    lines.append("-" * len(lines[0]))
+    for s in scores:
+        mark = "yes" if s.restored else f"NO ({s.reason})"
+        lines.append(f"{s.task_id:<22} {mark:<9} {s.iterations:<11} "
+                     f"{len(s.golden_lemmas)}")
+    restored = sum(1 for s in scores if s.restored)
+    lines.append("-" * len(lines[0]))
+    lines.append(f"restored: {restored}/{len(scores)}")
+    return "\n".join(lines)

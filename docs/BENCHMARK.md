@@ -39,7 +39,13 @@ Two properties fall out of this design that no static benchmark has:
    (score = rungs reached + kill rate of the written specs); strip the proof
    additions → a *proof-repair* task (score = R4 restored under the frozen
    specs); ship a surviving mutant → a *debugging* task. The golden corpus is
-   the answer key for all of them.
+   the answer key for all of them. **The proof-repair exam is live**:
+   `lemmapy benchmark --exam proof-repair [--engine claude|file:<dir>]`
+   strips each sidecar-bearing task's `.proofs.dfy` (the `#@ proof` clauses
+   stay in the frozen source) and scores restoration through the repair
+   loop — the same whitelist and prover as the golden proof, so R4 must be
+   re-earned, never asserted. Roster today: `gcd` (8-lemma divisibility
+   pack); executable proof-hint asserts are admitted source and stay.
 
 ## Backend policy (and the "ultimate benchmark" question)
 
