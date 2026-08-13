@@ -159,21 +159,25 @@ def run_task(
         elif verdict == "clean":
             score.survivors.append(description)
         # errors excluded from both counts
+    analysis_errors = score.mutants_total - score.mutants_killed - len(score.survivors)
     if score.mutants_total == 0:
         score.rungs.append(Rung("mutants", SKIP, "no mutation sites"))
+    elif analysis_errors:
+        # An incomplete panel outranks an ordinary failure: errored mutants
+        # are untested, and hiding them behind a survivor report would
+        # misstate what was actually measured.
+        score.rungs.append(Rung(
+            "mutants", ERROR,
+            f"{score.mutants_killed}/{score.mutants_total} killed; "
+            f"{len(score.survivors)} survivor(s); "
+            f"{analysis_errors} analysis error(s)"
+            + (f"; survivors: {'; '.join(score.survivors[:3])}" if score.survivors else ""),
+        ))
     elif score.survivors:
         score.rungs.append(Rung(
             "mutants", FAIL,
             f"{score.mutants_killed}/{score.mutants_total} killed; "
             f"survivors: {'; '.join(score.survivors[:3])}",
-        ))
-    elif score.mutants_killed != score.mutants_total:
-        # Mutants whose analysis ERRORED are neither killed nor survivors —
-        # an incomplete panel must not read as a passing one.
-        score.rungs.append(Rung(
-            "mutants", ERROR,
-            f"{score.mutants_killed}/{score.mutants_total} killed; "
-            f"{score.mutants_total - score.mutants_killed} analysis error(s)",
         ))
     else:
         score.rungs.append(Rung("mutants", PASS, f"{score.mutants_killed}/{score.mutants_total} killed"))

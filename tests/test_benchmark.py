@@ -79,6 +79,35 @@ def test_errored_mutant_analysis_blocks_the_rung(tmp_path, monkeypatch):
     assert score.height == 2  # gate + hunt only
 
 
+def test_mixed_survivor_and_error_panel_reports_error(tmp_path, monkeypatch):
+    # Survivors + errored analyses: the incomplete panel outranks the
+    # ordinary failure, and both facts appear in the detail.
+    from lemmapy.benchmark import runner as runner_mod
+
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(
+        "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    )
+    (task_dir / "meta.json").write_text('{"id": "t"}')
+
+    verdicts = iter(["clean", "counterexample", "clean", "error-sentinel"])
+
+    def fake_hunt(source, name, workdir, timeout):
+        v = next(verdicts, "error-sentinel")
+        if v == "error-sentinel":
+            return runner_mod.ERROR, "crosshair exited 2"
+        return v, ""
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=3)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == runner_mod.ERROR
+    assert "survivor" in mutants.detail and "analysis error" in mutants.detail
+
+
 def test_hunt_subprocess_exception_degrades_to_error(tmp_path, monkeypatch):
     # A stuck CrossHair must not abort the whole run before the scorecard.
     import subprocess as sp
