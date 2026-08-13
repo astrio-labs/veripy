@@ -50,7 +50,7 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     try:
         outdir.mkdir(parents=True, exist_ok=True)
         source = path.read_text()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         payload["status"] = "tool-error"
         payload["error"] = f"unreadable source: {exc}"
         return payload
