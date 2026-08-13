@@ -157,6 +157,11 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
     work_sidecar = work / f"{path.stem}.proofs.dfy"
     if user_sidecar.exists():
         work_sidecar.write_text(user_sidecar.read_text())
+    else:
+        # A reused workdir may hold a previous run's sidecar; verifying
+        # against it would fake iteration-zero success (and --apply would
+        # write stale proof content beside the source).
+        work_sidecar.unlink(missing_ok=True)
     source = work_src.read_text()
     history: list[dict[str, Any]] = []
 
