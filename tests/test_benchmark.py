@@ -79,6 +79,25 @@ def test_errored_mutant_analysis_blocks_the_rung(tmp_path, monkeypatch):
     assert score.height == 2  # gate + hunt only
 
 
+def test_hunt_subprocess_exception_degrades_to_error(tmp_path, monkeypatch):
+    # A stuck CrossHair must not abort the whole run before the scorecard.
+    import subprocess as sp
+
+    from lemmapy.benchmark import runner as runner_mod
+
+    def raising_run(cmd, **kwargs):
+        raise sp.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", raising_run)
+    monkeypatch.setattr(runner_mod, "_find_crosshair", lambda: "crosshair")
+    verdict, detail = runner_mod._hunt(
+        "#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n",
+        "t", tmp_path, per_condition_timeout=1,
+    )
+    assert verdict == runner_mod.ERROR
+    assert "TimeoutExpired" in detail
+
+
 def _full_stack_available() -> bool:
     from lemmapy.backends.dafny.driver import find_dafny
     from lemmapy.benchmark.runner import _find_crosshair

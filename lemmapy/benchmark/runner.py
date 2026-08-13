@@ -87,11 +87,16 @@ def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int) -> 
     checked = workdir / f"{name}_checked.py"
     checked.parent.mkdir(parents=True, exist_ok=True)
     checked.write_text(emit_checked(source, specs, src_name=f"{name}.py"))
-    proc = subprocess.run(
-        [exe, "check", str(checked), "--analysis_kind", "icontract",
-         "--per_condition_timeout", str(per_condition_timeout)],
-        capture_output=True, text=True, timeout=per_condition_timeout * 40 + 120,
-    )
+    try:
+        proc = subprocess.run(
+            [exe, "check", str(checked), "--analysis_kind", "icontract",
+             "--per_condition_timeout", str(per_condition_timeout)],
+            capture_output=True, text=True, timeout=per_condition_timeout * 40 + 120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # One stuck or unlaunchable analysis must degrade to a per-item
+        # ERROR, never abort the whole benchmark run mid-scorecard.
+        return ERROR, f"crosshair failed to run: {type(exc).__name__}"
     if proc.returncode == 0:
         return "clean", ""
     if proc.returncode == 1:
