@@ -31,6 +31,27 @@ def test_workdir_overlapping_corpus_refused(tmp_path):
     assert (d / "task.py").exists() and (d / "task.proofs.dfy").exists()
 
 
+def test_symlinked_workspace_cannot_reach_corpus(tmp_path):
+    # A symlink planted at <workdir>/<task_id> pointing at the golden task
+    # is removed as a LINK; the target survives and the exam proceeds.
+    corpus = tmp_path / "tasks"
+    d = corpus / "mini"
+    d.mkdir(parents=True)
+    (d / "task.py").write_text(
+        "#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (d / "task.proofs.dfy").write_text(
+        "lemma L(x: int)\n  ensures x == x\n{\n}\n")
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "mini").symlink_to(d)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    run_repair_exam(corpus, work, lambda: make_engine(f"file:{empty}"),
+                    time_limit=5)
+    assert (d / "task.py").exists() and (d / "task.proofs.dfy").exists()
+    assert not (work / "mini").is_symlink()  # replaced by a real workspace
+
+
 def test_empty_roster_renders_honestly(tmp_path):
     assert "no sidecar-bearing tasks" in render_exam_report([])
 

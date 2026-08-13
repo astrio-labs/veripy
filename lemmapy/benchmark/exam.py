@@ -58,7 +58,17 @@ def run_repair_exam(tasks_root: Path, workdir: Path,
     for task_dir in exam_tasks(tasks_root):
         task_id = task_dir.name
         exam_dir = workdir / task_id
-        if exam_dir.exists():
+        if exam_dir.is_symlink():
+            # A symlink here could alias corpus data; remove the LINK
+            # itself, never what it points at.
+            exam_dir.unlink()
+        elif exam_dir.exists():
+            resolved = exam_dir.resolve()
+            if resolved == tasks_res or tasks_res in resolved.parents \
+                    or resolved in tasks_res.parents:
+                raise ValueError(
+                    f"exam workspace {exam_dir} resolves into the task "
+                    f"corpus {tasks_root} — refusing to clean it")
             # A rerun must start stripped: a retained workspace proof would
             # score a stale restoration.
             shutil.rmtree(exam_dir)
