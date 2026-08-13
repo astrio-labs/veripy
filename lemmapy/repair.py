@@ -87,15 +87,31 @@ def _strip_fences(text: str) -> str:
     return stripped.rstrip() + "\n"
 
 
+def _claude_cmd(exe: str, prompt: str) -> list[str]:
+    """Measurement integrity: the engine must work from the request alone.
+    With tools enabled, a headless agent FOUND the golden sidecar in the
+    repository and returned it verbatim — a retrieval result masquerading
+    as proof completion. All tools are denied, and ORDER MATTERS: the
+    prompt must precede --disallowedTools (a variadic flag that would
+    otherwise swallow the prompt text as tool-name rules). Both the "*"
+    pattern and the ordering are verified by live token-file probes."""
+    return [exe, "-p", prompt, "--disallowedTools", "*"]
+
+
 def claude_engine(request: dict[str, Any]) -> str:
-    """Headless `claude -p` as the default repair engine."""
+    """Headless `claude -p` as the default repair engine: no tools, and an
+    isolated empty working directory (defense in depth against path
+    guessing from the payload)."""
+    import tempfile
+
     exe = shutil.which("claude")
     if exe is None:
         raise RuntimeError("engine 'claude' needs the claude CLI on PATH")
-    proc = subprocess.run(
-        [exe, "-p", _render_prompt(request)],
-        capture_output=True, text=True, timeout=600,
-    )
+    with tempfile.TemporaryDirectory(prefix="lemmapy-engine-") as sandbox:
+        proc = subprocess.run(
+            _claude_cmd(exe, _render_prompt(request)),
+            capture_output=True, text=True, timeout=600, cwd=sandbox,
+        )
     if proc.returncode != 0:
         raise RuntimeError(f"claude engine failed: {proc.stderr[:400]}")
     return _strip_fences(proc.stdout)

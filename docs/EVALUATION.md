@@ -73,3 +73,54 @@ Per cost-ladder rung ([ARCHITECTURE.md §4.4](ARCHITECTURE.md)): micro-benchmark
 3. **Pinned toolchain:** Dafny, Z3, basedpyright, and CPython versions pinned per benchmark version; version bumps re-baseline.
 4. **Append-only ledgers:** every trial recorded (model, prompt version, tokens, wall-clock, outcome), following the LemmaScript runner's practice.
 5. **Contamination is assumed for public sets** and stated wherever their numbers appear.
+
+## First measured proof-repair run (August 2026) — the M2 exit metric
+
+**Setup.** `lemmapy benchmark --exam proof-repair --engine claude` over the
+sidecar-bearing golden corpus (roster: `gcd`, whose maximality ensures needs
+an 8-lemma divisibility pack). Engine: headless `claude -p` (claude CLI
+2.1.193, default model configuration), **all tools denied and an isolated
+empty working directory**; budget 4 iterations, 60 s verify per attempt;
+Dafny 4.11.0. Exit criterion measured: proof-completion rate with no human
+edits, restoration re-earned through the sidecar whitelist and the prover.
+
+**Result.** **1/1 restored (100%), 2 iterations, no human edits.** The
+engine-authored pack is **independent of the golden proof**: eight lemmas
+under a different decomposition (`DivModRel`, `MulMono`, `MulDivZero`,
+`MulMod`, `AddMod`, `SubMod`, `EuclidStepOne`, `EuclidStepAll`; 130 lines
+vs the golden 115), sharing only the `EuclidStepAll` entry point that the
+frozen `#@ proof` clause names. The first proposal failed verification and
+the structured-failure feedback produced the verified pack on the second
+attempt — the loop, not one-shot recall, did the work. The artifact is
+preserved at [exam-artifacts/gcd-engine-pack-2026-08.dfy](exam-artifacts/gcd-engine-pack-2026-08.dfy).
+Caveat stated plainly: the roster is n=1 today (`gcd` is the corpus's
+hardest proof, but one task is one task) — the number's statistical power
+grows with every sidecar-bearing task the corpus gains.
+
+**Methodology notes — two invalid runs preceded the measurement, in
+opposite directions, and both are part of the record:**
+
+1. **Retrieval contamination (score too good).** The first run used the
+   engine's default configuration: headless `claude -p` with tool access,
+   working directory at the repository root. The agent *found the answer
+   key* — the identical golden pack at
+   `examples/contact/he_humaneval_13.proofs.dfy` — and returned it
+   verbatim (comment-for-comment identical; caught because all eight
+   helper-lemma names matched, which independent derivation would not
+   produce). A perfect score measuring retrieval, not proof completion.
+   Consequence: the engine now denies all tools and runs from an isolated
+   empty directory, and a unit test pins the invocation. Any exam whose
+   engine is agentic must assume it will look for the answer key.
+2. **Broken invocation (score too bad).** The first hardening attempt put
+   the prompt after `--disallowedTools`, a variadic flag that swallowed
+   the prompt text as tool-name rules; every iteration errored, scoring
+   0/1 for a reason unrelated to proofs. Consequence: the argument
+   *ordering* is part of the pinned test, and the tool-denial itself was
+   verified by a live probe (an unguessable token file the engine had to
+   fail to read — a first probe against `/etc/hosts` was itself invalid,
+   since the model can recite that file's first line from world
+   knowledge).
+
+The general lesson both directions teach: record the engine invocation
+verbatim next to any reported number, and validate the harness with
+positive AND negative probes before trusting either a good or a bad score.
