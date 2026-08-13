@@ -306,7 +306,7 @@ def cmd_difftest(paths: list[Path], outdir: Path, examples: int) -> int:
 
 def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
                  mutant_cap: int, quick: bool) -> int:
-    from .benchmark.runner import render_report, run_benchmark, scores_to_json
+    from .benchmark.runner import ERROR, FAIL, render_report, run_benchmark, scores_to_json
 
     kwargs = dict(mutant_cap=mutant_cap, hunt_timeout=5,
                   dafny_time_limit=60, difftest_examples=60)
@@ -321,6 +321,12 @@ def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text(json.dumps(scores_to_json(scores), indent=1))
         print(f"\nreport -> {report}")
+    # Exit status mirrors the scorecard so CI can gate on it: 2 for an
+    # incomplete run (tool errors), 1 for a regression (failed rungs).
+    if any(r.status == ERROR for s in scores for r in s.rungs):
+        return 2
+    if any(r.status == FAIL for s in scores for r in s.rungs):
+        return 1
     return 0
 
 

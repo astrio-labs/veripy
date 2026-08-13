@@ -199,6 +199,26 @@ def _full_stack_available() -> bool:
 
 
 @pytest.mark.skipif(not _full_stack_available(), reason="full toolchain not installed")
+def test_cmd_benchmark_exit_status_mirrors_scorecard(tmp_path, monkeypatch):
+    # CI gates on the exit code: 0 all-pass, 1 failed rungs, 2 tool errors.
+    import lemmapy.cli as cli
+    from lemmapy.benchmark.runner import ERROR, FAIL, PASS, Rung, TaskScore
+
+    def score(status):
+        s = TaskScore(task_id="t")
+        s.rungs.append(Rung("gate", status, ""))
+        return s
+
+    for status, expected in ((PASS, 0), (FAIL, 1), (ERROR, 2)):
+        monkeypatch.setattr(
+            "lemmapy.benchmark.runner.run_benchmark",
+            lambda tasks, outdir, _s=status, **kw: [score(_s)],
+        )
+        got = cli.cmd_benchmark(tmp_path, tmp_path / "w", report=None,
+                                mutant_cap=8, quick=False)
+        assert got == expected, f"{status}: expected exit {expected}, got {got}"
+
+
 def test_bump_climbs_the_full_ladder(tmp_path):
     from lemmapy.benchmark.runner import run_task
 
