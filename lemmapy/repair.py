@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -149,8 +150,10 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
                 max_iterations: int = 4, time_limit: int = 30,
                 apply: bool = False) -> RepairOutcome:
     outdir.mkdir(parents=True, exist_ok=True)
-    work = outdir / "work"
-    work.mkdir(exist_ok=True)
+    # A fresh private work directory per invocation: two overlapping
+    # repairs of same-named sources sharing an outdir must never verify
+    # (or apply) each other's files.
+    work = Path(tempfile.mkdtemp(prefix="work-", dir=outdir))
     work_src = work / path.name
     work_src.write_text(path.read_text())
     user_sidecar = path.with_name(path.stem + ".proofs.dfy")

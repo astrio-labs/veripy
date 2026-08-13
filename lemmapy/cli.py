@@ -625,8 +625,12 @@ def main(argv: list[str] | None = None) -> int:
                     # The agent asked for JSON; a gate failure is still a
                     # structured payload, never a silent empty run.
                     by_file: dict[str, list] = {str(p): [] for p in args.files}
+                    # basedpyright reports resolved paths; map diagnostics
+                    # back to the path the caller asked about.
+                    resolved = {str(Path(p).resolve()): str(p) for p in args.files}
                     for d in (gate.errors if gate.available else []):
-                        by_file.setdefault(d.file, []).append(
+                        key = resolved.get(str(Path(d.file).resolve()), d.file)
+                        by_file.setdefault(key, []).append(
                             {"kind": "type", "py_line": d.line,
                              "message": d.message})
                     payloads = [
@@ -639,7 +643,11 @@ def main(argv: list[str] | None = None) -> int:
                          "sidecar": None}
                         for f, fails in by_file.items()
                     ]
-                    dump(payloads, args.json_out)
+                    try:
+                        dump(payloads, args.json_out)
+                    except OSError as exc:
+                        print(f"cannot write {args.json_out}: {exc}", file=sys.stderr)
+                        return 2
                     print("type gate failed; structured payloads written to "
                           f"{args.json_out}; fix types or pass --no-types",
                           file=sys.stderr)
@@ -647,7 +655,11 @@ def main(argv: list[str] | None = None) -> int:
             payloads = verify_structured_many(
                 args.files, args.outdir, time_limit=args.time_limit,
                 hunt_counterexamples=args.hunt_counterexamples)
-            dump(payloads, args.json_out)
+            try:
+                dump(payloads, args.json_out)
+            except OSError as exc:
+                print(f"cannot write {args.json_out}: {exc}", file=sys.stderr)
+                return 2
             for p in payloads:
                 print(f"{p['file']}: {p['status']} ({len(p['failures'])} failure(s))")
             print(f"structured failures -> {args.json_out}")
