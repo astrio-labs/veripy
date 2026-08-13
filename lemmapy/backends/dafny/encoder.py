@@ -341,12 +341,21 @@ class _MethodEncoder:
                 f"parameter {p!r} shadows a builtin the encoder gives meaning "
                 f"to — rename it", node.lineno)
         for n in ast.walk(node):
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) \
-                    and n.id in _ENCODED_BUILTINS:
-                raise _err(n, (
-                    f"binding {n.id!r} shadows a builtin the encoder gives "
-                    f"meaning to — rename it"
-                ))
+            bound: list[str] = []
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                bound = [n.id]
+            elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
+                bound = [n.name]  # match/import are outside the fragment,
+            elif isinstance(n, ast.MatchMapping) and n.rest:
+                bound = [n.rest]  # but the scan must not trail it
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                bound = [(a.asname or a.name).split(".")[0] for a in n.names]
+            for name in bound:
+                if name in _ENCODED_BUILTINS:
+                    raise _err(n, (
+                        f"binding {name!r} shadows a builtin the encoder gives "
+                        f"meaning to — rename it"
+                    ))
             if isinstance(n, (ast.Global, ast.Nonlocal)) \
                     and set(n.names) & _ENCODED_BUILTINS:
                 raise _err(n, "global/nonlocal on a builtin name is outside the fragment")
@@ -1498,10 +1507,15 @@ def _module_shadow_check(module: ast.Module) -> None:
                 case _:
                     pass
             # Assignment/loop/with targets and walrus expressions all bind
-            # via Store-context Names.
+            # via Store-context Names; match patterns bind via name
+            # attributes on the pattern nodes instead.
             for n in ast.walk(stmt):
                 if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
                     check(n.id, n.lineno)
+                elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
+                    check(n.name, n.lineno)
+                elif isinstance(n, ast.MatchMapping) and n.rest:
+                    check(n.rest, n.lineno)
 
     scan(module.body)
 

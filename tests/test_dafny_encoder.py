@@ -463,6 +463,24 @@ def test_local_shadowing_builtin_rejected():
         _encode(src)
 
 
+def test_module_level_match_capture_shadowing_rejected():
+    # Pattern captures bind via name attributes, not ast.Name(Store) —
+    # `case sum:` rebinds the builtin just like `sum = ...` does.
+    for pattern in ("case sum:", "case [*sum]:", "case {**sum}:"):
+        src = (
+            "x = [1]\n"
+            "match x:\n"
+            f"    {pattern}\n"
+            "        pass\n"
+            "\n"
+            "#@ ensures result == 0\n"
+            "def f(xs: list[int]) -> int:\n"
+            "    return 0\n"
+        )
+        with pytest.raises(EncodeError, match="shadows a builtin"):
+            _encode(src)
+
+
 def test_quantifier_binder_capture_by_genexp_binder_rejected():
     # A quantifier binder colliding with an enclosing comprehension binder
     # would be rewritten by name_overrides — the quantified variable would
