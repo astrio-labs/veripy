@@ -662,11 +662,12 @@ def main(argv: list[str] | None = None) -> int:
             from .repair import make_engine
 
             try:
-                engine = make_engine(args.engine)
+                make_engine(args.engine)  # validate the spec up front
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
-            scores = run_repair_exam(args.tasks, args.outdir / "exam", engine)
+            scores = run_repair_exam(args.tasks, args.outdir / "exam",
+                                     lambda: make_engine(args.engine))
             print(render_exam_report(scores))
             return 0 if scores and all(s.restored for s in scores) else 1
         return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)

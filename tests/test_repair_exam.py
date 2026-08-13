@@ -40,7 +40,7 @@ def test_exam_strips_sidecar_and_scores_restoration(tmp_path):
     attempts.mkdir()
     (attempts / "1.dfy").write_text(golden)
     scores = run_repair_exam(corpus, tmp_path / "work",
-                             make_engine(f"file:{attempts}"), time_limit=30)
+                             lambda: make_engine(f"file:{attempts}"), time_limit=30)
     assert len(scores) == 1
     s = scores[0]
     assert s.restored and s.iterations == 1
@@ -59,10 +59,65 @@ def test_gcd_exam_restores_with_scripted_golden_pack(tmp_path):
     golden = (REPO / "benchmark" / "tasks" / "gcd" / "task.proofs.dfy").read_text()
     (attempts / "1.dfy").write_text(golden)
     scores = run_repair_exam(REPO / "benchmark" / "tasks", tmp_path / "work",
-                             make_engine(f"file:{attempts}"), time_limit=60)
+                             lambda: make_engine(f"file:{attempts}"), time_limit=60)
     assert [s.task_id for s in scores] == ["gcd"]
     assert scores[0].restored and scores[0].iterations == 1
     assert len(scores[0].golden_lemmas) == 8
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_multi_task_roster_gets_fresh_engine_per_task(tmp_path):
+    # Two identical tasks, one scripted attempt file: with a per-task
+    # engine factory BOTH restore (each replays 1.dfy); a shared stateful
+    # engine would exhaust on the second.
+    corpus = tmp_path / "tasks"
+    task_src = (
+        "#@ ensures result == x\n"
+        "def f(x: int) -> int:\n"
+        "    #@ proof Obvious(x)\n"
+        "    return x\n"
+    )
+    golden = "lemma Obvious(x: int)\n  ensures x == x\n{\n}\n"
+    for name in ("alpha", "beta"):
+        d = corpus / name
+        d.mkdir(parents=True)
+        (d / "task.py").write_text(task_src)
+        (d / "task.proofs.dfy").write_text(golden)
+    attempts = tmp_path / "attempts"
+    attempts.mkdir()
+    (attempts / "1.dfy").write_text(golden)
+    scores = run_repair_exam(corpus, tmp_path / "work",
+                             lambda: make_engine(f"file:{attempts}"),
+                             time_limit=30)
+    assert [s.restored for s in scores] == [True, True]
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_exam_rerun_starts_stripped(tmp_path):
+    corpus = tmp_path / "tasks"
+    d = corpus / "mini"
+    d.mkdir(parents=True)
+    (d / "task.py").write_text(
+        "#@ ensures result == x\n"
+        "def f(x: int) -> int:\n"
+        "    #@ proof Obvious(x)\n"
+        "    return x\n"
+    )
+    golden = "lemma Obvious(x: int)\n  ensures x == x\n{\n}\n"
+    (d / "task.proofs.dfy").write_text(golden)
+    attempts = tmp_path / "attempts"
+    attempts.mkdir()
+    (attempts / "1.dfy").write_text(golden)
+    work = tmp_path / "work"
+    first = run_repair_exam(corpus, work, lambda: make_engine(f"file:{attempts}"),
+                            time_limit=30)
+    assert first[0].restored
+    # Rerun with an exhausted engine: a stale workspace proof must not score.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    second = run_repair_exam(corpus, work, lambda: make_engine(f"file:{empty}"),
+                             time_limit=30)
+    assert not second[0].restored
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
