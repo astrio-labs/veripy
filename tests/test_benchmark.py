@@ -112,6 +112,26 @@ def test_mixed_survivor_and_error_panel_reports_error(tmp_path, monkeypatch):
     assert "survivor" in mutants.detail and "analysis error" in mutants.detail
 
 
+def test_report_shows_err_not_ratio_for_incomplete_panel():
+    # An errored panel's kill count is a lower bound, not a mutation
+    # score — the scorecard must say `err`, not render 1/3 like a
+    # completed panel. A completed FAIL panel keeps its ratio.
+    from lemmapy.benchmark.runner import ERROR, FAIL, PASS, Rung, TaskScore, render_report
+
+    def score(task_id, status):
+        s = TaskScore(task_id=task_id)
+        s.mutants_total, s.mutants_killed = 3, 1
+        s.rungs.append(Rung("gate", PASS, ""))
+        s.rungs.append(Rung("mutants", status, ""))
+        return s
+
+    report = render_report([score("errored", ERROR), score("survived", FAIL)])
+    errored_row = next(l for l in report.splitlines() if l.startswith("errored"))
+    survived_row = next(l for l in report.splitlines() if l.startswith("survived"))
+    assert "err" in errored_row and "1/3" not in errored_row
+    assert "1/3" in survived_row
+
+
 def test_hunt_subprocess_exception_degrades_to_error(tmp_path, monkeypatch):
     # A stuck CrossHair must not abort the whole run before the scorecard.
     import subprocess as sp

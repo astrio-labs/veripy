@@ -246,7 +246,9 @@ def render_report(scores: list[TaskScore]) -> str:
             r = by_name.get(n)
             if r is None:
                 cells.append(f"{'-':<8}")
-            elif n == "mutants" and s.mutants_total:
+            elif n == "mutants" and s.mutants_total and r.status != ERROR:
+                # Ratio only for completed panels; an errored panel's kill
+                # count is a lower bound, not a mutation score.
                 cells.append(f"{f'{s.mutants_killed}/{s.mutants_total}':<8}")
             else:
                 cells.append(f"{mark[r.status]:<8}")
