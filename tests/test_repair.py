@@ -122,6 +122,24 @@ def test_apply_is_lock_serialized_and_backup_preserves_first(tmp_path):
     assert not lock.exists()  # lock released
 
 
+def test_apply_first_wins_when_sidecar_changed_mid_repair(tmp_path):
+    # A concurrent repair applied its own verified proof while this one
+    # ran: nothing is overwritten (first-apply-wins), with a clear reason.
+    from lemmapy.repair import _apply_sidecar
+
+    sidecar = tmp_path / "m.proofs.dfy"
+    concurrent = "lemma Other(x: int)\n  ensures x == x\n{\n}\n"
+    sidecar.write_text(concurrent)
+    reason = _apply_sidecar(sidecar, GOOD, expected_prior=None)
+    assert "apply skipped" in reason and "concurrent" in reason
+    assert sidecar.read_text() == concurrent  # untouched
+    # Matching prior applies normally; identical content is a no-op.
+    reason = _apply_sidecar(sidecar, GOOD, expected_prior=concurrent)
+    assert reason == "verified (sidecar applied)"
+    assert _apply_sidecar(sidecar, GOOD, expected_prior=GOOD) \
+        == "verified (sidecar already up to date)"
+
+
 def test_unrepairable_source_stops_immediately(tmp_path):
     src = tmp_path / "m.py"
     src.write_text(
