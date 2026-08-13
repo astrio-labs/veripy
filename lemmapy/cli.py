@@ -13,10 +13,10 @@ from .frontend.conformance import RULES, aggregate, survey_paths
 from .frontend.extract import parse_source
 from .frontend.typegate import run_type_gate
 from .backends.dafny.driver import verify_dafny_file
-from .backends.dafny.encoder import EncodeError, encode_module
+from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from .backends.runtime.emit import emit_checked
 
-_NOT_ENFORCED = ("invariant", "decreases")
+_NOT_ENFORCED = ("invariant", "decreases", "proof")
 
 
 def _report(path: Path) -> int:
@@ -245,14 +245,17 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             trouble += 1
             continue
         try:
-            encoded = encode_module(source, specs, module_name=path.name)
+            sidecar = load_proof_sidecar(path)
+            encoded = encode_module(
+                source, specs, module_name=path.name, proof_lemmas=sidecar.lemmas
+            )
         except EncodeError as exc:
             loc = f":{exc.line}" if exc.line is not None else ""
             print(f"{path}{loc}: cannot encode: {exc.message}", file=sys.stderr)
             trouble += 1
             continue
         stub = outdir / f"{path.stem}.dfy"
-        stub.write_text(encoded.dafny_source)
+        stub.write_text(encoded.dafny_source + sidecar.text)
         result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
         if result.error is not None:
             print(f"{path}: dafny trouble: {result.error}", file=sys.stderr)
@@ -299,6 +302,32 @@ def cmd_difftest(paths: list[Path], outdir: Path, examples: int) -> int:
     if diverged:
         return 1
     return 2 if trouble else 0
+
+
+def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
+                 mutant_cap: int, quick: bool) -> int:
+    from .benchmark.runner import ERROR, FAIL, render_report, run_benchmark, scores_to_json
+
+    kwargs = dict(mutant_cap=mutant_cap, hunt_timeout=5,
+                  dafny_time_limit=60, difftest_examples=60)
+    if quick:
+        kwargs.update(mutant_cap=min(mutant_cap, 3), difftest_examples=20)
+    scores = run_benchmark(tasks, outdir, **kwargs)
+    if not scores:
+        print(f"no tasks found under {tasks}", file=sys.stderr)
+        return 2
+    print(render_report(scores))
+    if report is not None:
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps(scores_to_json(scores), indent=1))
+        print(f"\nreport -> {report}")
+    # Exit status mirrors the scorecard so CI can gate on it: 2 for an
+    # incomplete run (tool errors), 1 for a regression (failed rungs).
+    if any(r.status == ERROR for s in scores for r in s.rungs):
+        return 2
+    if any(r.status == FAIL for s in scores for r in s.rungs):
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -349,6 +378,17 @@ def main(argv: list[str] | None = None) -> int:
     p_difftest.add_argument("-o", "--outdir", type=Path, default=Path("build/difftest"))
     p_difftest.add_argument("-n", "--examples", type=int, default=100)
 
+    p_benchmark = sub.add_parser(
+        "benchmark",
+        help="run lemmapy-benchmark: assurance-ladder scoring over annotated-Python tasks",
+    )
+    p_benchmark.add_argument("--tasks", type=Path, default=Path("benchmark/tasks"))
+    p_benchmark.add_argument("-o", "--outdir", type=Path, default=Path("build/benchmark"))
+    p_benchmark.add_argument("--report", type=Path, default=None)
+    p_benchmark.add_argument("--mutant-cap", type=int, default=8)
+    p_benchmark.add_argument("--quick", action="store_true",
+                            help="small mutant panels and example counts (CI mode)")
+
     p_survey = sub.add_parser(
         "survey",
         help="read-only fragment-coverage survey over files/directories (M0, RQ1)",
@@ -368,6 +408,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_verify(args.files, args.outdir, args.time_limit, types=not args.no_types)
     if args.command == "difftest":
         return cmd_difftest(args.files, args.outdir, args.examples)
+    if args.command == "benchmark":
+        return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
     if args.command == "survey":
         return cmd_survey(args.paths, args.top, args.json)
     return 2

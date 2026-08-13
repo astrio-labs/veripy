@@ -51,10 +51,212 @@ proof loop does.
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from ...frontend.parse import Clause, FunctionSpec, ModuleSpecs
 from .preamble import PREAMBLE
+
+
+@dataclass(frozen=True)
+class ProofSidecar:
+    text: str
+    lemmas: frozenset[str]
+
+    @staticmethod
+    def empty() -> "ProofSidecar":
+        return ProofSidecar("", frozenset())
+
+
+def _strip_dafny_comments(text: str) -> str:
+    """Remove // and (nested) /* */ comments AND blank all string/char
+    literal interiors — string contents are irrelevant to structural
+    validation, and a brace inside a string must never read as declaration
+    structure (the `ensures s == "a{"` axiom vector)."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    depth = 0
+    while i < n:
+        c = text[i]
+        if depth == 0 and c == '"':
+            # Emit an EMPTY string literal; skip the real contents.
+            out.append('""')
+            i += 1
+            while i < n:
+                if text[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if depth == 0 and c == "'":
+            # A quote directly after an identifier char is a prime
+            # (Dafny allows x' names), not a char literal.
+            prev = out[-1][-1] if out and out[-1] else ""
+            if not (prev.isalnum() or prev in "_'"):
+                out.append("'?'")
+                i += 1
+                while i < n:
+                    if text[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if text[i] == "'":
+                        i += 1
+                        break
+                    i += 1
+                continue
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            depth += 1
+            i += 2
+            continue
+        if c == "*" and i + 1 < n and text[i + 1] == "/" and depth > 0:
+            depth -= 1
+            i += 2
+            continue
+        if depth == 0 and c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if depth == 0:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+_SIDECAR_FORBIDDEN = frozenset({
+    "method", "import", "include", "print", "expect", "assume", "axiom",
+    "twostate", "iterator", "class", "trait", "module", "new", "modifies",
+    # Collection displays put braces after identifiers (`multiset{1}`), which
+    # would let a bodiless lemma masquerade as proved; lemma packs about the
+    # fragment's arithmetic don't need them — forbid the whole class.
+    "multiset", "set", "iset", "map", "imap",
+})
+_SIDECAR_DECL_KEYWORDS = frozenset({"lemma", "function", "predicate", "ghost"})
+# Words that cannot END a value/signature — a top-level `{` following one of
+# these is a brace-delimited literal in specification position, not a body.
+_SIDECAR_NON_ENDERS = frozenset({
+    "in", "then", "else", "requires", "ensures", "decreases", "reads",
+    "returns", "forall", "exists", "if", "case", "match",
+})
+
+
+def _is_value_ender(token: str | None) -> bool:
+    if token is None:
+        return False
+    if token in (")", "]", ">"):
+        return True
+    if token.isdigit():
+        return True
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", token)) \
+        and token not in _SIDECAR_NON_ENDERS
+
+
+def _validate_sidecar(text: str, name: str) -> frozenset[str]:
+    """Whitelist-structural validation of a proof sidecar. Returns declared
+    lemma names. Rejects (a) any non-ghost or trust-bypassing token —
+    method/import/assume/{:attributes}/... — and (b) bodiless declarations
+    (a lemma without a body is an axiom)."""
+    stripped = _strip_dafny_comments(text)
+    if "{:" in stripped:
+        raise EncodeError(f"proof sidecar {name}: attributes ({{:...}}) are not allowed")
+    if "@" in stripped:
+        # Verbatim @-strings don't use backslash escapes and would evade the
+        # string blanking above; nothing a lemma pack needs uses `@`.
+        raise EncodeError(f"proof sidecar {name}: `@` is not allowed")
+    tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_']*|\{|\}|.", stripped)
+    words = [t for t in tokens if t.strip()]
+    for w in words:
+        if w in _SIDECAR_FORBIDDEN:
+            raise EncodeError(
+                f"proof sidecar {name}: {w!r} is not allowed — sidecars may "
+                f"contain only proved ghost declarations (lemma/function/predicate)"
+            )
+        if w == "~":
+            raise EncodeError(f"proof sidecar {name}: partial-arrow types are not allowed")
+    for i in range(len(words) - 1):
+        # An isolated `=>` is a lambda (its body brace follows a `>`, which
+        # would defeat the value-ender body check); `==>` (implication) has a
+        # preceding `=` and stays legal.
+        if words[i] == "=" and words[i + 1] == ">" \
+                and (i == 0 or words[i - 1] != "="):
+            raise EncodeError(
+                f"proof sidecar {name}: lambda expressions (`=>`) are not allowed"
+            )
+    lemmas: set[str] = set()
+    depth = 0
+    expecting_decl = True  # at file start and after every body closes
+    current_decl_has_body = True  # vacuously, before any declaration
+    idx = 0
+    while idx < len(words):
+        w = words[idx]
+        if w == "{":
+            if depth == 0:
+                # A body brace always follows a value-ender; a brace after an
+                # operator/keyword (`in {1, 2}`) is a specification literal —
+                # which would let a BODILESS lemma masquerade as proved.
+                prev = words[idx - 1] if idx > 0 else None
+                if not _is_value_ender(prev):
+                    raise EncodeError(
+                        f"proof sidecar {name}: brace-delimited literals in "
+                        f"specification position are not supported — a bodiless "
+                        f"declaration could masquerade as proved; restate the "
+                        f"spec without set/map displays"
+                    )
+                current_decl_has_body = True
+            depth += 1
+        elif w == "}":
+            depth = max(0, depth - 1)
+            if depth == 0:
+                expecting_decl = True
+        elif depth == 0 and w in _SIDECAR_DECL_KEYWORDS:
+            # A declaration keyword at depth 0 ALWAYS starts a new
+            # declaration — checking the previous one here means a bodiless
+            # lemma cannot be retroactively "proved" by its successor's body.
+            if not current_decl_has_body:
+                raise EncodeError(
+                    f"proof sidecar {name}: a declaration without a body is an "
+                    f"axiom — every lemma/function must be proved"
+                )
+            if w == "ghost":
+                if idx + 1 >= len(words) or words[idx + 1] not in ("function", "predicate"):
+                    raise EncodeError(f"proof sidecar {name}: `ghost` must qualify function/predicate")
+                idx += 1
+            if w == "lemma" and idx + 1 < len(words):
+                lemmas.add(words[idx + 1])
+            expecting_decl = False
+            current_decl_has_body = False
+        elif depth == 0 and expecting_decl:
+            raise EncodeError(
+                f"proof sidecar {name}: top-level {w!r} is not a ghost "
+                f"declaration (lemma/function/predicate)"
+            )
+        idx += 1
+    if not current_decl_has_body:
+        raise EncodeError(
+            f"proof sidecar {name}: a declaration without a body is an axiom — "
+            f"every lemma/function must be proved"
+        )
+    return frozenset(lemmas)
+
+
+def load_proof_sidecar(source_path: Path) -> ProofSidecar:
+    """Proof additions from `<stem>.proofs.dfy` beside the source file:
+    lemma packs referenced by `#@ proof` clauses. Whitelist-validated as
+    proved ghost declarations only."""
+    sidecar = source_path.with_name(source_path.stem + ".proofs.dfy")
+    if not sidecar.exists():
+        return ProofSidecar.empty()
+    text = sidecar.read_text()
+    lemmas = _validate_sidecar(text, sidecar.name)
+    return ProofSidecar(
+        f"\n// ---- proof additions from {sidecar.name} ----\n{text}", lemmas
+    )
 
 DAFNY_KEYWORDS = frozenset({
     "method", "function", "lemma", "var", "ghost", "returns", "requires",
@@ -88,8 +290,21 @@ def _dafny_type(ann: ast.expr | None, where: ast.AST) -> str:
             return "string"
         case ast.Subscript(value=ast.Name(id="list"), slice=inner):
             return f"seq<{_dafny_type(inner, where)}>"
+        case ast.Subscript(value=ast.Name(id="Optional"), slice=inner):
+            return f"PyOpt<{_dafny_type(inner, where)}>"
+        case ast.BinOp(left=left, op=ast.BitOr(), right=ast.Constant(value=None)):
+            return f"PyOpt<{_dafny_type(left, where)}>"
+        case ast.BinOp(left=ast.Constant(value=None), op=ast.BitOr(), right=right):
+            return f"PyOpt<{_dafny_type(right, where)}>"
         case _:
             raise _err(where, f"type {ast.unparse(ann)!r} is outside the slice-1 encoder")
+
+
+def _opt_inner(tdesc: str | None) -> str | None:
+    """PyOpt<T> -> T, else None."""
+    if tdesc is not None and tdesc.startswith("PyOpt<") and tdesc.endswith(">"):
+        return tdesc[6:-1]
+    return None
 
 
 _INT_SET = frozenset({"int"})
@@ -102,9 +317,13 @@ class _Scope:
 
 
 class _MethodEncoder:
-    def __init__(self, node: ast.FunctionDef, spec: FunctionSpec):
+    def __init__(self, node: ast.FunctionDef, spec: FunctionSpec,
+                 proof_lemmas: frozenset[str] = frozenset(),
+                 source_lines: list[str] | None = None):
         self.node = node
         self.spec = spec
+        self.proof_lemmas = proof_lemmas
+        self.source_lines = source_lines or []
         self.lines: list[str] = []
         self.line_map: dict[int, int] = {}  # emitted index -> python line
         self.params: set[str] = {
@@ -121,6 +340,10 @@ class _MethodEncoder:
         self._invariants_by_loop: dict[int, list[Clause]] = {}
         self._decreases_by_loop: dict[int, list[Clause]] = {}
         self._assign_loop_clauses()
+        # `#@ proof` clauses: AST-anchored to the exact statement they
+        # precede, so they can never drift into an enclosing/sibling scope.
+        self._proofs_by_stmt: dict[int, list[Clause]] = {}
+        self._assign_proof_clauses()
         self.hoisted: dict[str, str] = {}
         # Ownership-lite (§3.2, conservative): a list local may be appended
         # to only while it is a fresh, unaliased allocation.
@@ -130,6 +353,10 @@ class _MethodEncoder:
         self.frozen: set[str] = set()
         # Comprehension binders: raw name -> dafny expression to substitute.
         self.name_overrides: dict[str, str] = {}
+        # Names provably >= 0 (0-based loop indices, 0-based quantifier
+        # binders): indexed bare, keeping spec and body terms trigger-
+        # compatible; everything else goes through PyIndex.
+        self.nonneg: set[str] = set()
 
     # -- naming ---------------------------------------------------------------
 
@@ -239,6 +466,8 @@ class _MethodEncoder:
                 return "bool"
             case ast.Call(func=ast.Name(id="old"), args=[ast.Name(id=name)]):
                 return self.types.get(name)
+            case ast.Subscript(value=value, slice=ast.Slice()):
+                return self._infer(value)  # a slice keeps the sequence type
             case ast.Subscript(value=value):
                 base = self._infer(value)
                 if base == "string":
@@ -332,7 +561,7 @@ class _MethodEncoder:
                 joiner = " && " if isinstance(op, ast.And) else " || "
                 return "(" + joiner.join(f"({self.expr(v)})" for v in values) + ")"
             case ast.BinOp(left=left, op=op, right=right):
-                l, r = self.expr(left), self.expr(right)
+                l, r = self._deopt(left), self._deopt(right)
                 match op:
                     case ast.Add():
                         return f"({l} + {r})"
@@ -354,14 +583,28 @@ class _MethodEncoder:
                 return f"(if {self.expr(test)} then {self.expr(body)} else {self.expr(orelse)})"
             case ast.Subscript(value=value, slice=index):
                 if isinstance(index, ast.Slice):
-                    raise _err(node, "slicing is outside the slice-1 encoder")
+                    if index.step is not None:
+                        raise _err(node, "slice steps are outside the slice encoder")
+                    base = self.expr(value)
+                    lo = self.expr(index.lower) if index.lower is not None else "0"
+                    hi = self.expr(index.upper) if index.upper is not None else f"|{base}|"
+                    return f"PySlice({base}, {lo}, {hi})"
                 base = self.expr(value)
                 idx = self.expr(index)
                 # Python normalizes negative indices from the end; Dafny does
                 # not. PyIndex carries Python's exact semantics (its requires
-                # is exactly Python's IndexError condition). Applied UNIFORMLY
-                # — special-casing literals produces mixed bare/wrapped terms
-                # that break quantifier trigger matching.
+                # is exactly Python's IndexError condition). Indices provably
+                # >= 0 — nonneg literals and tracked 0-based binders/loop
+                # variables — are emitted BARE so spec quantifier triggers
+                # match the body's ground terms; everything else is wrapped.
+                provably_nonneg = (
+                    isinstance(index, ast.Constant)
+                    and isinstance(index.value, int) and index.value >= 0
+                ) or (
+                    isinstance(index, ast.Name) and index.id in self.nonneg
+                )
+                if provably_nonneg:
+                    return f"{base}[{idx}]"
                 return f"{base}[PyIndex({idx}, |{base}|)]"
             case ast.List(elts=elts):
                 return "[" + ", ".join(self.expr(e) for e in elts) + "]"
@@ -433,19 +676,61 @@ class _MethodEncoder:
                 out.append(ch)
         return '"' + "".join(out) + '"'
 
+    def _eff_type(self, node: ast.expr) -> str | None:
+        """Inferred type with PyOpt<T> flattened to T (deopt semantics)."""
+        t = self._infer(node)
+        return _opt_inner(t) or t
+
+    def _deopt(self, node: ast.expr) -> str:
+        """Encode node, projecting PyOpt<T> to T. The `.v` well-formedness VC
+        is exactly Python's would-raise-TypeError condition — narrowing
+        replayed as a proof obligation."""
+        if _opt_inner(self._infer(node)) is not None:
+            return f"({self.expr(node)}).v"
+        return self.expr(node)
+
     def _compare(self, node: ast.Compare, left: ast.expr, ops, comps) -> str:
         parts = []
         current = left
         for op, comp in zip(ops, comps):
-            l, r = self.expr(current), self.expr(comp)
+            if isinstance(op, (ast.Is, ast.IsNot)):
+                # Only `x is [not] None` on an Optional is in the fragment.
+                if isinstance(comp, ast.Constant) and comp.value is None \
+                        and _opt_inner(self._infer(current)) is not None:
+                    tester = "PyNone?" if isinstance(op, ast.Is) else "PySome?"
+                    parts.append(f"({self.expr(current)}).{tester}")
+                    current = comp
+                    continue
+                raise _err(node, (
+                    "`is` is only supported as `is [not] None` on Optional-typed "
+                    "values; identity on other objects is outside the fragment"
+                ))
             if isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
-                lt, rt = self._infer(current), self._infer(comp)
+                lt, rt = self._eff_type(current), self._eff_type(comp)
                 if not (lt in _ORDER_OK and lt == rt):
                     raise _err(node, (
                         f"order comparison on non-int operands (inferred {lt}/{rt}) — "
                         f"Dafny's sequence `<` is prefix order, Python's is lexicographic; "
                         f"outside the slice-1 encoder"
                     ))
+                l, r = self._deopt(current), self._deopt(comp)
+            elif isinstance(op, (ast.Eq, ast.NotEq)):
+                lt, rt = self._infer(current), self._infer(comp)
+                if _opt_inner(lt) is not None and _opt_inner(lt) == rt:
+                    # Python's == never raises: Optional-vs-T equality means
+                    # "is Some AND the payload matches".
+                    inner = f"(({self.expr(current)}).PySome? && ({self.expr(current)}).v == {self.expr(comp)})"
+                    parts.append(inner if isinstance(op, ast.Eq) else f"!{inner}")
+                    current = comp
+                    continue
+                if _opt_inner(rt) is not None and _opt_inner(rt) == lt:
+                    inner = f"(({self.expr(comp)}).PySome? && ({self.expr(comp)}).v == {self.expr(current)})"
+                    parts.append(inner if isinstance(op, ast.Eq) else f"!{inner}")
+                    current = comp
+                    continue
+                l, r = self.expr(current), self.expr(comp)
+            else:
+                l, r = self.expr(current), self.expr(comp)
             match op:
                 case ast.Eq():
                     parts.append(f"{l} == {r}")
@@ -483,10 +768,16 @@ class _MethodEncoder:
             return f"|{self.expr(args[0])}|"
         if name in ("min", "max") and len(args) == 2:
             for a in args:
-                if self._infer(a) != "int":
+                if self._eff_type(a) != "int":
                     raise _err(node, f"{name}() on non-int operands is outside the slice-1 encoder")
             fn = "PyMin" if name == "min" else "PyMax"
-            return f"{fn}({self.expr(args[0])}, {self.expr(args[1])})"
+            return f"{fn}({self._deopt(args[0])}, {self._deopt(args[1])})"
+        if name in ("min", "max") and len(args) == 1:
+            if self._infer(args[0]) != "seq<int>":
+                raise _err(node, f"1-arg {name}() needs a list[int] operand in the slice encoder")
+            fn = "PySeqMin" if name == "min" else "PySeqMax"
+            # PySeqMax/Min's requires (|s| >= 1) is Python's ValueError condition.
+            return f"{fn}({self.expr(args[0])})"
         if name == "abs" and len(args) == 1:
             return f"PyAbs({self.expr(args[0])})"
         if name == "old" and self.spec_mode and len(args) == 1 and isinstance(args[0], ast.Name):
@@ -534,6 +825,8 @@ class _MethodEncoder:
                         lo, hi = self.expr(domain.args[0]), self.expr(domain.args[1])
                     domains.append(f"{lo} <= {var} < {hi}")
                     binder_type: str | None = "int"
+                    if lo == "0" or (lo.lstrip("(").rstrip(")").isdigit()):
+                        self.nonneg.add(raw)
                 else:
                     dt = self._infer(domain)
                     if dt is None or not dt.startswith("seq<"):
@@ -552,6 +845,7 @@ class _MethodEncoder:
                     self.types.pop(raw, None)
                 else:
                     self.types[raw] = prev
+                self.nonneg.discard(raw)
         quant = "forall" if kind == "all" else "exists"
         connective = "==>" if kind == "all" else "&&"
         return f"({quant} {', '.join(binders)} :: ({' && '.join(domains)}) {connective} ({body}))"
@@ -655,6 +949,89 @@ class _MethodEncoder:
 
     # -- statements -------------------------------------------------------------------------------
 
+    def _assign_proof_clauses(self) -> None:
+        """Anchor each `#@ proof` clause to the statement it lexically
+        precedes; a clause not followed by a statement in its block is a
+        detected error, never a scope leak."""
+        clauses = sorted(self.spec.by_kind("proof"), key=lambda c: c.line)
+        if not clauses:
+            return
+        for clause in clauses:
+            tree = ast.parse(clause.desugared, mode="eval")
+            assert isinstance(tree.body, ast.Call) and isinstance(tree.body.func, ast.Name)
+            target = tree.body.func.id
+            if target not in self.proof_lemmas:
+                raise EncodeError(
+                    f"unknown lemma {target!r} — `#@ proof` targets must be "
+                    f"lemmas declared in the proof sidecar (<stem>.proofs.dfy)",
+                    clause.line,
+                )
+        unattached = {id(c): c for c in clauses}
+
+        def visit(stmts: list[ast.stmt], header_line: int, territory_end: int) -> None:
+            """Attach clauses whose COLUMN matches this block's indentation
+            and whose line falls in this block's territory — column is what
+            distinguishes 'trailing inside the inner block' from 'between
+            statements of the outer one'."""
+            col = min(s.col_offset for s in stmts)
+            for clause in list(unattached.values()):
+                if clause.col == col and header_line < clause.line < territory_end:
+                    following = [s for s in stmts if s.lineno > clause.line]
+                    if not following:
+                        raise EncodeError(
+                            "`#@ proof` must directly precede the statement it "
+                            "justifies (this one trails its block)",
+                            clause.line,
+                        )
+                    self._proofs_by_stmt.setdefault(id(following[0]), []).append(clause)
+                    del unattached[id(clause)]
+            for i, s in enumerate(stmts):
+                next_boundary = stmts[i + 1].lineno if i + 1 < len(stmts) else territory_end
+                match s:
+                    case ast.For(body=body) | ast.While(body=body):
+                        visit(body, s.lineno, next_boundary)
+                    case ast.If(body=body, orelse=orelse):
+                        if orelse:
+                            # The then/else territories split at the `else:`
+                            # line — a clause LEADING the else branch must not
+                            # be claimed as TRAILING the then branch (same
+                            # column, so only the else line disambiguates).
+                            else_line = orelse[0].lineno
+                            for ln in range((body[-1].end_lineno or s.lineno) + 1,
+                                            orelse[0].lineno):
+                                if 0 < ln <= len(self.source_lines) \
+                                        and re.match(r"\s*else\s*:", self.source_lines[ln - 1]):
+                                    else_line = ln
+                                    break
+                            visit(body, s.lineno, else_line)
+                            visit(orelse, else_line, next_boundary)
+                        else:
+                            visit(body, s.lineno, next_boundary)
+                    case _:
+                        pass
+
+        visit(self.node.body, self.node.lineno, (self.node.end_lineno or self.node.lineno) + 1)
+        if unattached:
+            first = next(iter(unattached.values()))
+            raise EncodeError(
+                "`#@ proof` could not be attached to a statement — align it "
+                "with the block it belongs to, directly before a statement",
+                first.line,
+            )
+
+    def _emit_proof(self, clause: Clause, indent: str) -> None:
+        tree = ast.parse(clause.desugared, mode="eval")
+        call = tree.body
+        assert isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+        self.spec_mode = True
+        try:
+            args = ", ".join(self.expr(a) for a in call.args)
+        finally:
+            self.spec_mode = False
+        # The lemma name is Dafny-side (validated against the sidecar's
+        # declared lemmas) — never mangled; ghost, so it cannot affect state.
+        self.emit(f"{indent}{call.func.id}({args});", clause.line)
+
     def block(self, stmts: list[ast.stmt], indent: str) -> None:
         self.scopes.append(set())
         try:
@@ -696,9 +1073,36 @@ class _MethodEncoder:
         list/str operands."""
         if self._is_seqish(self._infer(test)):
             return f"(|{self.expr(test)}| != 0)"
+        if _opt_inner(self._infer(test)) is not None:
+            raise _err(test, (
+                "truthiness on an Optional conflates None with falsy values "
+                "(0, empty) — write `is None` / `is not None` explicitly"
+            ))
         return self.expr(test)
 
+    def _coerce(self, node: ast.expr, want: str | None) -> str:
+        """Encode `node` where a value of type `want` is expected, injecting
+        into / projecting out of PyOpt as Python's implicit union does. The
+        `.v` projection carries a PySome? well-formedness VC — that is the
+        catalog's 'narrowing replayed as VCs'."""
+        if want is None:
+            return self.expr(node)
+        want_inner = _opt_inner(want)
+        if want_inner is not None:
+            if isinstance(node, ast.Constant) and node.value is None:
+                return "PyNone"
+            got = self._infer(node)
+            if got == want:
+                return self.expr(node)
+            return f"PySome({self._coerce(node, want_inner)})"
+        got = self._infer(node)
+        if _opt_inner(got) == want:
+            return f"({self.expr(node)}).v"
+        return self.expr(node)
+
     def stmt(self, stmt: ast.stmt, indent: str) -> None:
+        for clause in self._proofs_by_stmt.pop(id(stmt), []):
+            self._emit_proof(clause, indent)
         match stmt:
             case ast.Expr(value=ast.Constant(value=str())):
                 return  # docstring
@@ -721,15 +1125,21 @@ class _MethodEncoder:
                         f"containers (§3.2 ownership)"
                     ))
                 mt = self._mangle(target)
-                self.emit(f"{indent}{mt} := {mt} + [{self.expr(arg)}];", stmt.lineno)
+                target_type = self.types.get(target)
+                elem_type = target_type[4:-1] if target_type and target_type.startswith("seq<") else None
+                self.emit(f"{indent}{mt} := {mt} + [{self._coerce(arg, elem_type)}];", stmt.lineno)
                 return
             case ast.Expr(value=ast.Call(func=ast.Attribute(attr=method))):
                 raise _err(stmt, f"method call .{method}(...) is outside the slice encoder")
             case ast.AnnAssign(target=ast.Name(id=name), annotation=ann, value=value) if value is not None:
                 dtype = _dafny_type(ann, stmt)
-                self._assign_name(name, self.expr(value), indent, stmt, rhs_node=value, ann=dtype)
+                self._assign_name(name, self._coerce(value, dtype), indent, stmt, rhs_node=value, ann=dtype)
             case ast.Assign(targets=[ast.Name(id=name)], value=value):
-                self._assign_name(name, self.expr(value), indent, stmt, rhs_node=value)
+                self._assign_name(
+                    name,
+                    self._coerce(value, self.types.get(name) or self.hoisted.get(name)),
+                    indent, stmt, rhs_node=value,
+                )
             case ast.Assign(targets=[ast.Tuple(elts=elts)], value=ast.Tuple(elts=values)) \
                     if len(elts) == len(values) and all(isinstance(e, ast.Name) for e in elts):
                 names = [e.id for e in elts]  # type: ignore[union-attr]
@@ -739,7 +1149,12 @@ class _MethodEncoder:
                     if n in self.params:
                         raise _err(stmt, "parameter rebinding is outside the fragment (parameters are immutable)")
                     self.retired.discard(n)
-                rhs = ", ".join(self.expr(v) for v in values)
+                # Route every element through the same Optional injection/
+                # projection coercion single assignments get.
+                rhs = ", ".join(
+                    self._coerce(v, self.types.get(n) or self.hoisted.get(n))
+                    for n, v in zip(names, values)
+                )
                 lhs = ", ".join(self._mangle(n) for n in names)
                 fresh = [n for n in names if not (self._declared(n) or n in self.hoisted)]
                 if len(fresh) == len(names):
@@ -769,8 +1184,14 @@ class _MethodEncoder:
             case ast.Return(value=value):
                 if value is None:
                     raise _err(stmt, "bare `return` is outside the slice-1 encoder")
-                self.emit(f"{indent}result := {self.expr(value)};", stmt.lineno)
+                self.emit(f"{indent}result := {self._coerce(value, self.return_type)};", stmt.lineno)
                 self.emit(f"{indent}return;")
+            case ast.Assert(test=test, msg=msg):
+                # Executable in CPython, a proof hint in Dafny — the same
+                # dual role #@ specs have.
+                if msg is not None and not isinstance(msg, ast.Constant):
+                    raise _err(stmt, "assert messages must be literals (side effects)")
+                self.emit(f"{indent}assert {self._bool_ctx(test)};", stmt.lineno)
             case ast.If(test=test, body=body, orelse=orelse):
                 # Ownership is path-sensitive: a name is owned after the If
                 # only if it is owned on EVERY path through it.
@@ -852,6 +1273,8 @@ class _MethodEncoder:
             self.emit(f"{indent}var {mv} := {lo};", stmt.lineno)
             self._declare(var)
         self.types[var] = "int"
+        if lo_expr == "0" or lo_expr.lstrip("(").rstrip(")").isdigit():
+            self.nonneg.add(var)
         self.emit(f"{indent}while {mv} < {hi}", stmt.lineno)
         self._loop_clauses(stmt, indent, extra=(f"{lo} <= {mv} <= PyMax({lo}, {hi})",))
         self.emit(f"{indent}{{")
@@ -859,6 +1282,7 @@ class _MethodEncoder:
         self.emit(f"{indent}  {mv} := {mv} + 1;")
         self.emit(f"{indent}}}")
         self.owned &= pre_owned
+        self.nonneg.discard(var)
         # Python's index survives the loop with a DIFFERENT value than the
         # lowering's; retire it so later reads are rejected, not miscompiled.
         self.retired.add(var)
@@ -968,7 +1392,12 @@ class EncodedModule:
     methods: list[str]
 
 
-def encode_module(source: str, specs: ModuleSpecs, module_name: str) -> EncodedModule:
+def encode_module(
+    source: str,
+    specs: ModuleSpecs,
+    module_name: str,
+    proof_lemmas: frozenset[str] = frozenset(),
+) -> EncodedModule:
     if specs.errors:
         first = specs.errors[0]
         raise EncodeError(f"spec error: {first.error}", first.line)
@@ -998,7 +1427,7 @@ def encode_module(source: str, specs: ModuleSpecs, module_name: str) -> EncodedM
         node = functions.get((spec.name, spec.lineno))
         if node is None:
             raise EncodeError(f"cannot locate function {spec.name!r}", spec.lineno)
-        enc = _MethodEncoder(node, spec)
+        enc = _MethodEncoder(node, spec, proof_lemmas, source_lines=source.split("\n"))
         enc.encode()
         offset = len(lines)
         lines.extend(enc.lines)

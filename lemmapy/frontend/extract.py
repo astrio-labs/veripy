@@ -25,13 +25,13 @@ from .parse import (
 )
 
 
-def _spec_comments(source: str) -> dict[int, str]:
-    """Map line number -> comment text (after '#@') for every spec comment."""
-    comments: dict[int, str] = {}
+def _spec_comments(source: str) -> dict[int, tuple[int, str]]:
+    """Map line number -> (column, comment text) for every spec comment."""
+    comments: dict[int, tuple[int, str]] = {}
     tokens = tokenize.generate_tokens(io.StringIO(source).readline)
     for tok in tokens:
         if tok.type == tokenize.COMMENT and tok.string.startswith("#@"):
-            comments[tok.start[0]] = tok.string[2:].strip()
+            comments[tok.start[0]] = (tok.start[1], tok.string[2:].strip())
     return comments
 
 
@@ -115,26 +115,29 @@ def parse_source(source: str, filename: str = "<string>") -> ModuleSpecs:
             params=params,
         )
         # Contract block: walk upward from the line above the anchor.
-        block: list[tuple[int, str]] = []
+        block: list[tuple[int, int, str]] = []
         line = anchor - 1
         while line in comments:
-            block.append((line, comments[line]))
+            ccol, ctext = comments[line]
+            block.append((line, ccol, ctext))
             line -= 1
-        for cline, text in reversed(block):
+        for cline, ccol, text in reversed(block):
             consumed.add(cline)
             kind, rest = _split_kind(text)
             if kind not in CLAUSE_KINDS:
-                spec.clauses.append(Clause(
+                clause = Clause(
                     kind=kind or "?", raw=rest, line=cline,
                     error=f"unknown clause {kind!r} (expected one of {', '.join(CLAUSE_KINDS)})",
-                ))
+                )
             elif kind not in HEADER_KINDS:
-                spec.clauses.append(Clause(
+                clause = Clause(
                     kind=kind, raw=rest, line=cline,
                     error=f"`{kind}` belongs inside a loop body, not the contract block",
-                ))
+                )
             else:
-                spec.clauses.append(parse_clause(kind, rest, cline, params, module_names))
+                clause = parse_clause(kind, rest, cline, params, module_names)
+            clause.col = ccol
+            spec.clauses.append(clause)
         specs.append(spec)
 
     # Body comments: attach to the innermost containing function.
@@ -150,32 +153,36 @@ def parse_source(source: str, filename: str = "<string>") -> ModuleSpecs:
 
     orphans: list[Clause] = []
     for cline in sorted(set(comments) - consumed):
-        text = comments[cline]
+        ccol, text = comments[cline]
         kind, rest = _split_kind(text)
         hit = innermost(cline)
         if hit is None:
-            orphans.append(Clause(
+            clause = Clause(
                 kind=kind or "?", raw=rest, line=cline,
                 error="spec comment is not attached to any function "
                       "(contract blocks must sit directly above a `def`)",
-            ))
+            )
+            clause.col = ccol
+            orphans.append(clause)
             continue
         node, spec = hit
         if kind not in CLAUSE_KINDS:
-            spec.clauses.append(Clause(
+            clause = Clause(
                 kind=kind or "?", raw=rest, line=cline,
                 error=f"unknown clause {kind!r} (expected one of {', '.join(CLAUSE_KINDS)})",
-            ))
+            )
         elif kind not in BODY_KINDS:
-            spec.clauses.append(Clause(
+            clause = Clause(
                 kind=kind, raw=rest, line=cline,
                 error=f"`{kind}` belongs in the contract block directly above the `def`",
-            ))
+            )
         else:
-            spec.clauses.append(parse_clause(
+            clause = parse_clause(
                 kind, rest, cline, spec.params, module_names,
                 extra_names=_local_names(node),
-            ))
+            )
+        clause.col = ccol
+        spec.clauses.append(clause)
 
     # A bad signature is an error only on functions that actually carry specs.
     for index, message in signature_errors.items():

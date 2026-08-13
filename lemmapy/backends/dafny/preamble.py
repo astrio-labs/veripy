@@ -8,11 +8,11 @@ The divisibility lemma pack (needed for e.g. gcd's maximality ensures, which
 times out without it) is designated future preamble work — see ROADMAP.
 """
 
-PREAMBLE_VERSION = "0.2"
+PREAMBLE_VERSION = "0.3"
 
 PREAMBLE = """\
-// LemmaPy Dafny preamble v0.2 -- Python-exact arithmetic and indexing
-// (ARCHITECTURE §7.1, §7 catalog).
+// LemmaPy Dafny preamble v0.3 -- Python-exact arithmetic, indexing,
+// slicing, Optionals (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int
   requires b != 0
@@ -36,5 +36,35 @@ function PyIndex(i: int, n: int): int
   requires -n <= i < n
 {
   if i < 0 then i + n else i
+}
+
+// Optional[T] / T | None. Narrowing is replayed as VCs: using `.v` carries
+// the well-formedness obligation PySome?, discharged by `is None` guards.
+datatype PyOpt<T> = PyNone | PySome(v: T)
+
+// Python slice s[lo:hi] (step 1): both bounds clamp, negatives count from
+// the end, and an inverted range is empty -- exactly Python's semantics.
+function PySlice<T>(s: seq<T>, lo: int, hi: int): seq<T>
+{
+  var n := |s|;
+  var l := if lo < 0 then PyMax(0, n + lo) else if lo < n then lo else n;
+  var h := if hi < 0 then PyMax(0, n + hi) else if hi < n then hi else n;
+  if l >= h then [] else s[l..h]
+}
+
+// max()/min() over a nonempty int list; the requires is exactly Python's
+// ValueError condition for an empty sequence.
+function PySeqMax(s: seq<int>): int
+  requires |s| >= 1
+  decreases |s|
+{
+  if |s| == 1 then s[0] else PyMax(PySeqMax(s[..|s|-1]), s[|s|-1])
+}
+
+function PySeqMin(s: seq<int>): int
+  requires |s| >= 1
+  decreases |s|
+{
+  if |s| == 1 then s[0] else PyMin(PySeqMin(s[..|s|-1]), s[|s|-1])
 }
 """

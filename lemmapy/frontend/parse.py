@@ -19,9 +19,9 @@ import ast
 import re
 from dataclasses import dataclass, field
 
-CLAUSE_KINDS = ("verified", "requires", "ensures", "invariant", "decreases")
+CLAUSE_KINDS = ("verified", "requires", "ensures", "invariant", "decreases", "proof")
 HEADER_KINDS = ("verified", "requires", "ensures", "decreases")
-BODY_KINDS = ("invariant", "decreases")
+BODY_KINDS = ("invariant", "decreases", "proof")
 
 RESERVED = frozenset({"forall", "exists", "result", "old", "mutates", "extern"})
 
@@ -195,6 +195,7 @@ class Clause:
     desugared: str | None = None
     error: str | None = None
     old_names: tuple[str, ...] = ()
+    col: int = 0  # column of the `#@` comment (block attachment for `proof`)
 
 
 @dataclass
@@ -264,6 +265,19 @@ def parse_clause(
         clause.error = f"not a valid spec expression after desugaring ({exc.msg}): {desugared!r}"
         return clause
 
+    proof_target: str | None = None
+    if kind == "proof":
+        # `#@ proof LemmaName(args...)` — a ghost lemma invocation. The
+        # lemma is a Dafny-side name (preamble or proofs sidecar); the
+        # arguments are ordinary spec expressions.
+        if not (isinstance(tree.body, ast.Call) and isinstance(tree.body.func, ast.Name)):
+            clause.error = "`proof` takes a single lemma call: `#@ proof LemmaName(arg, ...)`"
+            return clause
+        if tree.body.keywords:
+            clause.error = "lemma calls take positional arguments only"
+            return clause
+        proof_target = tree.body.func.id
+
     old_names: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "old":
@@ -290,6 +304,8 @@ def parse_clause(
     allowed = set(params) | SAFE_BUILTINS | set(module_names) | set(extra_names) | _bound_names(tree)
     if kind == "ensures":
         allowed |= {"result", "old"}
+    if proof_target is not None:
+        allowed |= {proof_target}  # a Dafny lemma name, not a Python one
     unknown = sorted(names - allowed)
     if unknown:
         clause.error = f"unknown name(s) in spec: {', '.join(unknown)}"

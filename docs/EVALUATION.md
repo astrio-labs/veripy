@@ -17,53 +17,38 @@ RQ4 is the headline DX metric and gets the most design attention here.
 
 ---
 
-## The proof-completion benchmark family (RQ4)
+## lemmapy-benchmark (RQ4 and the headline)
 
-### Shared task format and protocol
+The native benchmark is **lemmapy-benchmark** ([BENCHMARK.md](BENCHMARK.md)): tasks
+are annotated-Python modules scored on the assurance ladder (gate → hunt →
+mutant panel → encode → prove → fidelity), with **spec strength measured
+mechanically** via deterministic mutant kill rates — a dimension no
+skeleton-completion benchmark has. Exam variants derive from the golden
+corpus (spec-writing, proof-repair, debugging), and rungs R3–R5 are
+backend-parameterized: a future Lean backend gets a second prove/fidelity
+column over identical tasks, the comparison only a multi-backend toolchain
+can make.
 
-All sets in the family use the format proven by the [LemmaScript Dafny benchmark](https://github.com/midspiral/lemmascript-dafny-benchmark):
+**Positioning.** LemmaScript's benchmark (and its runner) is competitor
+infrastructure; we do not build on it. It remains useful only as a
+difficulty-calibration reference. A cross-tool "olympics" (OpenJML, Verus,
+Frama-C, …) is out of scope — competitor-authored comparisons cap their own
+credibility (that is VerifyThis/SV-COMP territory, which works because of
+neutral governance) — but benchmark task *contracts* are source-language-
+neutral and can be published as a portable spec suite others port to their
+tools.
 
-- **Task:** a `.dfy.gen` skeleton (contracts and bodies, no proofs) to be completed into a verifying `.dfy`.
-- **Rules (validator-enforced):** additions-only diff; generated contracts untouched; no `assume`, `{:axiom}`, `{:verify false}`, or other escape hatches; pinned Dafny version (4.11.x, matching the LemmaScript validator).
-- **Runner:** the [LemmaScript trial runner](https://github.com/midspiral/lemmascript-dafny-benchmark-runs) — per-run manifests, frozen candidates, full transcripts, append-only trials ledger, token and wall-clock accounting. (License pending upstream; requested from MidSpiral.)
-- **Metrics:** pass@k per task; **autonomy rate** (fraction of tasks completed with zero human edits) as the headline number; iterations and tokens per completed proof as cost curves; all broken down per stratum (below).
+**External baselines.** [DafnyBench](https://github.com/sun-wendy/DafnyBench)
+and [MBPP-DFY](https://github.com/Mondego/dafny-synthesis) stay as public
+comparability anchors for the proof-repair exam (numbers reported side by
+side, never averaged; both public-since-2024, so contamination is assumed
+and stated). The benchmark's own tasks are freshly authored/adapted with
+per-task license metadata; the golden corpus is the held-out set, and any
+tuning happens on derived exams over a disjoint task split.
 
-These rules are identical to the discipline the agent loop's output must satisfy in production ([ARCHITECTURE.md](ARCHITECTURE.md), LLM proof-repair loop) — the benchmark measures the deployed behavior, not a proxy.
-
-### Development set: LemmaScript Dafny benchmark
-
-33 proof-completion tasks derived from LemmaScript (TypeScript) case studies; MIT-licensed including tasks (all 17 upstream repos MIT, verified via `tasks/ATTRIBUTION.md`).
-
-**Role:** tuning only — prompts, iteration strategy, lemma-suggestion heuristics, model selection. Available *now*, before our encoder exists, which decouples M2 development from M1. **Never reported as a held-out result.**
-
-### Held-out headline set: the Python-derived suite
-
-The Python-sourced mirror of the LemmaScript benchmark — same format, rules, and runner; source language is the only variable. Built from our own toolchain's output, so it samples the proof-idiom distribution our users actually face (`PyMod`/`PyFloorDiv`, `Truthy_*`, seq/map container models, `Option` narrowing VCs, bounds VCs from index desugaring). Working name: `lemmapy-dafny-benchmark`.
-
-**Construction pipeline:**
-
-1. **Assemble the source corpus** — annotated Python functions inside the v1 fragment, drawn from: HumanEval+ and MBPP+ tasks (EvalPlus variants, for the stronger test suites), ported VerifyThis competition problems and named algorithms, and a subset of Nagini's example suite (the nearest-precedent comparison). This same corpus's *source side* is the RQ2 end-to-end benchmark — one corpus, two benchmarks.
-2. **Write `#@` specs** for each function; specs must be strong enough that the EvalPlus test suites pass under spec-derived Hypothesis strategies (guards against vacuous specs).
-3. **Run the front half of the toolchain:** conformance checker must accept; encoder emits the `.dfy.gen` stub. A function the checker rejects is out (and recorded — that's RQ1 telemetry, not benchmark filler).
-4. **Package each stub as a task** under the shared format; carry per-task metadata: source problem, fragment features used, lowering-catalog buckets touched.
-5. **Write reference solutions** (human or frontier-model, hand-audited) proving solvability; difficulty tiers by added non-blank proof lines, matching the LemmaScript tiering (small 1–10, medium 11–50, large 51–150, very large 151+).
-6. **Freeze and version at M1 exit.** After freezing: no tuning against it, no task edits without a version bump, append-only results ledger.
-
-**Stratification — the diagnostic axis.** Tasks are labeled by lowering-catalog bucket ([ARCHITECTURE.md §7](ARCHITECTURE.md)): *clean* lowerings, *exactly-right desugarings* (`PyMod`, slices, truthiness), *curated Tier 2 models* (str/dict/sorted). Per-bucket completion rates turn the benchmark into an encoder diagnostic: a failure cluster on desugaring tasks means the preamble needs stronger lemmas, not that the agent loop is weak.
-
-**Target size:** 40–60 tasks initially, growing with the fragment (each v1.5 admission contributes tasks exercising the new lowering). *(Open: exact size and per-bucket quotas.)*
-
-**Why held-out status is credible:** the LemmaScript set absorbs all tuning; and although the *Python sources* (HumanEval/MBPP) are in every model's training data, the *Dafny artifacts* are freshly generated by our encoder and have never existed publicly — the proof tasks themselves are contamination-resistant.
-
-### External comparability sets: DafnyBench and MBPP-DFY
-
-- **[DafnyBench](https://github.com/sun-wendy/DafnyBench)** (~555 programs; annotation-restoration task): the community-standard number. We report our loop on it for comparability with published results (Formal Disco's Claude and fine-tuned-Qwen baselines). **Caveat:** annotation-restoration is a different task shape from skeleton completion — report side by side, never averaged. Note our loop's Dafny-side moves (proof file only) don't map 1:1 onto DafnyBench's format; we adapt by allowing the loop's full output surface and documenting the adaptation.
-- **[MBPP-DFY](https://github.com/Mondego/dafny-synthesis)** (Misu et al.; ~150 MBPP problems as human-written verified Dafny): two roles. (a) External baseline on a well-studied set. (b) **The encoder-tax experiment:** for MBPP problems present in both MBPP-DFY and our suite, compare proof effort on *hand-written* Dafny vs. *our encoder-generated* Dafny for the same problem — a problem-matched measurement of how much harder (or easier) our translation idioms make proving. This isolates the encoder's contribution to proof difficulty from the problem's intrinsic difficulty.
-- **Contamination caveat for both:** public since 2024; assume memorization pressure. They anchor comparability; the held-out suite anchors claims.
-
-### The cross-language experiment
-
-Same protocol, validator, and runner across the LemmaScript set (TypeScript-sourced) and our suite (Python-sourced) enables a controlled comparison: *is Dafny generated from Python harder to prove than Dafny generated from TypeScript, and which lowerings account for the difference?* Report per-tier and per-bucket. This is a publishable result independent of the toolchain's headline claims.
+**Metrics.** Ladder height distribution; spec-strength (mutant kill rate,
+survivors adjudicated); for agent exams: autonomy rate (tasks restored to
+full height with zero human edits), iterations and tokens per task.
 
 ---
 
