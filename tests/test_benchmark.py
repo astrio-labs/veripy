@@ -132,6 +132,41 @@ def test_report_shows_err_not_ratio_for_incomplete_panel():
     assert "1/3" in survived_row
 
 
+def test_hunt_unwritable_workdir_degrades_to_error(tmp_path):
+    # Staging failures (mkdir/write) must yield a per-item ERROR verdict,
+    # not a traceback that aborts the benchmark mid-scorecard.
+    from lemmapy.benchmark.runner import ERROR, _hunt
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")  # a file where the workdir must be a directory
+    verdict, detail = _hunt(
+        "#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n",
+        "t", blocker / "sub", per_condition_timeout=1,
+    )
+    assert verdict == ERROR
+    assert "could not stage" in detail
+
+
+def test_run_benchmark_survives_task_staging_failure(tmp_path):
+    # A task whose workdir cannot be created still gets a scorecard row.
+    from lemmapy.benchmark.runner import ERROR, run_benchmark
+
+    tasks_root = tmp_path / "tasks"
+    task_dir = tasks_root / "t"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.py").write_text(
+        "#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n"
+    )
+    blocker = tmp_path / "work"
+    blocker.write_text("")  # run_task's workdir lands under a file
+    scores = run_benchmark(tasks_root, blocker)
+    assert len(scores) == 1
+    assert scores[0].task_id == "t"
+    assert scores[0].rungs[0].status == ERROR
+    assert "staging failed" in scores[0].rungs[0].detail
+    assert scores[0].height == 0
+
+
 def test_hunt_subprocess_exception_degrades_to_error(tmp_path, monkeypatch):
     # A stuck CrossHair must not abort the whole run before the scorecard.
     import subprocess as sp

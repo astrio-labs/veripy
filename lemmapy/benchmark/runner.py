@@ -85,8 +85,13 @@ def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int) -> 
     if specs.errors or specs.orphans:
         return ERROR, "spec errors"
     checked = workdir / f"{name}_checked.py"
-    checked.parent.mkdir(parents=True, exist_ok=True)
-    checked.write_text(emit_checked(source, specs, src_name=f"{name}.py"))
+    try:
+        checked.parent.mkdir(parents=True, exist_ok=True)
+        checked.write_text(emit_checked(source, specs, src_name=f"{name}.py"))
+    except OSError as exc:
+        # Unwritable workdir degrades to a per-item ERROR, same as a
+        # stuck analysis — never abort the run mid-scorecard.
+        return ERROR, f"could not stage checked module: {type(exc).__name__}"
     try:
         proc = subprocess.run(
             [exe, "check", str(checked), "--analysis_kind", "icontract",
@@ -228,7 +233,16 @@ def run_task(
 def run_benchmark(tasks_root: Path, workdir: Path, **kwargs) -> list[TaskScore]:
     scores = []
     for task_dir in sorted(p for p in tasks_root.iterdir() if (p / "task.py").exists()):
-        scores.append(run_task(task_dir, workdir / task_dir.name, **kwargs))
+        try:
+            scores.append(run_task(task_dir, workdir / task_dir.name, **kwargs))
+        except OSError as exc:
+            # A task whose staging fails (unreadable source, unwritable
+            # workdir) still gets a scorecard row instead of killing the run.
+            score = TaskScore(task_id=task_dir.name)
+            score.rungs.append(
+                Rung("gate", ERROR, f"task staging failed: {type(exc).__name__}")
+            )
+            scores.append(score)
     return scores
 
 
