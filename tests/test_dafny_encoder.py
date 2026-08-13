@@ -450,6 +450,33 @@ def test_proof_sidecar_rejects_setliteral_axiom_masquerade(tmp_path):
     assert "masquerade" in msg or "axiom" in msg
 
 
+def test_proof_sidecar_rejects_multiset_display_masquerade(tmp_path):
+    # `multiset{1}`'s brace follows an identifier — must not count as a body.
+    msg = _sidecar_error(
+        tmp_path, "lemma FreeLunch(x: int)\n  ensures x in multiset{1}\n"
+    )
+    assert "not allowed" in msg
+
+
+def test_proof_sidecar_rejects_lambda_arrows(tmp_path):
+    # A lambda's body brace follows `>`; forbid isolated `=>` outright.
+    msg = _sidecar_error(
+        tmp_path, "lemma FreeLunch(x: int)\n  ensures (y => true)(x)\n"
+    )
+    assert "lambda" in msg
+
+
+def test_proof_sidecar_implication_still_legal(tmp_path):
+    from lemmapy.backends.dafny.encoder import load_proof_sidecar
+
+    src = tmp_path / "m.py"
+    src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (tmp_path / "m.proofs.dfy").write_text(
+        "lemma Imp(x: int)\n  ensures x > 1 ==> x > 0\n{\n}\n"
+    )
+    assert "Imp" in load_proof_sidecar(src).lemmas
+
+
 def test_proof_sidecar_body_after_signature_still_accepted(tmp_path):
     from lemmapy.backends.dafny.encoder import load_proof_sidecar
 
