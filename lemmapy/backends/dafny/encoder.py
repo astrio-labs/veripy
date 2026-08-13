@@ -117,6 +117,23 @@ _SIDECAR_FORBIDDEN = frozenset({
     "twostate", "iterator", "class", "trait", "module", "new", "modifies",
 })
 _SIDECAR_DECL_KEYWORDS = frozenset({"lemma", "function", "predicate", "ghost"})
+# Words that cannot END a value/signature — a top-level `{` following one of
+# these is a brace-delimited literal in specification position, not a body.
+_SIDECAR_NON_ENDERS = frozenset({
+    "in", "then", "else", "requires", "ensures", "decreases", "reads",
+    "returns", "forall", "exists", "if", "case", "match",
+})
+
+
+def _is_value_ender(token: str | None) -> bool:
+    if token is None:
+        return False
+    if token in (")", "]", ">"):
+        return True
+    if token.isdigit():
+        return True
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", token)) \
+        and token not in _SIDECAR_NON_ENDERS
 
 
 def _validate_sidecar(text: str, name: str) -> frozenset[str]:
@@ -144,6 +161,17 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
         w = words[idx]
         if w == "{":
             if depth == 0:
+                # A body brace always follows a value-ender; a brace after an
+                # operator/keyword (`in {1, 2}`) is a specification literal —
+                # which would let a BODILESS lemma masquerade as proved.
+                prev = words[idx - 1] if idx > 0 else None
+                if not _is_value_ender(prev):
+                    raise EncodeError(
+                        f"proof sidecar {name}: brace-delimited literals in "
+                        f"specification position are not supported — a bodiless "
+                        f"declaration could masquerade as proved; restate the "
+                        f"spec without set/map displays"
+                    )
                 current_decl_has_body = True
             depth += 1
         elif w == "}":

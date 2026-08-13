@@ -441,6 +441,26 @@ def test_proof_sidecar_rejects_axioms(tmp_path):
     )
 
 
+def test_proof_sidecar_rejects_setliteral_axiom_masquerade(tmp_path):
+    # A bodiless lemma whose ensures ends in a set literal must not have the
+    # literal's brace counted as its body (that would admit an axiom).
+    msg = _sidecar_error(
+        tmp_path, "lemma FreeLunch(x: int)\n  ensures x in {1, 2}\n"
+    )
+    assert "masquerade" in msg or "axiom" in msg
+
+
+def test_proof_sidecar_body_after_signature_still_accepted(tmp_path):
+    from lemmapy.backends.dafny.encoder import load_proof_sidecar
+
+    src = tmp_path / "m.py"
+    src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (tmp_path / "m.proofs.dfy").write_text(
+        "lemma L(x: int)\n  ensures x == x\n{\n  assert x == x;\n}\n"
+    )
+    assert "L" in load_proof_sidecar(src).lemmas
+
+
 def test_proof_sidecar_rejects_assume_and_attributes(tmp_path):
     assert "not allowed" in _sidecar_error(
         tmp_path, "lemma L(x: int) ensures x == x { assume x == x; }\n"
