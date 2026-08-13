@@ -1,0 +1,82 @@
+"""`lemmapy check` fragment conformance: the encoder dry-run is the
+conformance authority — check reports exactly what verify would reject,
+without needing Dafny installed."""
+
+from pathlib import Path
+
+from lemmapy.cli import cmd_check
+
+CONFORMANT = (
+    "#@ ensures result == x + 1\n"
+    "def bump(x: int) -> int:\n"
+    "    return x + 1\n"
+)
+
+OUTSIDE = (
+    "#@ ensures result >= 0\n"
+    "def f(xs: list[int]) -> int:\n"
+    "    return len(set(xs))\n"
+)
+
+SHADOWING = (
+    "sum = 5\n"
+    "#@ ensures result == 0\n"
+    "def f() -> int:\n"
+    "    return 0\n"
+)
+
+
+def _check(tmp_path: Path, source: str, **kw) -> tuple[int, str]:
+    src = tmp_path / "m.py"
+    src.write_text(source)
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        status = cmd_check([src], types=False, **kw)
+    return status, buf.getvalue()
+
+
+def test_conformant_module_passes(tmp_path):
+    status, out = _check(tmp_path, CONFORMANT)
+    assert status == 0
+    assert "fragment: conformant (bump)" in out
+
+
+def test_outside_fragment_reported_with_line(tmp_path):
+    status, out = _check(tmp_path, OUTSIDE)
+    assert status == 1
+    assert "fragment:" in out and "m.py:3" in out
+
+
+def test_builtin_shadowing_caught_by_check(tmp_path):
+    status, out = _check(tmp_path, SHADOWING)
+    assert status == 1
+    assert "shadows a builtin" in out
+
+
+def test_no_fragment_opt_out(tmp_path):
+    status, out = _check(tmp_path, OUTSIDE, fragment=False)
+    assert status == 0
+    assert "fragment:" not in out
+
+
+def test_unspecced_module_skips_fragment(tmp_path):
+    status, out = _check(tmp_path, "def f() -> int:\n    return 0\n")
+    assert status == 0
+    assert "fragment:" not in out
+
+
+def test_broken_sidecar_reported_by_check(tmp_path):
+    src = tmp_path / "m.py"
+    src.write_text(CONFORMANT)
+    (tmp_path / "m.proofs.dfy").write_text("lemma Bad(x: int)\n  ensures x == x\n")
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        status = cmd_check([src], types=False)
+    assert status == 1
+    assert "axiom" in buf.getvalue()
