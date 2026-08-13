@@ -169,7 +169,7 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
     history: list[dict[str, Any]] = []
 
     for attempt in range(max_iterations + 1):
-        payload = verify_structured(work_src, outdir / f"iter{attempt}",
+        payload = verify_structured(work_src, work / f"iter{attempt}",
                                     time_limit=time_limit)
         if payload["status"] == "ok":
             text = work_sidecar.read_text() if work_sidecar.exists() else None
