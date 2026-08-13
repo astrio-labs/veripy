@@ -570,7 +570,26 @@ def main(argv: list[str] | None = None) -> int:
             if not args.no_types:
                 gate = run_type_gate(args.files)
                 if not gate.available or gate.errors:
-                    print("type gate failed; fix types or pass --no-types",
+                    # The agent asked for JSON; a gate failure is still a
+                    # structured payload, never a silent empty run.
+                    by_file: dict[str, list] = {str(p): [] for p in args.files}
+                    for d in (gate.errors if gate.available else []):
+                        by_file.setdefault(d.file, []).append(
+                            {"kind": "type", "py_line": d.line,
+                             "message": d.message})
+                    payloads = [
+                        {"schema": "lemmapy-failures/1", "file": f,
+                         "status": "gate-error", "functions": [],
+                         "failures": fails or (
+                             [] if gate.available else
+                             [{"kind": "type", "py_line": None,
+                               "message": f"type gate unavailable: {gate.error}"}]),
+                         "sidecar": None}
+                        for f, fails in by_file.items()
+                    ]
+                    dump(payloads, args.json_out)
+                    print("type gate failed; structured payloads written to "
+                          f"{args.json_out}; fix types or pass --no-types",
                           file=sys.stderr)
                     return 2
             payloads = verify_structured_many(
