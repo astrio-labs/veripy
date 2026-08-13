@@ -591,6 +591,12 @@ def main(argv: list[str] | None = None) -> int:
                           help="on success, write the sidecar next to the "
                                "source (previous content saved as .bak)")
 
+    sub.add_parser(
+        "lsp",
+        help="run the LSP server over stdio: instant conformance "
+             "diagnostics + per-function status for editors",
+    )
+
     p_survey = sub.add_parser(
         "survey",
         help="read-only fragment-coverage survey over files/directories (M0, RQ1)",
@@ -667,6 +673,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if any(p["status"] == "failed" for p in payloads) else 0
         return cmd_verify(args.files, args.outdir, args.time_limit,
                           types=not args.no_types, report=args.report)
+    if args.command == "lsp":
+        from .lsp import main as lsp_main
+
+        return lsp_main()
     if args.command == "repair":
         return cmd_repair(args.file, args.outdir, args.engine,
                           args.max_iterations, args.time_limit, args.apply)
