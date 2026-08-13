@@ -71,6 +71,21 @@ def test_unverified_gcd_still_difftests(tmp_path):
     assert result.error is None and all(f.ok for f in result.functions)
 
 
+def test_keyword_only_params_difftest(tmp_path):
+    src = tmp_path / "kw.py"
+    src.write_text(
+        "#@ requires lo <= hi\n"
+        "#@ ensures lo <= result <= hi\n"
+        "def clamp_kw(x: int, *, lo: int, hi: int) -> int:\n"
+        "    return min(max(x, lo), hi)\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=60)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]
+
+
 def test_harness_detects_divergence(tmp_path):
     # Compile bump's stub, then compare it against a WRONG original: the
     # harness must find and shrink a counterexample.

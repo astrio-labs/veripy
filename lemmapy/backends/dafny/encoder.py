@@ -702,7 +702,9 @@ class _MethodEncoder:
     def encode(self) -> None:
         node = self.node
         a = node.args
-        if a.vararg or a.kwarg or a.defaults or a.kw_defaults:
+        if a.vararg or a.kwarg or a.defaults or any(d is not None for d in a.kw_defaults):
+            # NB: kw_defaults is [None, ...] for defaultless keyword-only
+            # params — those are ordinary fragment parameters, not defaults.
             raise _err(node, "varargs/defaults are outside the fragment")
         for p in (*a.posonlyargs, *a.args, *a.kwonlyargs):
             self.types[p.arg] = _dafny_type(p.annotation, p)
