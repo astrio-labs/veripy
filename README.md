@@ -1,6 +1,6 @@
 # LemmaPy
 
-> **Status: early development (M0).** The design docs are complete and the M0 walking skeleton works: `#@` specs parse ([grammar v0](docs/SPEC-GRAMMAR.md)) and compile to runtime contracts that CrossHair searches for counterexamples. The Dafny proof backend (M1) is not started. Not yet released; no license granted yet.
+> **Status: mid-M1.** The pipeline runs end-to-end on the first fragment slices: `#@` specs parse ([grammar v0.2, frozen](docs/SPEC-GRAMMAR.md)), compile to runtime contracts that CrossHair searches for counterexamples, and translate to Dafny for SMT proofs (`lemmapy verify`). Ten corpus functions are proven — including `gcd` with its full maximality spec via the `#@ proof` lemma-sidecar mechanism — each cross-checked against CPython by a Hypothesis differential harness, and scored 10/10 on [lemmapy-benchmark](docs/BENCHMARK.md)'s assurance ladder (29/29 mutants killed). Boundary guards and island hardening are the remaining M1 layers. Not yet released; no license granted yet.
 
 Developers (and LLM agents) annotate **production Python** with specifications in `#@` comments. The toolchain translates a precisely defined typed fragment into [Dafny](https://dafny.org/), where an SMT-backed verifier discharges the proofs — with LLM assistance for the ones automation misses. The Python file stays the source of truth: CPython ignores the annotations, and no code is rewritten in another language. LemmaPy is a sibling of MidSpiral's **LemmaScript**, which delivers the same workflow for TypeScript.
 
@@ -24,21 +24,33 @@ def binary_search(xs: list[int], target: int) -> int:
     return -1
 ```
 
-## Try it (M0)
+## Try it
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-```bash
-lemmapy check examples/clamp.py && lemmapy emit examples/clamp.py
-```
+Hunt for counterexamples at runtime (no proof needed — CrossHair searches the compiled `#@` contracts):
 
 ```bash
-crosshair check build/checked/clamp_checked.py --analysis_kind icontract
+lemmapy hunt examples/clamp.py
 ```
 
-The last command prints `false when calling clamp(-1, 0, 0)` — a concrete counterexample to the seeded bug in [examples/clamp.py](examples/clamp.py), found from the `#@` specs alone, with no test written. `invariant`/`decreases` clauses are parsed and recorded but enforced only by the proof backend (M1).
+This prints `false when calling clamp(-1, 0, 0)` — a concrete counterexample to the seeded bug in [examples/clamp.py](examples/clamp.py), found from the specs alone, with no test written.
+
+Prove a function correct for **all** inputs (typed fragment → Dafny → SMT; requires [Dafny](https://dafny.org/) on PATH):
+
+```bash
+lemmapy verify examples/contact/he_humaneval_13.py --time-limit 60
+```
+
+That's Euclid's `gcd` verified against its full spec — divides both arguments *and* is the greatest such divisor — with the divisibility lemma pack supplied in a [`.proofs.dfy` sidecar](examples/contact/he_humaneval_13.proofs.dfy) referenced from a `#@ proof` clause. Failures map back to the Python source line.
+
+Score the whole task corpus on the assurance ladder (gate → hunt → mutants → encode → prove → fidelity):
+
+```bash
+lemmapy benchmark
+```
 
 ## Why this is not "just run a verifier on Python"
 
@@ -80,7 +92,7 @@ The result is a precise, honest guarantee: *verified properties hold for every e
 | SUBSET.md | The versioned fragment definition (seeded from the lowering catalog) | planned |
 | DECISIONS.md | Resolved design decisions with rationale and revisit tripwires | planned |
 | RELATED-WORK.md | The verification landscape and positioning | planned |
-| [SPEC-GRAMMAR.md](docs/SPEC-GRAMMAR.md) | The `#@` spec language: clauses, expression syntax, desugaring rules, decisions | ✅ (v0.1, frozen) |
+| [SPEC-GRAMMAR.md](docs/SPEC-GRAMMAR.md) | The `#@` spec language: clauses, expression syntax, desugaring rules, decisions | ✅ (v0.2, frozen) |
 | [GRAMMAR-CONTACT.md](docs/GRAMMAR-CONTACT.md) | The M0 exit exercise: 20 annotated HumanEval/MBPP tasks, mutation-tested; friction findings and the freeze decision | ✅ |
 | [CORPUS-RESULTS.md](docs/CORPUS-RESULTS.md) | Fragment-coverage numbers: nine OSS repos + the HumanEval/MBPP greenfield contrast | ✅ |
 | [BENCHMARK.md](docs/BENCHMARK.md) | lemmapy-benchmark: assurance-ladder scoring over annotated-Python tasks, mutant-panel spec strength | ✅ (v0) |
