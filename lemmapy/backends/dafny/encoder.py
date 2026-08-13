@@ -88,8 +88,21 @@ def _dafny_type(ann: ast.expr | None, where: ast.AST) -> str:
             return "string"
         case ast.Subscript(value=ast.Name(id="list"), slice=inner):
             return f"seq<{_dafny_type(inner, where)}>"
+        case ast.Subscript(value=ast.Name(id="Optional"), slice=inner):
+            return f"PyOpt<{_dafny_type(inner, where)}>"
+        case ast.BinOp(left=left, op=ast.BitOr(), right=ast.Constant(value=None)):
+            return f"PyOpt<{_dafny_type(left, where)}>"
+        case ast.BinOp(left=ast.Constant(value=None), op=ast.BitOr(), right=right):
+            return f"PyOpt<{_dafny_type(right, where)}>"
         case _:
             raise _err(where, f"type {ast.unparse(ann)!r} is outside the slice-1 encoder")
+
+
+def _opt_inner(tdesc: str | None) -> str | None:
+    """PyOpt<T> -> T, else None."""
+    if tdesc is not None and tdesc.startswith("PyOpt<") and tdesc.endswith(">"):
+        return tdesc[6:-1]
+    return None
 
 
 _INT_SET = frozenset({"int"})
@@ -130,6 +143,10 @@ class _MethodEncoder:
         self.frozen: set[str] = set()
         # Comprehension binders: raw name -> dafny expression to substitute.
         self.name_overrides: dict[str, str] = {}
+        # Names provably >= 0 (0-based loop indices, 0-based quantifier
+        # binders): indexed bare, keeping spec and body terms trigger-
+        # compatible; everything else goes through PyIndex.
+        self.nonneg: set[str] = set()
 
     # -- naming ---------------------------------------------------------------
 
@@ -239,6 +256,8 @@ class _MethodEncoder:
                 return "bool"
             case ast.Call(func=ast.Name(id="old"), args=[ast.Name(id=name)]):
                 return self.types.get(name)
+            case ast.Subscript(value=value, slice=ast.Slice()):
+                return self._infer(value)  # a slice keeps the sequence type
             case ast.Subscript(value=value):
                 base = self._infer(value)
                 if base == "string":
@@ -332,7 +351,7 @@ class _MethodEncoder:
                 joiner = " && " if isinstance(op, ast.And) else " || "
                 return "(" + joiner.join(f"({self.expr(v)})" for v in values) + ")"
             case ast.BinOp(left=left, op=op, right=right):
-                l, r = self.expr(left), self.expr(right)
+                l, r = self._deopt(left), self._deopt(right)
                 match op:
                     case ast.Add():
                         return f"({l} + {r})"
@@ -354,14 +373,28 @@ class _MethodEncoder:
                 return f"(if {self.expr(test)} then {self.expr(body)} else {self.expr(orelse)})"
             case ast.Subscript(value=value, slice=index):
                 if isinstance(index, ast.Slice):
-                    raise _err(node, "slicing is outside the slice-1 encoder")
+                    if index.step is not None:
+                        raise _err(node, "slice steps are outside the slice encoder")
+                    base = self.expr(value)
+                    lo = self.expr(index.lower) if index.lower is not None else "0"
+                    hi = self.expr(index.upper) if index.upper is not None else f"|{base}|"
+                    return f"PySlice({base}, {lo}, {hi})"
                 base = self.expr(value)
                 idx = self.expr(index)
                 # Python normalizes negative indices from the end; Dafny does
                 # not. PyIndex carries Python's exact semantics (its requires
-                # is exactly Python's IndexError condition). Applied UNIFORMLY
-                # — special-casing literals produces mixed bare/wrapped terms
-                # that break quantifier trigger matching.
+                # is exactly Python's IndexError condition). Indices provably
+                # >= 0 — nonneg literals and tracked 0-based binders/loop
+                # variables — are emitted BARE so spec quantifier triggers
+                # match the body's ground terms; everything else is wrapped.
+                provably_nonneg = (
+                    isinstance(index, ast.Constant)
+                    and isinstance(index.value, int) and index.value >= 0
+                ) or (
+                    isinstance(index, ast.Name) and index.id in self.nonneg
+                )
+                if provably_nonneg:
+                    return f"{base}[{idx}]"
                 return f"{base}[PyIndex({idx}, |{base}|)]"
             case ast.List(elts=elts):
                 return "[" + ", ".join(self.expr(e) for e in elts) + "]"
@@ -433,19 +466,61 @@ class _MethodEncoder:
                 out.append(ch)
         return '"' + "".join(out) + '"'
 
+    def _eff_type(self, node: ast.expr) -> str | None:
+        """Inferred type with PyOpt<T> flattened to T (deopt semantics)."""
+        t = self._infer(node)
+        return _opt_inner(t) or t
+
+    def _deopt(self, node: ast.expr) -> str:
+        """Encode node, projecting PyOpt<T> to T. The `.v` well-formedness VC
+        is exactly Python's would-raise-TypeError condition — narrowing
+        replayed as a proof obligation."""
+        if _opt_inner(self._infer(node)) is not None:
+            return f"({self.expr(node)}).v"
+        return self.expr(node)
+
     def _compare(self, node: ast.Compare, left: ast.expr, ops, comps) -> str:
         parts = []
         current = left
         for op, comp in zip(ops, comps):
-            l, r = self.expr(current), self.expr(comp)
+            if isinstance(op, (ast.Is, ast.IsNot)):
+                # Only `x is [not] None` on an Optional is in the fragment.
+                if isinstance(comp, ast.Constant) and comp.value is None \
+                        and _opt_inner(self._infer(current)) is not None:
+                    tester = "PyNone?" if isinstance(op, ast.Is) else "PySome?"
+                    parts.append(f"({self.expr(current)}).{tester}")
+                    current = comp
+                    continue
+                raise _err(node, (
+                    "`is` is only supported as `is [not] None` on Optional-typed "
+                    "values; identity on other objects is outside the fragment"
+                ))
             if isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
-                lt, rt = self._infer(current), self._infer(comp)
+                lt, rt = self._eff_type(current), self._eff_type(comp)
                 if not (lt in _ORDER_OK and lt == rt):
                     raise _err(node, (
                         f"order comparison on non-int operands (inferred {lt}/{rt}) — "
                         f"Dafny's sequence `<` is prefix order, Python's is lexicographic; "
                         f"outside the slice-1 encoder"
                     ))
+                l, r = self._deopt(current), self._deopt(comp)
+            elif isinstance(op, (ast.Eq, ast.NotEq)):
+                lt, rt = self._infer(current), self._infer(comp)
+                if _opt_inner(lt) is not None and _opt_inner(lt) == rt:
+                    # Python's == never raises: Optional-vs-T equality means
+                    # "is Some AND the payload matches".
+                    inner = f"(({self.expr(current)}).PySome? && ({self.expr(current)}).v == {self.expr(comp)})"
+                    parts.append(inner if isinstance(op, ast.Eq) else f"!{inner}")
+                    current = comp
+                    continue
+                if _opt_inner(rt) is not None and _opt_inner(rt) == lt:
+                    inner = f"(({self.expr(comp)}).PySome? && ({self.expr(comp)}).v == {self.expr(current)})"
+                    parts.append(inner if isinstance(op, ast.Eq) else f"!{inner}")
+                    current = comp
+                    continue
+                l, r = self.expr(current), self.expr(comp)
+            else:
+                l, r = self.expr(current), self.expr(comp)
             match op:
                 case ast.Eq():
                     parts.append(f"{l} == {r}")
@@ -483,10 +558,16 @@ class _MethodEncoder:
             return f"|{self.expr(args[0])}|"
         if name in ("min", "max") and len(args) == 2:
             for a in args:
-                if self._infer(a) != "int":
+                if self._eff_type(a) != "int":
                     raise _err(node, f"{name}() on non-int operands is outside the slice-1 encoder")
             fn = "PyMin" if name == "min" else "PyMax"
-            return f"{fn}({self.expr(args[0])}, {self.expr(args[1])})"
+            return f"{fn}({self._deopt(args[0])}, {self._deopt(args[1])})"
+        if name in ("min", "max") and len(args) == 1:
+            if self._infer(args[0]) != "seq<int>":
+                raise _err(node, f"1-arg {name}() needs a list[int] operand in the slice encoder")
+            fn = "PySeqMin" if name == "min" else "PySeqMax"
+            # PySeqMax/Min's requires (|s| >= 1) is Python's ValueError condition.
+            return f"{fn}({self.expr(args[0])})"
         if name == "abs" and len(args) == 1:
             return f"PyAbs({self.expr(args[0])})"
         if name == "old" and self.spec_mode and len(args) == 1 and isinstance(args[0], ast.Name):
@@ -534,6 +615,8 @@ class _MethodEncoder:
                         lo, hi = self.expr(domain.args[0]), self.expr(domain.args[1])
                     domains.append(f"{lo} <= {var} < {hi}")
                     binder_type: str | None = "int"
+                    if lo == "0" or (lo.lstrip("(").rstrip(")").isdigit()):
+                        self.nonneg.add(raw)
                 else:
                     dt = self._infer(domain)
                     if dt is None or not dt.startswith("seq<"):
@@ -552,6 +635,7 @@ class _MethodEncoder:
                     self.types.pop(raw, None)
                 else:
                     self.types[raw] = prev
+                self.nonneg.discard(raw)
         quant = "forall" if kind == "all" else "exists"
         connective = "==>" if kind == "all" else "&&"
         return f"({quant} {', '.join(binders)} :: ({' && '.join(domains)}) {connective} ({body}))"
@@ -696,7 +780,32 @@ class _MethodEncoder:
         list/str operands."""
         if self._is_seqish(self._infer(test)):
             return f"(|{self.expr(test)}| != 0)"
+        if _opt_inner(self._infer(test)) is not None:
+            raise _err(test, (
+                "truthiness on an Optional conflates None with falsy values "
+                "(0, empty) — write `is None` / `is not None` explicitly"
+            ))
         return self.expr(test)
+
+    def _coerce(self, node: ast.expr, want: str | None) -> str:
+        """Encode `node` where a value of type `want` is expected, injecting
+        into / projecting out of PyOpt as Python's implicit union does. The
+        `.v` projection carries a PySome? well-formedness VC — that is the
+        catalog's 'narrowing replayed as VCs'."""
+        if want is None:
+            return self.expr(node)
+        want_inner = _opt_inner(want)
+        if want_inner is not None:
+            if isinstance(node, ast.Constant) and node.value is None:
+                return "PyNone"
+            got = self._infer(node)
+            if got == want:
+                return self.expr(node)
+            return f"PySome({self._coerce(node, want_inner)})"
+        got = self._infer(node)
+        if _opt_inner(got) == want:
+            return f"({self.expr(node)}).v"
+        return self.expr(node)
 
     def stmt(self, stmt: ast.stmt, indent: str) -> None:
         match stmt:
@@ -721,15 +830,21 @@ class _MethodEncoder:
                         f"containers (§3.2 ownership)"
                     ))
                 mt = self._mangle(target)
-                self.emit(f"{indent}{mt} := {mt} + [{self.expr(arg)}];", stmt.lineno)
+                target_type = self.types.get(target)
+                elem_type = target_type[4:-1] if target_type and target_type.startswith("seq<") else None
+                self.emit(f"{indent}{mt} := {mt} + [{self._coerce(arg, elem_type)}];", stmt.lineno)
                 return
             case ast.Expr(value=ast.Call(func=ast.Attribute(attr=method))):
                 raise _err(stmt, f"method call .{method}(...) is outside the slice encoder")
             case ast.AnnAssign(target=ast.Name(id=name), annotation=ann, value=value) if value is not None:
                 dtype = _dafny_type(ann, stmt)
-                self._assign_name(name, self.expr(value), indent, stmt, rhs_node=value, ann=dtype)
+                self._assign_name(name, self._coerce(value, dtype), indent, stmt, rhs_node=value, ann=dtype)
             case ast.Assign(targets=[ast.Name(id=name)], value=value):
-                self._assign_name(name, self.expr(value), indent, stmt, rhs_node=value)
+                self._assign_name(
+                    name,
+                    self._coerce(value, self.types.get(name) or self.hoisted.get(name)),
+                    indent, stmt, rhs_node=value,
+                )
             case ast.Assign(targets=[ast.Tuple(elts=elts)], value=ast.Tuple(elts=values)) \
                     if len(elts) == len(values) and all(isinstance(e, ast.Name) for e in elts):
                 names = [e.id for e in elts]  # type: ignore[union-attr]
@@ -769,8 +884,14 @@ class _MethodEncoder:
             case ast.Return(value=value):
                 if value is None:
                     raise _err(stmt, "bare `return` is outside the slice-1 encoder")
-                self.emit(f"{indent}result := {self.expr(value)};", stmt.lineno)
+                self.emit(f"{indent}result := {self._coerce(value, self.return_type)};", stmt.lineno)
                 self.emit(f"{indent}return;")
+            case ast.Assert(test=test, msg=msg):
+                # Executable in CPython, a proof hint in Dafny — the same
+                # dual role #@ specs have.
+                if msg is not None and not isinstance(msg, ast.Constant):
+                    raise _err(stmt, "assert messages must be literals (side effects)")
+                self.emit(f"{indent}assert {self._bool_ctx(test)};", stmt.lineno)
             case ast.If(test=test, body=body, orelse=orelse):
                 # Ownership is path-sensitive: a name is owned after the If
                 # only if it is owned on EVERY path through it.
@@ -852,6 +973,8 @@ class _MethodEncoder:
             self.emit(f"{indent}var {mv} := {lo};", stmt.lineno)
             self._declare(var)
         self.types[var] = "int"
+        if lo_expr == "0" or lo_expr.lstrip("(").rstrip(")").isdigit():
+            self.nonneg.add(var)
         self.emit(f"{indent}while {mv} < {hi}", stmt.lineno)
         self._loop_clauses(stmt, indent, extra=(f"{lo} <= {mv} <= PyMax({lo}, {hi})",))
         self.emit(f"{indent}{{")
@@ -859,6 +982,7 @@ class _MethodEncoder:
         self.emit(f"{indent}  {mv} := {mv} + 1;")
         self.emit(f"{indent}}}")
         self.owned &= pre_owned
+        self.nonneg.discard(var)
         # Python's index survives the loop with a DIFFERENT value than the
         # lowering's; retire it so later reads are rejected, not miscompiled.
         self.retired.add(var)

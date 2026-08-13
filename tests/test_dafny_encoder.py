@@ -26,10 +26,11 @@ def test_method_signature_and_types():
 
 
 def test_forall_lowering_and_auto_bounds_invariant():
+    # 0-based binders index BARE (trigger-compatible with body terms).
     dfy = _encode(BELOW)
-    assert "forall i :: (0 <= i < |l|) ==> ((l[PyIndex(i, |l|)] < t))" in dfy
+    assert "forall i :: (0 <= i < |l|) ==> ((l[i] < t))" in dfy
     assert "invariant i_lo <= i <= PyMax(i_lo, i_hi)" in dfy
-    assert "invariant (forall k :: (0 <= k < i) ==> ((l[PyIndex(k, |l|)] < t)))" in dfy
+    assert "invariant (forall k :: (0 <= k < i) ==> ((l[k] < t)))" in dfy
 
 
 def test_range_bounds_hoisted_once():
@@ -141,15 +142,28 @@ def test_dynamic_index_wrapped_in_pyindex():
     assert "l[PyIndex(i, |l|)]" in dfy
 
 
-def test_indexing_is_uniformly_wrapped():
-    # Uniform wrapping (even for l[0]) keeps quantifier triggers matchable —
-    # mixed bare/wrapped index terms break witness instantiation.
+def test_index_policy_bare_when_provably_nonneg():
+    # Policy: provably nonneg indices (literals, 0-based binders and loop
+    # vars) index bare — keeping spec and body terms trigger-compatible —
+    # everything else goes through PyIndex.
     src = (
         "#@ requires len(l) > 0\n#@ ensures result == l[0]\n"
         "def f(l: list[int]) -> int:\n    return l[0]\n"
     )
-    dfy = _encode(src)
-    assert "l[PyIndex(0, |l|)]" in dfy
+    assert "l[0]" in _encode(src)
+
+    loop_src = (
+        "#@ requires n >= 0 and n <= len(l)\n"
+        "#@ ensures result >= 0 or result < 0\n"
+        "def g(l: list[int], n: int) -> int:\n"
+        "    s = 0\n"
+        "    for i in range(n):\n"
+        "        s = s + l[i]\n"
+        "    return s\n"
+    )
+    dfy = _encode(loop_src)
+    assert "l[i]" in dfy
+    assert "l[PyIndex" not in dfy
 
 
 def test_for_each_over_non_list_rejected():
@@ -197,7 +211,110 @@ def test_char_comparison_allowed():
         "#@ ensures result == (s[0] < s[1])\n"
         "def f(s: str) -> bool:\n    return s[0] < s[1]\n"
     )
-    assert "s[PyIndex(0, |s|)] < s[PyIndex(1, |s|)]" in _encode(src)
+    assert "s[0] < s[1]" in _encode(src)
+
+
+# --- slice 4: Optionals, slices, seq-max, assert ------------------------------
+
+
+def test_optional_type_maps_to_pyopt():
+    src = (
+        "#@ ensures result >= 0 or result < 0\n"
+        "def f(x: int | None) -> int:\n"
+        "    if x is None:\n"
+        "        return 0\n"
+        "    return x\n"
+    )
+    dfy = _encode(src)
+    assert "method f(x: PyOpt<int>) returns (result: int)" in dfy
+    assert "if ((x).PyNone?)" in dfy
+    assert "result := (x).v;" in dfy  # narrowing replayed as a .v VC
+
+
+def test_none_assignment_and_some_injection():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(n: int) -> int:\n"
+        "    m: int | None = None\n"
+        "    m = n\n"
+        "    if m is not None:\n"
+        "        return m\n"
+        "    return 0\n"
+    )
+    dfy = _encode(src)
+    assert "var m: PyOpt<int> := PyNone;" in dfy
+    assert "m := PySome(n);" in dfy
+    assert "(m).PySome?" in dfy
+
+
+def test_optional_equality_never_raises():
+    # Python `==` with a None-holding Optional is False, not an error:
+    # the lowering must not emit a bare .v projection.
+    src = (
+        "#@ ensures result == (x == y)\n"
+        "def f(x: int | None, y: int) -> bool:\n"
+        "    return x == y\n"
+    )
+    dfy = _encode(src)
+    assert "(x).PySome? && (x).v == y" in dfy
+
+
+def test_optional_truthiness_rejected():
+    _expect_encode_error(
+        "#@ ensures result >= 0\n"
+        "def f(x: int | None) -> int:\n"
+        "    if x:\n"
+        "        return 1\n"
+        "    return 0\n",
+        "is None",
+    )
+
+
+def test_is_on_non_optional_rejected():
+    _expect_encode_error(
+        "#@ ensures result == True or result == False\n"
+        "def f(a: list[int], b: list[int]) -> bool:\n    return a is b\n",
+        "is [not] None",
+    )
+
+
+def test_slice_lowers_to_pyslice():
+    src = (
+        "#@ ensures len(result) <= len(l)\n"
+        "def f(l: list[int]) -> list[int]:\n"
+        "    return l[1:-1]\n"
+    )
+    dfy = _encode(src)
+    assert "PySlice(l, 1, (-1))" in dfy
+
+
+def test_open_slice_bounds():
+    src = (
+        "#@ ensures len(result) <= len(l)\n"
+        "def f(l: list[int]) -> list[int]:\n"
+        "    return l[:2]\n"
+    )
+    assert "PySlice(l, 0, 2)" in _encode(src)
+
+
+def test_one_arg_max_lowers_to_pyseqmax():
+    src = (
+        "#@ requires len(l) > 0\n"
+        "#@ ensures result == max(l)\n"
+        "def f(l: list[int]) -> int:\n    return max(l)\n"
+    )
+    assert "PySeqMax(l)" in _encode(src)
+
+
+def test_assert_lowers_to_dafny_assert():
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    assert n >= 0\n"
+        "    return n\n"
+    )
+    assert "assert (n >= 0);" in _encode(src)
 
 
 def test_loop_index_read_after_loop_rejected():
