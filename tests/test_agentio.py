@@ -131,11 +131,14 @@ def test_path_aliases_both_carry_gate_diagnostics(tmp_path, monkeypatch):
         "#@ ensures result >= 0 or result < 0\ndef f(x):\n    return x\n")
     monkeypatch.chdir(tmp_path)
     out = tmp_path / "failures.json"
-    status = main(["verify", "m.py", "./m.py", "-o", str(tmp_path / "o"),
+    # Two genuinely distinct spellings of one file (Path() normalizes
+    # ./m.py to m.py, so use relative + absolute).
+    absolute = str(tmp_path / "m.py")
+    status = main(["verify", "m.py", absolute, "-o", str(tmp_path / "o"),
                    "--json", str(out)])
     assert status == 2
     payloads = json.loads(out.read_text())
-    assert {p["file"] for p in payloads} == {"m.py", "./m.py"}
+    assert {p["file"] for p in payloads} == {"m.py", absolute}
     assert all(p["failures"] for p in payloads)
 
 
