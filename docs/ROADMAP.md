@@ -42,7 +42,7 @@ The differentiating layer: proofs that finish themselves, and rejections that te
 - [x] Diagnostics quality pass: every conformance rejection line-precise with a fixit ("outside the fragment because X, try Y") — every EncodeError carries a source line by construction (`_err`); the four catch-all rejections (statement / expression / type / method-call) now name the admitted alternatives and point at the SEMANTICS.md tables; specific rejections carried fixits already ("rename the binder", "write an explicit comparison", …)
 - [x] Editor surface (LSP or equivalent): verified/unverified status per function, spec hovers, rejection diagnostics inline — `lemmapy lsp`: a dependency-free stdio LSP server publishing instant line-precise conformance diagnostics on open/change/save (spec parse + encoder dry-run, no Dafny) plus the custom `lemmapy/functionStatus` request (conformant/nonconformant + the `#@ verified` marker) for code lenses; wiring batch proof/type-gate results into the server is noted future work
 
-**Exit criteria:** measured LLM proof-completion rate on the M1 benchmark suite without human edits (the headline DX metric); a newcomer can take an unannotated fragment-conformant function to "verified" using only tool feedback.
+**Exit criteria:** measured LLM proof-completion rate on the M1 benchmark suite without human edits (the headline DX metric) — **first measurement done (August 2026): 1/1 proof-repair exams restored (gcd, 2 iterations, sandboxed engine, independently derived pack; [EVALUATION.md](EVALUATION.md) has the number, the invocation, and the two invalid runs that preceded it)**; a newcomer can take an unannotated fragment-conformant function to "verified" using only tool feedback.
 
 ## v1.5 — Fragment growth (telemetry-driven)
 

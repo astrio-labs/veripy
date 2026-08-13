@@ -30,6 +30,20 @@ BODILESS = "lemma Obvious(x: int)\n  ensures x == x\n"
 GOOD = "lemma Obvious(x: int)\n  ensures x == x\n{\n}\n"
 
 
+def test_claude_engine_denies_tools():
+    # Measurement integrity: with tools on, a headless agent once FOUND the
+    # golden sidecar in the repo and returned it verbatim. The command must
+    # deny all tools.
+    from lemmapy.repair import _claude_cmd
+
+    cmd = _claude_cmd("/usr/bin/claude", "prompt text")
+    assert "--disallowedTools" in cmd
+    assert cmd[cmd.index("--disallowedTools") + 1] == "*"
+    # Ordering is load-bearing: --disallowedTools is variadic and would
+    # swallow a prompt placed after it as tool-name rules.
+    assert cmd.index("prompt text") < cmd.index("--disallowedTools")
+
+
 def test_make_engine_specs():
     assert callable(make_engine("claude"))
     assert callable(make_engine("file:/tmp/x"))
