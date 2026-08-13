@@ -259,6 +259,21 @@ def test_optional_equality_never_raises():
     assert "(x).PySome? && (x).v == y" in dfy
 
 
+def test_tuple_assignment_coerces_optionals():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(n: int) -> int:\n"
+        "    x: int | None = None\n"
+        "    y: int | None = None\n"
+        "    x, y = n, None\n"
+        "    if x is not None:\n"
+        "        return x\n"
+        "    return 0\n"
+    )
+    dfy = _encode(src)
+    assert "x, y := PySome(n), PyNone;" in dfy
+
+
 def test_optional_truthiness_rejected():
     _expect_encode_error(
         "#@ ensures result >= 0\n"

@@ -854,7 +854,12 @@ class _MethodEncoder:
                     if n in self.params:
                         raise _err(stmt, "parameter rebinding is outside the fragment (parameters are immutable)")
                     self.retired.discard(n)
-                rhs = ", ".join(self.expr(v) for v in values)
+                # Route every element through the same Optional injection/
+                # projection coercion single assignments get.
+                rhs = ", ".join(
+                    self._coerce(v, self.types.get(n) or self.hoisted.get(n))
+                    for n, v in zip(names, values)
+                )
                 lhs = ", ".join(self._mangle(n) for n in names)
                 fresh = [n for n in names if not (self._declared(n) or n in self.hoisted)]
                 if len(fresh) == len(names):
