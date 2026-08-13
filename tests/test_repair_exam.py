@@ -17,6 +17,20 @@ def test_exam_roster_is_the_sidecar_bearing_tasks():
     assert [t.name for t in tasks] == ["gcd"]
 
 
+def test_workdir_overlapping_corpus_refused(tmp_path):
+    # --tasks pointed at (or inside) the workdir would let the per-task
+    # cleanup delete golden sources; refused before anything is touched.
+    corpus = tmp_path / "tasks"
+    d = corpus / "mini"
+    d.mkdir(parents=True)
+    (d / "task.py").write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (d / "task.proofs.dfy").write_text("lemma L(x: int)\n  ensures x == x\n{\n}\n")
+    for bad_work in (corpus, corpus / "mini", tmp_path):
+        with pytest.raises(ValueError, match="overlaps the task corpus"):
+            run_repair_exam(corpus, bad_work, lambda: make_engine("file:/tmp/x"))
+    assert (d / "task.py").exists() and (d / "task.proofs.dfy").exists()
+
+
 def test_empty_roster_renders_honestly(tmp_path):
     assert "no sidecar-bearing tasks" in render_exam_report([])
 

@@ -682,8 +682,12 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
-            scores = run_repair_exam(args.tasks, args.outdir / "exam",
-                                     lambda: make_engine(args.engine))
+            try:
+                scores = run_repair_exam(args.tasks, args.outdir / "exam",
+                                         lambda: make_engine(args.engine))
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
             print(render_exam_report(scores))
             return 0 if scores and all(s.restored for s in scores) else 1
         return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)

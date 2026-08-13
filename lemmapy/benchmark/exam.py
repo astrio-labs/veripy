@@ -44,6 +44,16 @@ def run_repair_exam(tasks_root: Path, workdir: Path,
                     max_iterations: int = 4, time_limit: int = 60) -> list[ExamScore]:
     from ..backends.dafny.encoder import load_proof_sidecar
 
+    # The workspace must never overlap the corpus: with --tasks pointed at
+    # (or inside) the workdir, the per-task cleanup would recursively
+    # delete golden sources and sidecars.
+    tasks_res, work_res = tasks_root.resolve(), workdir.resolve()
+    if tasks_res == work_res or tasks_res in work_res.parents \
+            or work_res in tasks_res.parents:
+        raise ValueError(
+            f"exam workdir {workdir} overlaps the task corpus {tasks_root} — "
+            f"choose a workdir outside the corpus")
+
     scores: list[ExamScore] = []
     for task_dir in exam_tasks(tasks_root):
         task_id = task_dir.name
