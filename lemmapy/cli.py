@@ -574,13 +574,17 @@ def main(argv: list[str] | None = None) -> int:
                     # structured payload, never a silent empty run.
                     by_file: dict[str, list] = {str(p): [] for p in args.files}
                     # basedpyright reports resolved paths; map diagnostics
-                    # back to the path the caller asked about.
-                    resolved = {str(Path(p).resolve()): str(p) for p in args.files}
+                    # back to EVERY spelling the caller used for that file
+                    # (m.py and ./m.py must both carry their diagnostics).
+                    resolved: dict[str, list[str]] = {}
+                    for p in args.files:
+                        resolved.setdefault(str(Path(p).resolve()), []).append(str(p))
                     for d in (gate.errors if gate.available else []):
-                        key = resolved.get(str(Path(d.file).resolve()), d.file)
-                        by_file.setdefault(key, []).append(
-                            {"kind": "type", "py_line": d.line,
-                             "message": d.message})
+                        keys = resolved.get(str(Path(d.file).resolve()), [d.file])
+                        for key in keys:
+                            by_file.setdefault(key, []).append(
+                                {"kind": "type", "py_line": d.line,
+                                 "message": d.message})
                     payloads = [
                         {"schema": "lemmapy-failures/1", "file": f,
                          "status": "gate-error", "functions": [],
