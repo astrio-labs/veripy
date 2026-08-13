@@ -92,6 +92,46 @@ def test_malformed_source_is_a_structured_payload(tmp_path):
     assert payload["failures"][0]["kind"] == "syntax"
 
 
+def test_gate_diagnostics_attributed_to_requested_relative_path(tmp_path, capsys, monkeypatch):
+    from lemmapy.frontend.typegate import find_basedpyright
+
+    if find_basedpyright() is None:
+        pytest.skip("basedpyright not installed")
+    (tmp_path / "pyrightconfig.json").write_text('{"typeCheckingMode": "strict"}\n')
+    (tmp_path / "m.py").write_text(
+        "#@ ensures result >= 0 or result < 0\ndef f(x):\n    return x\n")
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "failures.json"
+    status = main(["verify", "m.py", "-o", str(tmp_path / "o"),
+                   "--json", str(out)])
+    assert status == 2
+    payloads = json.loads(out.read_text())
+    # One payload, keyed by the path the caller asked about, carrying the
+    # diagnostics (not an empty entry plus a phantom absolute-path entry).
+    assert len(payloads) == 1
+    assert payloads[0]["file"] == "m.py"
+    assert payloads[0]["failures"]
+
+
+def test_tokenizer_valueerror_is_a_structured_payload(tmp_path):
+    src = tmp_path / "m.py"
+    src.write_bytes(b"def f():\x00\n    pass\n")
+    payload = verify_structured(src, tmp_path / "out")
+    assert payload["status"] == "spec-error"
+    assert payload["failures"][0]["kind"] == "syntax"
+
+
+def test_unwritable_json_destination_is_a_controlled_exit(tmp_path, capsys):
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    blocker = tmp_path / "blocked"
+    blocker.write_text("")
+    status = main(["verify", str(src), "-o", str(tmp_path / "o"),
+                   "--no-types", "--json", str(blocker / "out.json")])
+    assert status == 2
+    assert "cannot write" in capsys.readouterr().err
+
+
 def test_unwritable_outdir_is_a_tool_error(tmp_path):
     src = tmp_path / "m.py"
     src.write_text(GOOD)
