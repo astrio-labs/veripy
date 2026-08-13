@@ -126,41 +126,33 @@ def make_engine(spec: str) -> Engine:
 
 
 def _acquire_apply_lock(lock: Path):
-    """O_EXCL lock stamped with our PID. A lock whose owner is dead (the
-    process died between create and unlink) is reaped once, so an orphaned
-    lock cannot block applies forever."""
+    """Advisory flock on a persistent lock file. The kernel releases the
+    lock when the holder dies, so an orphaned lock cannot block applies
+    (no stale-lock reaping, hence no reap races either); the empty .lock
+    file itself is inert and left in place. Returns an fd to hold, or
+    None on live contention."""
+    import fcntl
     import os
 
-    for _ in range(2):
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
-            return fd
-        except FileExistsError:
-            try:
-                pid = int(lock.read_text().strip() or "0")
-            except (OSError, ValueError):
-                pid = 0
-            if pid > 0:
-                try:
-                    os.kill(pid, 0)
-                    return None  # owner alive: genuine contention
-                except PermissionError:
-                    return None  # some process owns that pid
-                except OSError:
-                    pass  # owner dead: reap
-            lock.unlink(missing_ok=True)
-    return None
+    fd = os.open(lock, os.O_CREAT | os.O_WRONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        os.close(fd)
+        return None
 
 
-def _apply_sidecar(user_sidecar: Path, text: str,
-                   expected_prior: str | None) -> str:
-    """Write the verified sidecar beside the source: lock-serialized,
+def _apply_sidecar(user_sidecar: Path, text: str, expected_prior: str | None,
+                   source_path: Path, expected_source: str) -> str:
+    """Write the verified sidecar beside the source: flock-serialized,
     atomic, first-backup-wins (the earliest `.bak` is the content closest
-    to the user's original), and first-APPLY-wins — if the sidecar changed
-    while this repair ran (a concurrent repair applied its own verified
-    proof), nothing is overwritten: rerunning verifies against the applied
-    proof at iteration zero and reconciles."""
+    to the user's original), first-APPLY-wins (a concurrently applied
+    proof is never overwritten), and source-guarded — the live source is
+    re-checked under the lock at the last instant before the write. (An
+    editor saving in the microseconds after that check is inherently
+    unpreventable without cooperative source locking; the window here is
+    the minimum any file-writing tool can have.)"""
     import os
     import tempfile
 
@@ -170,6 +162,13 @@ def _apply_sidecar(user_sidecar: Path, text: str,
         return ("verified; apply skipped: another repair is applying to "
                 "this sidecar — rerun to apply")
     try:
+        try:
+            live = source_path.read_text()
+        except OSError:
+            live = None
+        if live != expected_source:
+            return ("verified for the source as of repair start; apply "
+                    "skipped: the source changed during this repair — rerun")
         current = user_sidecar.read_text() if user_sidecar.exists() else None
         if current == text:
             return "verified (sidecar already up to date)"
@@ -177,10 +176,10 @@ def _apply_sidecar(user_sidecar: Path, text: str,
             return ("verified; apply skipped: the sidecar changed during "
                     "this repair (a concurrent repair applied) — rerun to "
                     "reconcile")
-        if user_sidecar.exists() and user_sidecar.read_text() != text:
+        if current is not None:
             bak = user_sidecar.with_name(user_sidecar.name + ".bak")
             if not bak.exists():
-                bak.write_text(user_sidecar.read_text())
+                bak.write_text(current)
         tmp = tempfile.NamedTemporaryFile(
             "w", dir=user_sidecar.parent, prefix=user_sidecar.name + ".",
             suffix=".tmp", delete=False)
@@ -189,8 +188,7 @@ def _apply_sidecar(user_sidecar: Path, text: str,
         os.replace(tmp.name, user_sidecar)
         return "verified (sidecar applied)"
     finally:
-        os.close(fd)
-        lock.unlink(missing_ok=True)
+        os.close(fd)  # dropping the fd releases the flock
 
 
 @dataclass
@@ -243,19 +241,8 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
         if payload["status"] == "ok":
             text = work_sidecar.read_text() if work_sidecar.exists() else None
             if apply and text is not None:
-                try:
-                    live = path.read_text()
-                except OSError:
-                    live = None
-                if live != source:
-                    # The proof holds for the snapshot this loop verified;
-                    # installing it beside a changed source would misclaim.
-                    return RepairOutcome(
-                        True, attempt,
-                        "verified for the source as of repair start; apply "
-                        "skipped: the source changed during this repair — "
-                        "rerun", text, history)
-                reason = _apply_sidecar(user_sidecar, text, initial_sidecar)
+                reason = _apply_sidecar(user_sidecar, text, initial_sidecar,
+                                        path, source)
                 return RepairOutcome(True, attempt, reason, text, history)
             return RepairOutcome(True, attempt, "verified", text, history)
         if not _repairable(payload):
