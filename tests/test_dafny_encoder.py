@@ -466,6 +466,34 @@ def test_proof_sidecar_rejects_lambda_arrows(tmp_path):
     assert "lambda" in msg
 
 
+def test_proof_sidecar_bodiless_lemma_not_rescued_by_successor(tmp_path):
+    # A later declaration's body must not retroactively "prove" an earlier
+    # bodiless lemma.
+    msg = _sidecar_error(
+        tmp_path,
+        "lemma FreeLunch(x: int)\n  ensures x == x + 1\n"
+        "lemma Honest(x: int)\n  ensures x == x\n{\n}\n",
+    )
+    assert "axiom" in msg
+
+
+def test_proof_clause_leading_else_branch_accepted():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(c: bool, n: int) -> int:\n"
+        "    if c:\n"
+        "        s = 1\n"
+        "    else:\n"
+        "        #@ proof StepFact(n)\n"
+        "        s = 2\n"
+        "    return s\n"
+    )
+    dfy = _encode_with_lemmas(src, {"StepFact"})
+    else_part = dfy[dfy.index("} else {"):]
+    assert "StepFact(n);" in else_part
+    assert else_part.index("StepFact(n);") < else_part.index("s := 2;")
+
+
 def test_proof_sidecar_implication_still_legal(tmp_path):
     from lemmapy.backends.dafny.encoder import load_proof_sidecar
 
