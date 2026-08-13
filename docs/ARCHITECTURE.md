@@ -255,7 +255,7 @@ Guarded public entry points are **functional-only in v1**: `#@ mutates` is rejec
 ### 4.2 Exact-type policy
 
 - Builtin containers: require `type(x) is list` (etc.), **not** `isinstance` — a subclass overriding `append`/`__setitem__` breaks the seq/map model (and if boundaries ever accepted abstract types like `Sequence`, `isinstance` would additionally be foolable via `ABC.register`). This is sound because CPython builtins cannot be monkey-patched (`list.append = ...` raises `TypeError`).
-- `bool` is accepted where `int` is expected (matches the arithmetic model, with the §7.3 coercion); NumPy scalars are rejected.
+- `bool` is **rejected** where `int` is expected: the encoder types the two sorts disjointly, and the implemented guards enforce `type(x) is int` exactness — accepting `True` would run the island under a value sort the proof never modeled. (Earlier drafts planned a §7.3 coercion here; exactness won: simpler to defend, and a caller can write `int(flag)`.) NumPy scalars are likewise rejected.
 - Island classes: exact `@final` class.
 - Protocols / duck typing: not accepted at the boundary in v1.
 
@@ -333,7 +333,7 @@ Four honest buckets. Every row is either a differential-testable lowering rule o
 
 | Bucket | Contents |
 | --- | --- |
-| **Clean** | unbounded `int` (+ bool-coercion rule), `Optional[T]` → `Option<T>` datatype with narrowing replayed as VCs, tuples & multiple returns & swap, frozen dataclasses → datatypes (`replace` → `.(f := v)`), `while`/`for` over `range`/seq with `#@ invariant`/`decreases` passed through, `break`/`continue`, `match` via pattern-compilation to if-chains (silent fall-through modeled; opt-in `#@ exhaustive`) |
+| **Clean** | unbounded `int` (`bool` a disjoint sort — no coercion), `Optional[T]` → `Option<T>` datatype with narrowing replayed as VCs, tuples & multiple returns & swap, frozen dataclasses → datatypes (`replace` → `.(f := v)`), `while`/`for` over `range`/seq with `#@ invariant`/`decreases` passed through, `break`/`continue`, `match` via pattern-compilation to if-chains (silent fall-through modeled; opt-in `#@ exhaustive`) |
 | **Desugared — must be exactly right, fuzz targets** | `//`/`%` (§7.1), negative indexing & slice clamping (`PyIndex`, `PySlice` with bounds VCs), truthiness & `and`/`or` (§7.3), comprehensions → loop desugaring into fresh accumulators (+ characterizing postconditions); eagerly consumed genexps → logic (`all` → `forall`, `any` → `exists`, `sum` → fold), chained comparisons, unpacking with arity VCs |
 | **Curated models (Tier 2 preamble)** | str as `seq<char>` of Unicode scalar values — strings containing lone surrogates are rejected at the guard, aligning the model's char domain with the accepted value domain; str methods (`split`/`strip`/`find`/`join`…; Unicode-table methods ASCII-only or axiom-flagged), `sorted` (permutation + order; stability only on demand), `dict`/`set` ops (keys restricted to hashable value types, homogeneous), `math` subset, `str(int)`/`int(str)` with parse VCs |
 | **Excluded in v1 — detected, with reasons** | `float` (§7.2), generators/custom iterators (§7.5), `try/except` (v1 proves absence instead, §7.4), inheritance & user dunders (dispatch is value-dependent; C3 over mutable class objects; behavioral subtyping is the principled v2 via traits), `async` (await points break local reasoning; "sequentializable async" noted as v2 candidate), decorators (function surgery), `nonlocal`, dict iteration where order is observable (offer `sorted(d)`) |

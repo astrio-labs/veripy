@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import ast
 
-from ...frontend.parse import _OLD_RE, ModuleSpecs
+from ...frontend.parse import ModuleSpecs, rewrite_old
 
 _IMPORTS = ("import copy", "import icontract")
 
@@ -26,7 +26,8 @@ def _indent_of(line: str) -> str:
 
 
 def _rewrite_old(expr: str) -> str:
-    return _OLD_RE.sub(lambda m: f"OLD.{m.group(1)}", expr)
+    # AST-based: old(...) inside string literals stays literal text.
+    return rewrite_old(expr, "OLD.{name}")
 
 
 def _import_insertion_line(source: str) -> int:

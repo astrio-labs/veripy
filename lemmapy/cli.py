@@ -364,6 +364,48 @@ def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
     return 0
 
 
+def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False) -> int:
+    from .guards.emitter import GuardGenError, emit_guarded
+
+    by_stem: dict[str, list[Path]] = {}
+    for path in paths:
+        by_stem.setdefault(path.stem, []).append(path)
+    collisions = {stem: ps for stem, ps in by_stem.items() if len(ps) > 1}
+    if collisions:
+        for stem, ps in collisions.items():
+            print(f"stem collision {stem!r}: {', '.join(map(str, ps))}", file=sys.stderr)
+        return 2
+    status = 0
+    outdir.mkdir(parents=True, exist_ok=True)
+    for path in paths:
+        source = path.read_text()
+        specs = parse_source(source, filename=str(path))
+        if specs.errors or specs.orphans:
+            print(f"{path}: spec errors — fix them before guarding", file=sys.stderr)
+            status = 1
+            continue
+        try:
+            guarded = emit_guarded(source, specs, src_name=path.name,
+                                   check_ensures=check_ensures)
+        except GuardGenError as e:
+            loc = f"{path}:{e.line}" if e.line else str(path)
+            print(f"{loc}: cannot guard: {e.message}", file=sys.stderr)
+            status = 1
+            continue
+        out = outdir / f"{path.stem}_guarded.py"
+        out.write_text(guarded)
+        names = ", ".join(fn.name for fn in specs.functions)
+        print(f"{path} -> {out} (guarded: {names})")
+        unmarked = [fn.name for fn in specs.functions if not fn.verified]
+        if unmarked:
+            print(
+                f"  note: not marked #@ verified (guards enforce the written "
+                f"spec; proof status comes from `lemmapy verify`): "
+                f"{', '.join(unmarked)}"
+            )
+    return status
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lemmapy",
@@ -392,6 +434,19 @@ def main(argv: list[str] | None = None) -> int:
     p_emit = sub.add_parser("emit", help="emit icontract-checked copies of modules")
     p_emit.add_argument("files", nargs="+", type=Path)
     p_emit.add_argument("-o", "--outdir", type=Path, default=Path("build/checked"))
+
+    p_guard = sub.add_parser(
+        "guard",
+        help="emit guarded sibling modules: deep type checks + copy-in + "
+             "executable requires at the boundary (ARCHITECTURE §4)",
+    )
+    p_guard.add_argument("files", nargs="+", type=Path)
+    p_guard.add_argument("-o", "--outdir", type=Path, default=Path("build/guarded"))
+    p_guard.add_argument(
+        "--check-ensures",
+        action="store_true",
+        help="also evaluate ensures clauses at runtime (blame: callee-or-toolchain)",
+    )
 
     p_hunt = sub.add_parser(
         "hunt",
@@ -443,6 +498,8 @@ def main(argv: list[str] | None = None) -> int:
                          fragment=not args.no_fragment)
     if args.command == "emit":
         return cmd_emit(args.files, args.outdir)
+    if args.command == "guard":
+        return cmd_guard(args.files, args.outdir, check_ensures=args.check_ensures)
     if args.command == "hunt":
         return cmd_hunt(args.files, args.outdir, args.per_condition_timeout)
     if args.command == "verify":
