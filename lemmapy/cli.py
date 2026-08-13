@@ -272,6 +272,35 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
     return 1 if failed else 0
 
 
+def cmd_difftest(paths: list[Path], outdir: Path, examples: int) -> int:
+    """Translation validation (§6): original Python vs Dafny-compiled model."""
+    from .difftest.harness import difftest_file
+
+    diverged = 0
+    trouble = 0
+    for path in paths:
+        result = difftest_file(path, outdir, examples=examples)
+        if result.error:
+            print(f"{path}: difftest trouble: {result.error}", file=sys.stderr)
+            trouble += 1
+            continue
+        for fn in result.functions:
+            if fn.ok:
+                print(f"{path}::{fn.name}: OK ({fn.examples} examples)")
+            elif fn.mismatch is not None:
+                diverged += 1
+                m = fn.mismatch
+                print(f"{path}::{fn.name}: DIVERGENCE (encoder bug)")
+                print(f"  args={m.args!r}")
+                print(f"  python={m.python_result!r}  dafny-model={m.dafny_result!r}")
+            else:
+                trouble += 1
+                print(f"{path}::{fn.name}: trouble: {fn.error}", file=sys.stderr)
+    if diverged:
+        return 1
+    return 2 if trouble else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lemmapy",
@@ -312,6 +341,14 @@ def main(argv: list[str] | None = None) -> int:
     p_verify.add_argument("--time-limit", type=int, default=30)
     p_verify.add_argument("--no-types", action="store_true", help="skip the basedpyright type gate")
 
+    p_difftest = sub.add_parser(
+        "difftest",
+        help="differentially test original Python vs the Dafny-compiled model (§6)",
+    )
+    p_difftest.add_argument("files", nargs="+", type=Path)
+    p_difftest.add_argument("-o", "--outdir", type=Path, default=Path("build/difftest"))
+    p_difftest.add_argument("-n", "--examples", type=int, default=100)
+
     p_survey = sub.add_parser(
         "survey",
         help="read-only fragment-coverage survey over files/directories (M0, RQ1)",
@@ -329,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_hunt(args.files, args.outdir, args.per_condition_timeout)
     if args.command == "verify":
         return cmd_verify(args.files, args.outdir, args.time_limit, types=not args.no_types)
+    if args.command == "difftest":
+        return cmd_difftest(args.files, args.outdir, args.examples)
     if args.command == "survey":
         return cmd_survey(args.paths, args.top, args.json)
     return 2

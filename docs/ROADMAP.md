@@ -27,7 +27,7 @@ The end-to-end pipeline on the v1 fragment. All four soundness layers present fr
 - [ ] Guard generator: deep exact-type checks, executable preconditions, copy-in, trusted-caller elision, blame errors (§4)
 - [ ] Island integrity hardening + assumptions A1–A7 in the verification report (§5)
 - [ ] Verifier driver: failure mapping back to Python source ✅ (slice 1); verification report (per-boundary assumed clauses, trusted-contract counts, guard modes) pending
-- [ ] Translation-validation harness in CI: `dafny translate py` + Hypothesis differential loop (§6)
+- [x] Translation-validation harness (§6): `lemmapy difftest` — `dafny translate py` + Hypothesis over typed signatures filtered by executable `#@ requires`, compared across the value adapter; runs in the test suite over the slice-1 targets (incl. unproven gcd — fidelity is orthogonal to proof). Nightly coverage-guided runs and per-entry-point CI budgets pending
 - [ ] Fragment semantics note: big-step semantics for the fragment + simulation statement (paper, not mechanized)
 
 **Exit criteria:** a fixed benchmark suite of spec'd functions (HumanEval/MBPP-style + a named-algorithms set) verifies end-to-end; guards demonstrably stop the §1 attack gallery (`json.loads`, `cast`, `EvilList`, mock-patching); the differential harness runs on every PR and has caught at least one seeded encoder bug.

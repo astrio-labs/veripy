@@ -21,6 +21,8 @@ dev = [
     "pytest>=8",
     "crosshair-tool>=0.0.70",
     "basedpyright>=1.39",
+    "hypothesis>=6",
+    "DafnyRuntimePython>=4.11",
 ]
 
 [project.scripts]

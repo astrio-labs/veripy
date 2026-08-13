@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status: planned architecture, M0 built + M1 slice 1** (spec parser, runtime backend, conformance survey, basedpyright type gate, clean-bucket Dafny encoder + verifier driver with Python-line failure mapping; the rest is not implemented yet). The first half of this document describes the system we intend to build: components, data flow, and what is trusted vs. validated vs. verified. The numbered sections (§1–§9, "The soundness design") specify the mechanisms those components implement and the argument for why the result can be trusted. The system half will be revised against reality as code lands (see [ROADMAP.md](ROADMAP.md)); the soundness half is the design's source of truth.
+> **Status: planned architecture, M0 built + M1 slices 1–2** (spec parser, runtime backend, conformance survey, basedpyright type gate, clean-bucket Dafny encoder + verifier driver with Python-line failure mapping, translation-validation harness `lemmapy difftest`; the rest is not implemented yet). The first half of this document describes the system we intend to build: components, data flow, and what is trusted vs. validated vs. verified. The numbered sections (§1–§9, "The soundness design") specify the mechanisms those components implement and the argument for why the result can be trusted. The system half will be revised against reality as code lands (see [ROADMAP.md](ROADMAP.md)); the soundness half is the design's source of truth.
 
 ## Pipeline overview
 
