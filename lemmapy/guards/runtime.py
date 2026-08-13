@@ -134,10 +134,13 @@ def verify_island_integrity(guarded_path) -> str:
     from pathlib import Path
 
     text = Path(guarded_path).read_text()
-    try:
-        island = text.split(_ISLAND_BEGIN, 1)[1].split(_ISLAND_END, 1)[0]
-    except IndexError:
-        raise IslandIntegrityError(str(guarded_path), "island markers missing")
+    # Exactly one of each sentinel: injected duplicates would let a
+    # crafted file truncate the digest's coverage while the real island
+    # region carries unhashed code.
+    if text.count(_ISLAND_BEGIN) != 1 or text.count(_ISLAND_END) != 1:
+        raise IslandIntegrityError(
+            str(guarded_path), "island sentinels missing or duplicated")
+    island = text.split(_ISLAND_BEGIN, 1)[1].split(_ISLAND_END, 1)[0]
     m = re.search(r'^_LEMMAPY_ISLAND_SHA256 = "([0-9a-f]{64})"$', text, re.M)
     if m is None:
         raise IslandIntegrityError(str(guarded_path), "embedded digest missing")
