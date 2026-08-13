@@ -133,11 +133,12 @@ def test_indexing_is_uniformly_wrapped():
     assert "l[PyIndex(0, |l|)]" in dfy
 
 
-def test_non_range_for_rejected():
+def test_for_each_over_non_list_rejected():
+    # for-each over lists is supported (slice 3); other iterables are not.
     _expect_encode_error(
-        "#@ ensures result >= 0\ndef f(l: list[int]) -> int:\n"
-        "    s = 0\n    for v in l:\n        #@ invariant s >= 0\n        s = s + 1\n    return s\n",
-        "range",
+        "#@ ensures result >= 0\ndef f(n: int) -> int:\n"
+        "    s = 0\n    for v in n:\n        s = s + 1\n    return s\n",
+        "list-typed",
     )
 
 
@@ -303,6 +304,139 @@ def test_in_against_string_rejected():
         "#@ ensures result == True or result == False\n"
         "def f(a: str, b: str) -> bool:\n    return a in b\n",
         "substring",
+    )
+
+
+# --- slice 3: list building ---------------------------------------------------
+
+
+APPEND_OK = (
+    "#@ requires n >= 0\n"
+    "#@ ensures len(result) == n\n"
+    "def zeros(n: int) -> list[int]:\n"
+    "    out: list[int] = []\n"
+    "    for i in range(n):\n"
+    "        #@ invariant len(out) == i\n"
+    "        out.append(0)\n"
+    "    return out\n"
+)
+
+
+def test_append_lowers_to_seq_concat():
+    dfy = _encode(APPEND_OK)
+    assert "out := out + [0];" in dfy
+
+
+def test_append_on_parameter_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(l: list[int]) -> list[int]:\n"
+        "    l.append(1)\n"
+        "    return l\n",
+        "ownership",
+    )
+
+
+def test_append_after_aliasing_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f() -> list[int]:\n"
+        "    xs: list[int] = []\n"
+        "    ys = xs\n"
+        "    xs.append(1)\n"
+        "    return ys\n",
+        "ownership",
+    )
+
+
+def test_append_while_iterating_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f() -> list[int]:\n"
+        "    xs: list[int] = [1]\n"
+        "    for v in xs:\n"
+        "        xs.append(v)\n"
+        "    return xs\n",
+        "iterating",
+    )
+
+
+def test_empty_list_needs_annotation():
+    _expect_encode_error(
+        "#@ ensures len(result) == 0\n"
+        "def f() -> list[int]:\n"
+        "    out = []\n"
+        "    return out\n",
+        "annotate the empty list",
+    )
+
+
+def test_list_comprehension_lowers_to_seq_constructor():
+    src = (
+        "#@ ensures len(result) == len(l)\n"
+        "def f(l: list[int]) -> list[int]:\n"
+        "    return [(e + 1) for e in l]\n"
+    )
+    dfy = _encode(src)
+    assert "seq(|l|, e_c requires 0 <= e_c < |l| => (l[e_c] + 1))" in dfy
+
+
+def test_filtered_comprehension_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) <= len(l)\n"
+        "def f(l: list[int]) -> list[int]:\n"
+        "    return [e for e in l if e > 0]\n",
+        "filterless",
+    )
+
+
+def test_list_truthiness_in_conditions():
+    src = (
+        "#@ ensures result == (len(l) == 0)\n"
+        "def f(l: list[int]) -> bool:\n"
+        "    if not l:\n"
+        "        return True\n"
+        "    return False\n"
+    )
+    dfy = _encode(src)
+    assert "if (|l| == 0)" in dfy
+
+
+def test_foreach_lowering_snapshots_iterable():
+    src = (
+        "#@ ensures result >= 0 or result < 0\n"
+        "def f(l: list[int]) -> int:\n"
+        "    s = 0\n"
+        "    for v in l:\n"
+        "        s = s + v\n"
+        "    return s\n"
+    )
+    dfy = _encode(src)
+    assert "var v_it := l;" in dfy
+    assert "var v := v_it[v_i];" in dfy
+
+
+def test_foreach_target_read_after_loop_rejected():
+    _expect_encode_error(
+        "#@ requires len(l) > 0\n#@ ensures result == result\n"
+        "def f(l: list[int]) -> int:\n"
+        "    for v in l:\n"
+        "        pass\n"
+        "    return v\n",
+        "used after its loop",
+    )
+
+
+def test_foreach_invariant_referencing_target_rejected():
+    _expect_encode_error(
+        "#@ ensures result >= 0 or result < 0\n"
+        "def f(l: list[int]) -> int:\n"
+        "    s = 0\n"
+        "    for v in l:\n"
+        "        #@ invariant v >= 0 or v < 0\n"
+        "        s = s + v\n"
+        "    return s\n",
+        "not in scope at the loop head",
     )
 
 
