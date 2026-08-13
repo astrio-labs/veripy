@@ -38,7 +38,6 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
                       hunt_counterexamples: bool = False) -> dict[str, Any]:
     """Encode + verify one module; return the structured outcome. Never
     raises for expected failure modes — every outcome is a payload."""
-    outdir.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = {
         "schema": SCHEMA,
         "file": str(path),
@@ -48,12 +47,20 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         "sidecar": None,
     }
     try:
+        outdir.mkdir(parents=True, exist_ok=True)
         source = path.read_text()
     except OSError as exc:
         payload["status"] = "tool-error"
         payload["error"] = f"unreadable source: {exc}"
         return payload
-    specs = parse_source(source, filename=str(path))
+    try:
+        specs = parse_source(source, filename=str(path))
+    except SyntaxError as exc:
+        payload["status"] = "spec-error"
+        payload["failures"] = [
+            {"kind": "syntax", "py_line": exc.lineno, "message": exc.msg}
+        ]
+        return payload
     payload["functions"] = [fn.name for fn in specs.functions]
     if specs.errors or specs.orphans:
         payload["status"] = "spec-error"
@@ -84,8 +91,14 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         "text": sidecar.text,
     }
     stub = outdir / f"{path.stem}.dfy"
-    stub.write_text(encoded.dafny_source + sidecar.text)
+    try:
+        stub.write_text(encoded.dafny_source + sidecar.text)
+    except OSError as exc:
+        payload["status"] = "tool-error"
+        payload["error"] = f"cannot write stub: {exc}"
+        return payload
     payload["stub"] = str(stub)
+    stub_extent = encoded.dafny_source.count("\n") + 1
     result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
     if result.error is not None:
         payload["status"] = "tool-error"
@@ -98,10 +111,12 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     for d in result.diagnostics:
         if d.severity != "error":
             continue
+        in_sidecar = d.dafny_line > stub_extent
         failure: dict[str, Any] = {
             "kind": d.obligation,
-            "function": _attribute(specs, d.py_line),
-            "py_line": d.py_line,
+            "function": None if in_sidecar else _attribute(specs, d.py_line),
+            "region": "sidecar" if in_sidecar else "source",
+            "py_line": None if in_sidecar else d.py_line,
             "dafny_line": d.dafny_line,
             "message": d.message,
         }
@@ -117,10 +132,19 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
 
 def verify_structured_many(paths: list[Path], outdir: Path, time_limit: int = 30,
                            hunt_counterexamples: bool = False) -> list[dict[str, Any]]:
+    # Same-stem inputs from different directories would overwrite each
+    # other's stub; give every path a distinct subdirectory when stems
+    # collide so each payload's stub reference stays valid.
+    stems: dict[str, int] = {}
+    outdirs: list[Path] = []
+    for p in paths:
+        n = stems.get(p.stem, 0)
+        stems[p.stem] = n + 1
+        outdirs.append(outdir if n == 0 else outdir / f"dup{n}")
     return [
-        verify_structured(p, outdir, time_limit=time_limit,
+        verify_structured(p, o, time_limit=time_limit,
                           hunt_counterexamples=hunt_counterexamples)
-        for p in paths
+        for p, o in zip(paths, outdirs)
     ]
 
 

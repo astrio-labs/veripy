@@ -102,6 +102,24 @@ def test_unrepairable_source_stops_immediately(tmp_path):
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_reused_workdir_does_not_reuse_stale_sidecar(tmp_path):
+    # First run succeeds and leaves a work sidecar; the second run (same
+    # outdir, no adjacent sidecar) must start stripped, not inherit it.
+    src = tmp_path / "m.py"
+    src.write_text(NEEDS_LEMMA)
+    attempts = tmp_path / "attempts"
+    attempts.mkdir()
+    (attempts / "1.dfy").write_text(GOOD)
+    outdir = tmp_path / "out"
+    assert repair_file(src, outdir, make_engine(f"file:{attempts}")).verified
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    rerun = repair_file(src, outdir, make_engine(f"file:{empty}"))
+    assert not rerun.verified  # engine exhausted — no stale zero-iteration win
+    assert rerun.iterations == 0 or "engine" in rerun.reason
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_iteration_budget_exhaustion(tmp_path):
     src = tmp_path / "m.py"
     src.write_text(NEEDS_LEMMA)
