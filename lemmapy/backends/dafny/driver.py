@@ -15,12 +15,41 @@ _RELATED_RE = re.compile(r"^(?P<file>.+?\.dfy)\((?P<line>\d+),(?P<col>\d+)\): Re
 _SUMMARY_RE = re.compile(r"finished with (?P<ok>\d+) verified, (?P<bad>\d+) error")
 
 
+# Obligation classification: Dafny's message text -> the kind of proof
+# obligation that failed. The agent interface (lemmapy verify --json)
+# keys repair strategies on this.
+_OBLIGATION_KINDS: tuple[tuple[str, str], ...] = (
+    ("postcondition", "postcondition"),
+    ("loop invariant", "invariant"),
+    ("assertion", "assertion"),
+    ("precondition for this call", "call-precondition"),
+    ("requires clause", "call-precondition"),
+    ("decreases", "termination"),
+    ("timed out", "timeout"),
+    ("out of resource", "timeout"),
+    ("index out of range", "bounds"),
+    ("divisor is always non-zero", "division"),
+)
+
+
+def classify_obligation(message: str) -> str:
+    lowered = message.lower()
+    for needle, kind in _OBLIGATION_KINDS:
+        if needle in lowered:
+            return kind
+    return "unknown"
+
+
 @dataclass
 class Diagnostic:
     dafny_line: int
     py_line: int | None
     severity: str
     message: str
+
+    @property
+    def obligation(self) -> str:
+        return classify_obligation(self.message)
 
 
 @dataclass

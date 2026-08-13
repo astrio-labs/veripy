@@ -503,6 +503,16 @@ def main(argv: list[str] | None = None) -> int:
         help="write the verification report (per-function verdicts, "
              "assumptions A1-A7, guard modes) as JSON",
     )
+    p_verify.add_argument(
+        "--json", type=Path, default=None, dest="json_out",
+        help="write structured failures (obligation kind, spans, sidecar "
+             "state) — the agent interface consumed by `lemmapy repair`",
+    )
+    p_verify.add_argument(
+        "--hunt-counterexamples", action="store_true",
+        help="with --json: run CrossHair on failing modules to attach a "
+             "concrete counterexample when one exists",
+    )
 
     p_difftest = sub.add_parser(
         "difftest",
@@ -542,6 +552,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "hunt":
         return cmd_hunt(args.files, args.outdir, args.per_condition_timeout)
     if args.command == "verify":
+        if args.json_out is not None:
+            from .agentio import dump, verify_structured_many
+
+            if not args.no_types:
+                gate = run_type_gate(args.files)
+                if not gate.available or gate.errors:
+                    print("type gate failed; fix types or pass --no-types",
+                          file=sys.stderr)
+                    return 2
+            payloads = verify_structured_many(
+                args.files, args.outdir, time_limit=args.time_limit,
+                hunt_counterexamples=args.hunt_counterexamples)
+            dump(payloads, args.json_out)
+            for p in payloads:
+                print(f"{p['file']}: {p['status']} ({len(p['failures'])} failure(s))")
+            print(f"structured failures -> {args.json_out}")
+            if any(p["status"] in ("tool-error", "spec-error", "encode-error")
+                   for p in payloads):
+                return 2
+            return 1 if any(p["status"] == "failed" for p in payloads) else 0
         return cmd_verify(args.files, args.outdir, args.time_limit,
                           types=not args.no_types, report=args.report)
     if args.command == "difftest":

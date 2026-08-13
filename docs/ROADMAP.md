@@ -36,7 +36,7 @@ The end-to-end pipeline on the v1 fragment. All four soundness layers present fr
 
 The differentiating layer: proofs that finish themselves, and rejections that teach.
 
-- [ ] Structured failure output from the verifier driver (obligation, span, counterexample) — the agent interface
+- [x] Structured failure output from the verifier driver (obligation, span, counterexample) — the agent interface: `lemmapy verify --json` / `lemmapy.agentio.verify_structured` — per-failure records with the classified obligation kind (postcondition/invariant/assertion/call-precondition/termination/timeout/bounds), both coordinate systems (Python + Dafny lines), function attribution, current sidecar state (path, lemmas, text), and optional CrossHair counterexamples (`--hunt-counterexamples`); every outcome incl. spec/encode/tool errors is a payload, never a traceback
 - [ ] LLM proof-repair loop: read failures, edit proof file only, re-verify, iterate; M0 counterexamples fed in as test cases
 - [ ] Tune the loop against **benchmark-derived proof-repair exams** ([BENCHMARK.md](BENCHMARK.md)): strip the proof additions from golden tasks and score R4-restoration under frozen specs — our own corpus, our own harness, no competitor infrastructure
 - [ ] Diagnostics quality pass: every conformance rejection line-precise with a fixit ("outside the fragment because X, try Y")
