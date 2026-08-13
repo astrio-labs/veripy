@@ -194,6 +194,11 @@ def emit_guarded(
     # could become KNOWN (a parameter, a module-level binding) are both
     # rejected by _reject_reserved_names.
     _reject_reserved_names(module)
+    if "# ---- LEMMAPY ISLAND" in source:
+        # A source containing sentinel text could truncate the digest's
+        # coverage (the integrity checker requires exactly one of each
+        # sentinel; this keeps generation and verification consistent).
+        raise GuardGenError("island sentinel text may not appear in the source")
     for n in ast.walk(module):
         if isinstance(n, ast.ImportFrom) and n.level > 0:
             # The guarded sibling lives under the output directory, outside

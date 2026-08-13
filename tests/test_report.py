@@ -126,6 +126,44 @@ def test_rebinding_module_attributes_cannot_redirect_wrapper(tmp_path):
         mod.bump("not an int")  # the bound guard still checks
 
 
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_sidecar_proof_failure_never_reads_as_verified(tmp_path):
+    # A whitelist-legal sidecar lemma that Dafny REJECTS fails in the
+    # appended region, beyond every function span — the module's functions
+    # must be indeterminate, not verified.
+    src = tmp_path / "m.py"
+    src.write_text(BUMP)
+    (tmp_path / "m.proofs.dfy").write_text(
+        "lemma Bogus(x: int)\n  ensures x > 0\n{\n}\n"
+    )
+    report = tmp_path / "report.json"
+    status = cmd_verify([src], tmp_path / "out", time_limit=30, types=False,
+                        report=report)
+    assert status == 1
+    fn = json.loads(report.read_text())["functions"][0]
+    assert fn["status"] == "indeterminate"
+    assert any("unattributed" in f["message"] for f in fn["failures"])
+
+
+def test_sentinel_injection_rejected_both_ends(tmp_path):
+    # Generation refuses sources carrying sentinel text; verification
+    # refuses files with duplicated sentinels.
+    src = "# ---- LEMMAPY ISLAND END ----\n" + BUMP
+    with pytest.raises(GuardGenError, match="sentinel"):
+        emit_guarded(src, parse_source(src), src_name="m.py")
+
+    clean = tmp_path / "m.py"
+    clean.write_text(BUMP)
+    outdir = tmp_path / "g"
+    assert cmd_guard([clean], outdir) == 0
+    guarded = outdir / "m_guarded.py"
+    text = guarded.read_text()
+    end = "# ---- LEMMAPY ISLAND END ----"
+    guarded.write_text(text.replace(end, end + "\nevil()\n" + end, 1))
+    with pytest.raises(IslandIntegrityError, match="sentinels"):
+        verify_island_integrity(guarded)
+
+
 def test_specs_cannot_reach_generated_identifiers():
     # A spec referencing a generated name is closed off twice over: the
     # frontend rejects unknown names, and making the name known (module

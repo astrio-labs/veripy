@@ -315,23 +315,35 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             failed += 1
             print(f"{path}: VERIFICATION FAILED -> {stub}")
             errs = []
+            stub_extent = encoded.dafny_source.count("\n") + 1
             for d in result.diagnostics:
                 if d.severity == "error":
                     where = f"{path}:{d.py_line}" if d.py_line is not None else f"{stub}:{d.dafny_line}"
                     print(f"  {where}: {d.message}")
                     errs.append(d)
-            # Attribute failures to the enclosing function by source span;
-            # dafny verifies methods independently, so unattributed
-            # functions in a failing file still verified.
+            # Attribute failures to the enclosing function by source span.
+            # Failures in the appended sidecar region (beyond the stub) or
+            # with no mapped Python line belong to no span; they must not
+            # let the other functions read as verified.
+            unattributed = [d for d in errs
+                            if d.py_line is None or d.dafny_line > stub_extent]
+            attributable = [d for d in errs if d not in unattributed]
             spans = sorted(specs.functions, key=lambda f: f.lineno)
             for i, fn in enumerate(spans):
                 hi = spans[i + 1].lineno if i + 1 < len(spans) else 10**9
-                mine = [d for d in errs
+                mine = [d for d in attributable
                         if d.py_line is not None and fn.lineno <= d.py_line < hi]
                 fails = [{"file": str(path), "line": d.py_line, "message": d.message}
                          for d in mine]
-                fn_reports.append(function_report(
-                    fn, str(path), "failed" if mine else "verified", fails))
+                if not mine and unattributed:
+                    status_str = "indeterminate"
+                    fails = [{"file": str(stub), "line": d.dafny_line,
+                              "message": f"unattributed (proof sidecar or "
+                                         f"generated region): {d.message}"}
+                             for d in unattributed]
+                else:
+                    status_str = "failed" if mine else "verified"
+                fn_reports.append(function_report(fn, str(path), status_str, fails))
     if report is not None:
         payload = build_report(fn_reports, sidecar_lemmas, dafny_version)
         report.parent.mkdir(parents=True, exist_ok=True)
