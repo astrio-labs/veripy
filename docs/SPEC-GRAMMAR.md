@@ -13,6 +13,7 @@ Specs are comments beginning `#@`. CPython ignores them; the spec parser does no
 | `#@ ensures EXPR` | contract block above `def` | checked at exit (icontract `ensure`) |
 | `#@ invariant EXPR` | first lines inside a loop body | **parsed and recorded, not enforced at runtime** — consumed by the Dafny backend (M1) |
 | `#@ decreases EXPR` | contract block or loop body | parsed and recorded, not enforced — Dafny backend (M1) |
+| `#@ proof LemmaName(args…)` | function body, before the statement it precedes | ghost lemma invocation for the proof backend (lemmas live in the `<stem>.proofs.dfy` sidecar); ignored at runtime |
 
 The **contract block** is the contiguous run of `#@` lines ending on the line directly above the `def` (no blank lines inside the block). `mutates` and `extern` are reserved words, not yet in the grammar.
 
@@ -38,7 +39,8 @@ Plain Python's `all(... for ...)` / `any(... for ...)` are equally valid and equ
 1. **Quantifier domains are explicit and finite** (`forall i in range(len(xs)) :: …`), not guard-style unbounded (`forall i :: 0 <= i < len(xs) ==> …`). Rationale: M0 is runtime-first — every spec must be *executable* so CrossHair/icontract can evaluate it, and the bounded form lowers to Dafny logic later via the comprehension→logic rule in the catalog ([ARCHITECTURE.md §7](ARCHITECTURE.md)). Guard-style unbounded quantifiers are a candidate addition for the proof backend (they cannot be runtime-checked; they would join the "assumed, not checked" set at boundaries).
 2. **`==>` desugars to `not/or`**, preserving Python's short-circuit semantics — the guard idiom `i < len(xs) ==> xs[i] > 0` is well-defined exactly like the catalog's truthiness rule requires.
 3. **`old()` is restricted to bare parameter names** in v0 so the entry snapshot is a simple deep copy per parameter. General `old(expr)` is a known extension.
-4. **Reserved words:** `forall`, `exists`, `result`, `old` (plus `mutates`, `extern` for later). Code using these as identifiers is outside the fragment.
+4. **`#@ proof` is ghost-only by construction** (v0.2): it must be a single lemma call, the sidecar may contain only lemma/function/predicate declarations, and Dafny type-checks ghostness — proof additions cannot affect program state. Arguments are ordinary spec expressions.
+5. **Reserved words:** `forall`, `exists`, `result`, `old` (plus `mutates`, `extern` for later). Code using these as identifiers is outside the fragment.
 
 ## Grammar sketch
 

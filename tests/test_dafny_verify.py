@@ -42,6 +42,16 @@ def test_fixed_clamp_verifies(tmp_path, capsys):
     assert "VERIFIED" in capsys.readouterr().out
 
 
+def test_gcd_verifies_with_proof_additions(tmp_path, capsys):
+    # The designated proof-additions case: #@ proof clause + lemma sidecar.
+    status = cmd_verify(
+        [EXAMPLES / "contact" / "he_humaneval_13.py"], tmp_path,
+        time_limit=60, types=False,
+    )
+    assert status == 0
+    assert "greatest_common_divisor" in capsys.readouterr().out
+
+
 def test_contact_below_threshold_verifies(tmp_path, capsys):
     status = cmd_verify(
         [EXAMPLES / "contact" / "he_humaneval_52.py"], tmp_path, time_limit=30

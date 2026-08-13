@@ -13,10 +13,10 @@ from .frontend.conformance import RULES, aggregate, survey_paths
 from .frontend.extract import parse_source
 from .frontend.typegate import run_type_gate
 from .backends.dafny.driver import verify_dafny_file
-from .backends.dafny.encoder import EncodeError, encode_module
+from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from .backends.runtime.emit import emit_checked
 
-_NOT_ENFORCED = ("invariant", "decreases")
+_NOT_ENFORCED = ("invariant", "decreases", "proof")
 
 
 def _report(path: Path) -> int:
@@ -246,13 +246,14 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             continue
         try:
             encoded = encode_module(source, specs, module_name=path.name)
+            sidecar = load_proof_sidecar(path)
         except EncodeError as exc:
             loc = f":{exc.line}" if exc.line is not None else ""
             print(f"{path}{loc}: cannot encode: {exc.message}", file=sys.stderr)
             trouble += 1
             continue
         stub = outdir / f"{path.stem}.dfy"
-        stub.write_text(encoded.dafny_source)
+        stub.write_text(encoded.dafny_source + sidecar)
         result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
         if result.error is not None:
             print(f"{path}: dafny trouble: {result.error}", file=sys.stderr)

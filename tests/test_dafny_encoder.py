@@ -332,6 +332,65 @@ def test_assert_lowers_to_dafny_assert():
     assert "assert (n >= 0);" in _encode(src)
 
 
+# --- proof additions (#@ proof + sidecar) --------------------------------------
+
+
+def test_proof_clause_emits_ghost_lemma_call():
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def f(n: int) -> int:\n"
+        "    s = 0\n"
+        "    while s < n:\n"
+        "        #@ invariant 0 <= s <= max(n, 0)\n"
+        "        #@ proof HelperLemma(s, max(n, 0))\n"
+        "        s = s + 1\n"
+        "    return s\n"
+    )
+    dfy = _encode(src)
+    assert "HelperLemma(s, PyMax(n, 0));" in dfy
+    # emitted INSIDE the loop body, before the statement that follows it
+    body = dfy[dfy.index("while (s < n)"):]
+    assert body.index("HelperLemma") < body.index("s := (s + 1);")
+
+
+def test_proof_clause_must_be_a_call():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(n: int) -> int:\n"
+        "    #@ proof n + 1\n"
+        "    return 0\n"
+    )
+    specs = parse_source(src)
+    (fn,) = specs.functions
+    assert fn.errors and "lemma call" in fn.errors[0].error
+
+
+def test_proof_sidecar_rejects_methods(tmp_path):
+    from lemmapy.backends.dafny.encoder import load_proof_sidecar
+
+    src = tmp_path / "m.py"
+    src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (tmp_path / "m.proofs.dfy").write_text(
+        "method Evil() { print 1; }\n"
+    )
+    with pytest.raises(EncodeError) as exc:
+        load_proof_sidecar(src)
+    assert "ghost" in exc.value.message
+
+
+def test_proof_sidecar_loads_lemmas(tmp_path):
+    from lemmapy.backends.dafny.encoder import load_proof_sidecar
+
+    src = tmp_path / "m.py"
+    src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (tmp_path / "m.proofs.dfy").write_text(
+        "lemma Triv(x: int)\n  ensures x == x\n{\n}\n"
+    )
+    text = load_proof_sidecar(src)
+    assert "lemma Triv" in text and "proof additions" in text
+
+
 def test_loop_index_read_after_loop_rejected():
     _expect_encode_error(
         "#@ requires n >= 1\n#@ ensures result == n\n"

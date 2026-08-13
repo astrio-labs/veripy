@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..backends.dafny.driver import find_dafny
-from ..backends.dafny.encoder import EncodeError, encode_module
+from ..backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from ..frontend.extract import parse_source
 from ..frontend.parse import SAFE_BUILTINS
 
@@ -230,6 +230,7 @@ def difftest_file(path: Path, outdir: Path, examples: int = 100) -> DiffResult:
         return result
     try:
         encoded = encode_module(source, specs, module_name=path.name)
+        sidecar = load_proof_sidecar(path)  # ghost lemmas: compiled away, must typecheck
     except EncodeError as exc:
         result.error = f"outside the encoder fragment (line {exc.line}): {exc.message}"
         return result
@@ -237,7 +238,7 @@ def difftest_file(path: Path, outdir: Path, examples: int = 100) -> DiffResult:
     workdir = outdir / path.stem
     workdir.mkdir(parents=True, exist_ok=True)
     stub = workdir / f"{path.stem}.dfy"
-    stub.write_text(encoded.dafny_source)
+    stub.write_text(encoded.dafny_source + sidecar)
     translate_base = workdir / "compiled"
     proc = subprocess.run(
         [dafny, "translate", "py", str(stub), "--output", str(translate_base), "--no-verify"],

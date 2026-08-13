@@ -51,10 +51,30 @@ proof loop does.
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from ...frontend.parse import Clause, FunctionSpec, ModuleSpecs
 from .preamble import PREAMBLE
+
+
+def load_proof_sidecar(source_path: Path) -> str:
+    """Proof additions from `<stem>.proofs.dfy` beside the source file:
+    lemma packs referenced by `#@ proof` clauses. Ghost declarations only
+    (lemma/function/predicate) — a method could mutate state, an import or
+    include could smuggle arbitrary code."""
+    sidecar = source_path.with_name(source_path.stem + ".proofs.dfy")
+    if not sidecar.exists():
+        return ""
+    text = sidecar.read_text()
+    if re.search(r"^\s*(method|import|include)\b", text, re.M) \
+            or re.search(r"\b(print|expect)\b", text):
+        raise EncodeError(
+            f"proof sidecar {sidecar.name} may contain only ghost "
+            f"declarations (lemma/function/predicate)"
+        )
+    return f"\n// ---- proof additions from {sidecar.name} ----\n{text}"
 
 DAFNY_KEYWORDS = frozenset({
     "method", "function", "lemma", "var", "ghost", "returns", "requires",
@@ -134,6 +154,11 @@ class _MethodEncoder:
         self._invariants_by_loop: dict[int, list[Clause]] = {}
         self._decreases_by_loop: dict[int, list[Clause]] = {}
         self._assign_loop_clauses()
+        # `#@ proof` clauses: ghost lemma calls, emitted before the next
+        # statement after their source line.
+        self._pending_proofs: list[Clause] = sorted(
+            spec.by_kind("proof"), key=lambda c: c.line
+        )
         self.hoisted: dict[str, str] = {}
         # Ownership-lite (§3.2, conservative): a list local may be appended
         # to only while it is a fresh, unaliased allocation.
@@ -739,10 +764,28 @@ class _MethodEncoder:
 
     # -- statements -------------------------------------------------------------------------------
 
+    def _flush_proofs(self, before_line: int | None, indent: str) -> None:
+        while self._pending_proofs and (
+            before_line is None or self._pending_proofs[0].line < before_line
+        ):
+            clause = self._pending_proofs.pop(0)
+            tree = ast.parse(clause.desugared, mode="eval")
+            call = tree.body
+            assert isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            self.spec_mode = True
+            try:
+                args = ", ".join(self.expr(a) for a in call.args)
+            finally:
+                self.spec_mode = False
+            # The lemma name is Dafny-side (preamble or proofs sidecar) —
+            # never mangled; ghost-only, so it cannot affect program state.
+            self.emit(f"{indent}{call.func.id}({args});", clause.line)
+
     def block(self, stmts: list[ast.stmt], indent: str) -> None:
         self.scopes.append(set())
         try:
             for stmt in stmts:
+                self._flush_proofs(stmt.lineno, indent)
                 self.stmt(stmt, indent)
         finally:
             self.scopes.pop()
@@ -1087,6 +1130,7 @@ class _MethodEncoder:
             self.types.setdefault(name, dtype)
         self.scopes[-1].update()  # top scope: hoisted handled via self.hoisted
         self.block(node.body, "  ")
+        self._flush_proofs(None, "  ")  # trailing proof clauses
         self.emit("}")
 
 
