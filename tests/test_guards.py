@@ -292,6 +292,14 @@ def test_island_mutation_cannot_fool_ensures(tmp_path):
 # ---- generator hygiene --------------------------------------------------------
 
 
+def test_relative_imports_rejected(tmp_path):
+    # The guarded sibling lives outside the package context; a relative
+    # import in the relocated island would fail at import time.
+    src = "from . import helpers\n" + CLAMP
+    with pytest.raises(GuardGenError, match="package-relative"):
+        emit_guarded(src, parse_source(src), src_name="m.py")
+
+
 def test_future_imports_rejected(tmp_path):
     src = "from __future__ import annotations\n" + CLAMP
     specs = parse_source(src)

@@ -173,6 +173,14 @@ def emit_guarded(
     """Emit the guarded sibling module for every spec'd function."""
     module = ast.parse(source)
     _reject_reserved_names(module)
+    for n in ast.walk(module):
+        if isinstance(n, ast.ImportFrom) and n.level > 0:
+            # The guarded sibling lives under the output directory, outside
+            # the source's package context — a relative import in the island
+            # copy would fail at import time.
+            raise GuardGenError(
+                "package-relative imports cannot survive relocation into the "
+                "guarded sibling module — use absolute imports", n.lineno)
     for stmt in module.body:
         if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
             # The island is a verbatim mid-file copy; a __future__ import
