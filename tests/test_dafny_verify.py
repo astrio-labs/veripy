@@ -60,6 +60,25 @@ def test_contact_below_threshold_verifies(tmp_path, capsys):
     assert "below_threshold" in capsys.readouterr().out
 
 
+def test_below_zero_verifies_with_sum_fold(tmp_path, capsys):
+    # Slice 6: sum() over a growing prefix, stepped by an executable assert.
+    status = cmd_verify(
+        [EXAMPLES / "contact" / "he_humaneval_3.py"], tmp_path,
+        time_limit=60, types=False,
+    )
+    assert status == 0
+    assert "below_zero" in capsys.readouterr().out
+
+
+def test_sum_of_squares_verifies_with_genexp_fold(tmp_path, capsys):
+    status = cmd_verify(
+        [EXAMPLES / "contact" / "mbpp_sum_squares.py"], tmp_path,
+        time_limit=60, types=False,
+    )
+    assert status == 0
+    assert "sum_of_squares" in capsys.readouterr().out
+
+
 NEG_INDEX = (
     "#@ verified\n"
     "#@ requires len(l) > 0\n"

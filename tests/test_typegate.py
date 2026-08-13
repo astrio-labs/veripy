@@ -48,7 +48,9 @@ def test_cli_no_types_skips_gate(tmp_path, capsys):
         tmp_path,
         "#@ ensures result >= 0 or result < 0\ndef f(x):\n    return x\n",
     )
-    status = cmd_check([module], types=False)
+    # fragment=False isolates the gate behavior: the unannotated parameter
+    # would (correctly) fail the fragment conformance dry-run.
+    status = cmd_check([module], types=False, fragment=False)
     out = capsys.readouterr().out
     assert status == 0
     assert "type gate" not in out

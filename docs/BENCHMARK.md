@@ -1,6 +1,6 @@
 # lemmapy-benchmark
 
-> **Status: v0 — runner and 10-task seed corpus shipped.** `lemmapy benchmark`
+> **Status: v0 — runner and 12-task seed corpus shipped.** `lemmapy benchmark`
 > runs it; the scorecard below regenerates with `--report`.
 
 ## Why not a skeleton-completion benchmark
@@ -66,19 +66,21 @@ benchmark/tasks/<id>/
   meta.json         # {id, origin, license}
 ```
 
-Seed corpus: 10 tasks (8 adapted from HumanEval, MIT; 2 project-original),
+Seed corpus: 12 tasks (9 adapted from HumanEval, MIT; 3 project-original),
 every one at full ladder height as the golden baseline. Growth is free:
 each fragment slice makes more of the 20-task contact corpus (and the 65%
-of HumanEval that surveys in-fragment) eligible.
+of HumanEval that surveys in-fragment) eligible — slice 6 (`sum()`/genexp
+folds) admitted `below_zero` and `sum_squares`.
 
 ## Seed baseline (August 2026)
 
-First full run (defaults: 8-mutant cap, 5s hunt budget, 60s prove budget,
+Full run (defaults: 8-mutant cap, 5s hunt budget, 60s prove budget,
 60 fidelity examples per function):
 
 ```
 task                   gate  hunt  mutants  encode  prove  fidelity  height
 below_threshold        pass  pass  1/1      pass    pass   pass      6/6
+below_zero             pass  pass  7/7      pass    pass   pass      6/6
 bump                   pass  pass  2/2      pass    pass   pass      6/6
 clamp                  pass  pass  2/2      pass    pass   pass      6/6
 gcd                    pass  pass  2/2      pass    pass   pass      6/6
@@ -88,8 +90,9 @@ is_palindrome          pass  pass  4/4      pass    pass   pass      6/6
 is_prime               pass  pass  7/7      pass    pass   pass      6/6
 max_element            pass  pass  1/1      pass    pass   pass      6/6
 rolling_max            pass  pass  5/5      pass    pass   pass      6/6
+sum_squares            pass  pass  6/6      pass    pass   pass      6/6
 
-tasks: 10   full-ladder: 10   spec strength: 29/29 killed (+1 adjudicated)
+tasks: 12   full-ladder: 12   spec strength: 42/42 killed (+1 adjudicated)
 ```
 
 The benchmark's first run also exercised its adjudication path: the raw run

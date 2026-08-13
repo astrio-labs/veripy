@@ -316,6 +316,11 @@ class _Scope:
     names: set[str]
 
 
+_ENCODED_BUILTINS = frozenset({
+    "len", "min", "max", "abs", "sum", "range", "bool", "all", "any", "old",
+})
+
+
 class _MethodEncoder:
     def __init__(self, node: ast.FunctionDef, spec: FunctionSpec,
                  proof_lemmas: frozenset[str] = frozenset(),
@@ -329,6 +334,31 @@ class _MethodEncoder:
         self.params: set[str] = {
             p.arg for p in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
         }
+        # The encoder resolves these names to Dafny builtins by name alone,
+        # so no binding in the function may reuse them.
+        for p in sorted(self.params & _ENCODED_BUILTINS):
+            raise EncodeError(
+                f"parameter {p!r} shadows a builtin the encoder gives meaning "
+                f"to — rename it", node.lineno)
+        for n in ast.walk(node):
+            bound: list[str] = []
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                bound = [n.id]
+            elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
+                bound = [n.name]  # match/import are outside the fragment,
+            elif isinstance(n, ast.MatchMapping) and n.rest:
+                bound = [n.rest]  # but the scan must not trail it
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                bound = [(a.asname or a.name).split(".")[0] for a in n.names]
+            for name in bound:
+                if name in _ENCODED_BUILTINS:
+                    raise _err(n, (
+                        f"binding {name!r} shadows a builtin the encoder gives "
+                        f"meaning to — rename it"
+                    ))
+            if isinstance(n, (ast.Global, ast.Nonlocal)) \
+                    and set(n.names) & _ENCODED_BUILTINS:
+                raise _err(n, "global/nonlocal on a builtin name is outside the fragment")
         self.types: dict[str, str | None] = {}
         self.scopes: list[set[str]] = [set()]
         self.retired: set[str] = set()
@@ -458,7 +488,7 @@ class _MethodEncoder:
                 return None
             case ast.Call(func=ast.Name(id="len")):
                 return "int"
-            case ast.Call(func=ast.Name(id=("min" | "max" | "abs"))):
+            case ast.Call(func=ast.Name(id=("min" | "max" | "abs" | "sum"))):
                 return "int"
             case ast.Call(func=ast.Name(id="bool")):
                 return "bool"
@@ -503,7 +533,8 @@ class _MethodEncoder:
     def _comp_binder_type(self, comp: ast.comprehension) -> str | None:
         it = comp.iter
         if isinstance(it, ast.Call) and isinstance(it.func, ast.Name) \
-                and it.func.id == "range" and 1 <= len(it.args) <= 2:
+                and it.func.id == "range" and 1 <= len(it.args) <= 2 \
+                and not it.keywords:
             return "int"
         dt = self._infer(it)
         if dt is not None and dt.startswith("seq<"):
@@ -616,9 +647,11 @@ class _MethodEncoder:
             case _:
                 raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder")
 
-    def _list_comp(self, node: ast.ListComp, elt: ast.expr, comp: ast.comprehension) -> str:
+    def _list_comp(self, node: ast.ListComp | ast.GeneratorExp, elt: ast.expr,
+                   comp: ast.comprehension, require_int_elt: bool = False) -> str:
         raw = comp.target.id  # type: ignore[union-attr]
-        if raw in self.params or self._declared(raw):
+        if raw in self.params or self._declared(raw) \
+                or raw in self.name_overrides or raw in self.types:
             raise _err(node, (
                 f"comprehension binder {raw!r} shadows an existing name — "
                 f"rename the binder"
@@ -626,7 +659,8 @@ class _MethodEncoder:
         it = comp.iter
         idx = self._fresh(f"{raw}_c")
         if isinstance(it, ast.Call) and isinstance(it.func, ast.Name) \
-                and it.func.id == "range" and 1 <= len(it.args) <= 2:
+                and it.func.id == "range" and 1 <= len(it.args) <= 2 \
+                and not it.keywords:
             if len(it.args) == 1:
                 lo, hi = "0", self.expr(it.args[0])
             else:
@@ -647,7 +681,14 @@ class _MethodEncoder:
         self.name_overrides[raw] = override
         self.types[raw] = binder_type
         try:
-            body = self.expr(elt)
+            if require_int_elt:
+                if self._eff_type(elt) != "int":
+                    raise _err(node, "sum() needs an int-valued generator expression")
+                # Optional[int] elements project through .v — the well-
+                # formedness VC is Python's would-raise-TypeError condition.
+                body = self._deopt(elt)
+            else:
+                body = self.expr(elt)
         finally:
             if saved_override is None:
                 self.name_overrides.pop(raw, None)
@@ -764,6 +805,10 @@ class _MethodEncoder:
             raise _err(node, "method calls are outside the slice-1 encoder")
         name = func.id
         args = node.args
+        if node.keywords:
+            # No encoded builtin takes keywords; silently dropping one
+            # (e.g. max(a, b, key=abs)) would change the meaning.
+            raise _err(node, f"keyword arguments to {name}() are outside the fragment")
         if name == "len" and len(args) == 1:
             return f"|{self.expr(args[0])}|"
         if name in ("min", "max") and len(args) == 2:
@@ -780,6 +825,22 @@ class _MethodEncoder:
             return f"{fn}({self.expr(args[0])})"
         if name == "abs" and len(args) == 1:
             return f"PyAbs({self.expr(args[0])})"
+        if name == "sum" and len(args) == 1:
+            arg = args[0]
+            if isinstance(arg, ast.GeneratorExp):
+                if len(arg.generators) != 1 or arg.generators[0].ifs \
+                        or arg.generators[0].is_async \
+                        or not isinstance(arg.generators[0].target, ast.Name):
+                    raise _err(node, (
+                        "sum() accepts only single-generator, filterless "
+                        "generator expressions in the slice encoder"
+                    ))
+                mapped = self._list_comp(arg, arg.elt, arg.generators[0],
+                                         require_int_elt=True)
+                return f"PySum({mapped})"
+            if self._infer(arg) != "seq<int>":
+                raise _err(node, "sum() needs a list[int] operand in the slice encoder")
+            return f"PySum({self.expr(arg)})"
         if name == "old" and self.spec_mode and len(args) == 1 and isinstance(args[0], ast.Name):
             # Parameters are immutable in the fragment (ownership + copy-in).
             if args[0].id not in self.params:
@@ -809,7 +870,11 @@ class _MethodEncoder:
                 if comp.is_async or not isinstance(comp.target, ast.Name):
                     raise _err(gen, "unsupported quantifier binder")
                 raw = comp.target.id
-                if raw in self.params or self._declared(raw) or raw in [b for b in binder_names]:
+                # name_overrides/types catch enclosing comprehension and
+                # quantifier binders: an override would silently rewrite
+                # every occurrence of this binder in the body.
+                if raw in self.params or self._declared(raw) or raw in binder_names \
+                        or raw in self.name_overrides or raw in self.types:
                     raise _err(gen, (
                         f"quantifier binder {raw!r} shadows an existing name — Python "
                         f"evaluates the domain in the enclosing scope, the Dafny binder "
@@ -818,7 +883,8 @@ class _MethodEncoder:
                 var = self._mangle(raw)
                 domain = comp.iter
                 if isinstance(domain, ast.Call) and isinstance(domain.func, ast.Name) \
-                        and domain.func.id == "range" and 1 <= len(domain.args) <= 2:
+                        and domain.func.id == "range" and 1 <= len(domain.args) <= 2 \
+                        and not domain.keywords:
                     if len(domain.args) == 1:
                         lo, hi = "0", self.expr(domain.args[0])
                     else:
@@ -1078,6 +1144,12 @@ class _MethodEncoder:
                 "truthiness on an Optional conflates None with falsy values "
                 "(0, empty) — write `is None` / `is not None` explicitly"
             ))
+        t = self._eff_type(test)
+        if t is not None and t != "bool":
+            raise _err(test, (
+                f"truthiness on a {t}-typed value is outside the fragment — "
+                f"write an explicit comparison (e.g. `x != 0`)"
+            ))
         return self.expr(test)
 
     def _coerce(self, node: ast.expr, want: str | None) -> str:
@@ -1245,7 +1317,8 @@ class _MethodEncoder:
             raise _err(stmt, "only a simple index variable is supported in slice-1 `for`")
         it = stmt.iter
         if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
-                and it.func.id == "range" and 1 <= len(it.args) <= 2):
+                and it.func.id == "range" and 1 <= len(it.args) <= 2
+                and not it.keywords):
             raise _err(stmt, "only `for i in range(...)` (1-2 args) is in the slice-1 encoder")
         var = stmt.target.id
         if var in self.params:
@@ -1392,6 +1465,61 @@ class EncodedModule:
     methods: list[str]
 
 
+def _module_shadow_check(module: ast.Module) -> None:
+    """Reject module-level bindings of names the encoder resolves as
+    builtins. An unspecced `def sum(...)` is not encoded, so every encoded
+    call site would silently mean Python's builtin while CPython runs the
+    user's definition — verified-but-false. Function bodies are scanned by
+    _MethodEncoder for the functions that get encoded; module scope is the
+    part no per-function check can see."""
+
+    def check(name: str, line: int) -> None:
+        if name in _ENCODED_BUILTINS:
+            raise EncodeError(
+                f"module-level binding of {name!r} shadows a builtin the "
+                f"encoder gives meaning to — rename it", line)
+
+    def scan(stmts: list[ast.stmt]) -> None:
+        for stmt in stmts:
+            match stmt:
+                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
+                    check(stmt.name, stmt.lineno)  # do not descend
+                    continue
+                case ast.Import(names=aliases) | ast.ImportFrom(names=aliases):
+                    for a in aliases:
+                        check((a.asname or a.name).split(".")[0], stmt.lineno)
+                case ast.For(body=body, orelse=orelse) \
+                        | ast.While(body=body, orelse=orelse) \
+                        | ast.If(body=body, orelse=orelse):
+                    scan(body)
+                    scan(orelse)
+                case ast.With(body=body):
+                    scan(body)
+                case ast.Try(body=body, orelse=orelse, finalbody=finalbody,
+                             handlers=handlers):
+                    scan(body)
+                    scan(orelse)
+                    scan(finalbody)
+                    for h in handlers:
+                        if h.name:
+                            check(h.name, h.lineno)
+                        scan(h.body)
+                case _:
+                    pass
+            # Assignment/loop/with targets and walrus expressions all bind
+            # via Store-context Names; match patterns bind via name
+            # attributes on the pattern nodes instead.
+            for n in ast.walk(stmt):
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                    check(n.id, n.lineno)
+                elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
+                    check(n.name, n.lineno)
+                elif isinstance(n, ast.MatchMapping) and n.rest:
+                    check(n.rest, n.lineno)
+
+    scan(module.body)
+
+
 def encode_module(
     source: str,
     specs: ModuleSpecs,
@@ -1402,6 +1530,7 @@ def encode_module(
         first = specs.errors[0]
         raise EncodeError(f"spec error: {first.error}", first.line)
     module = ast.parse(source)
+    _module_shadow_check(module)
     all_defs = [n for n in ast.walk(module) if isinstance(n, ast.FunctionDef)]
     seen_names: dict[str, int] = {}
     for fn in all_defs:

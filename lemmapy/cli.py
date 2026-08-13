@@ -47,10 +47,40 @@ def _report(path: Path) -> int:
     return errors
 
 
-def cmd_check(paths: list[Path], types: bool = True) -> int:
+def _fragment_check(path: Path) -> int:
+    """Dry-run the Dafny encoder on each spec'd function — the encoder is
+    the single conformance authority, so `check` reports exactly what
+    `verify` would reject, without needing Dafny installed."""
+    from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
+
+    source = path.read_text()
+    specs = parse_source(source, filename=str(path))
+    if specs.errors or specs.orphans or not specs.functions:
+        return 0  # spec diagnostics were already reported by _report
+    try:
+        sidecar = load_proof_sidecar(path)
+        encode_module(source, specs, module_name=path.name,
+                      proof_lemmas=sidecar.lemmas)
+    except EncodeError as e:
+        loc = f"{path}:{e.line}" if e.line else str(path)
+        print(f"  fragment: {loc}: {e.message}")
+        return 1
+    except (OSError, UnicodeDecodeError) as e:
+        # An unreadable/undecodable proof sidecar is a controlled check
+        # failure, not a traceback.
+        print(f"  fragment: {path}: unreadable proof sidecar: {e}")
+        return 1
+    names = ", ".join(fn.name for fn in specs.functions)
+    print(f"  fragment: conformant ({names})")
+    return 0
+
+
+def cmd_check(paths: list[Path], types: bool = True, fragment: bool = True) -> int:
     total_errors = 0
     for path in paths:
         total_errors += _report(path)
+        if fragment:
+            total_errors += _fragment_check(path)
 
     if types:
         gate = run_type_gate(paths)
@@ -254,6 +284,10 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             print(f"{path}{loc}: cannot encode: {exc.message}", file=sys.stderr)
             trouble += 1
             continue
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"{path}: unreadable proof sidecar: {exc}", file=sys.stderr)
+            trouble += 1
+            continue
         stub = outdir / f"{path.stem}.dfy"
         stub.write_text(encoded.dafny_source + sidecar.text)
         result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
@@ -340,13 +374,19 @@ def main(argv: list[str] | None = None) -> int:
 
     p_check = sub.add_parser(
         "check",
-        help="parse #@ specs and report diagnostics; gates on basedpyright",
+        help="parse #@ specs, report diagnostics, check fragment conformance; "
+             "gates on basedpyright",
     )
     p_check.add_argument("files", nargs="+", type=Path)
     p_check.add_argument(
         "--no-types",
         action="store_true",
         help="skip the basedpyright type gate",
+    )
+    p_check.add_argument(
+        "--no-fragment",
+        action="store_true",
+        help="skip the fragment-conformance dry-run of the Dafny encoder",
     )
 
     p_emit = sub.add_parser("emit", help="emit icontract-checked copies of modules")
@@ -399,7 +439,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "check":
-        return cmd_check(args.files, types=not args.no_types)
+        return cmd_check(args.files, types=not args.no_types,
+                         fragment=not args.no_fragment)
     if args.command == "emit":
         return cmd_emit(args.files, args.outdir)
     if args.command == "hunt":
