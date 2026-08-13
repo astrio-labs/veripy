@@ -115,6 +115,10 @@ def _strip_dafny_comments(text: str) -> str:
 _SIDECAR_FORBIDDEN = frozenset({
     "method", "import", "include", "print", "expect", "assume", "axiom",
     "twostate", "iterator", "class", "trait", "module", "new", "modifies",
+    # Collection displays put braces after identifiers (`multiset{1}`), which
+    # would let a bodiless lemma masquerade as proved; lemma packs about the
+    # fragment's arithmetic don't need them — forbid the whole class.
+    "multiset", "set", "iset", "map", "imap",
 })
 _SIDECAR_DECL_KEYWORDS = frozenset({"lemma", "function", "predicate", "ghost"})
 # Words that cannot END a value/signature — a top-level `{` following one of
@@ -151,6 +155,17 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
             raise EncodeError(
                 f"proof sidecar {name}: {w!r} is not allowed — sidecars may "
                 f"contain only proved ghost declarations (lemma/function/predicate)"
+            )
+        if w == "~":
+            raise EncodeError(f"proof sidecar {name}: partial-arrow types are not allowed")
+    for i in range(len(words) - 1):
+        # An isolated `=>` is a lambda (its body brace follows a `>`, which
+        # would defeat the value-ender body check); `==>` (implication) has a
+        # preceding `=` and stays legal.
+        if words[i] == "=" and words[i + 1] == ">" \
+                and (i == 0 or words[i - 1] != "="):
+            raise EncodeError(
+                f"proof sidecar {name}: lambda expressions (`=>`) are not allowed"
             )
     lemmas: set[str] = set()
     depth = 0
