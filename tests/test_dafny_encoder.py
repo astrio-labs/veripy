@@ -459,6 +459,68 @@ def test_foreach_invariant_referencing_target_rejected():
     )
 
 
+def test_nested_foreach_same_list_keeps_freeze():
+    # The inner loop over the same list must not thaw the outer iteration.
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f() -> list[int]:\n"
+        "    xs: list[int] = [1, 2]\n"
+        "    for v in xs:\n"
+        "        for w in xs:\n"
+        "            pass\n"
+        "        xs.append(v)\n"
+        "    return xs\n",
+        "iterating",
+    )
+
+
+def test_ownership_merges_across_branches():
+    # `xs` aliases on one path: not owned after the join, whatever the
+    # branch order.
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(c: bool) -> list[int]:\n"
+        "    ys: list[int] = []\n"
+        "    xs: list[int] = []\n"
+        "    if c:\n"
+        "        xs = ys\n"
+        "    else:\n"
+        "        xs = [1]\n"
+        "    xs.append(0)\n"
+        "    return xs\n",
+        "ownership",
+    )
+
+
+def test_ownership_lost_in_then_branch_without_else():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(c: bool) -> list[int]:\n"
+        "    xs: list[int] = []\n"
+        "    if c:\n"
+        "        ys = xs\n"
+        "    xs.append(1)\n"
+        "    return xs\n",
+        "ownership",
+    )
+
+
+def test_ownership_survives_branches_without_aliasing():
+    src = (
+        "#@ ensures len(result) >= 1\n"
+        "def f(c: bool) -> list[int]:\n"
+        "    xs: list[int] = []\n"
+        "    if c:\n"
+        "        xs.append(1)\n"
+        "    else:\n"
+        "        xs.append(2)\n"
+        "    xs.append(3)\n"
+        "    return xs\n"
+    )
+    dfy = _encode(src)
+    assert dfy.count("xs := xs + [") == 3
+
+
 def test_sequential_loops_reuse_index():
     src = (
         "#@ requires n >= 0\n"

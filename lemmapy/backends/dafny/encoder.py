@@ -772,20 +772,33 @@ class _MethodEncoder:
                 self.emit(f"{indent}result := {self.expr(value)};", stmt.lineno)
                 self.emit(f"{indent}return;")
             case ast.If(test=test, body=body, orelse=orelse):
+                # Ownership is path-sensitive: a name is owned after the If
+                # only if it is owned on EVERY path through it.
+                pre_owned = set(self.owned)
                 self.emit(f"{indent}if {self._bool_ctx(test)} {{", stmt.lineno)
                 self.block(body, indent + "  ")
+                then_owned = set(self.owned)
                 if orelse:
+                    self.owned = set(pre_owned)
                     self.emit(f"{indent}}} else {{")
                     self.block(orelse, indent + "  ")
+                    else_owned = set(self.owned)
+                else:
+                    else_owned = pre_owned
+                self.owned = then_owned & else_owned
                 self.emit(f"{indent}}}")
             case ast.While(test=test, body=body, orelse=orelse):
                 if orelse:
                     raise _err(stmt, "while/else is outside the fragment")
+                pre_owned = set(self.owned)
                 self.emit(f"{indent}while {self._bool_ctx(test)}", stmt.lineno)
                 self._loop_clauses(stmt, indent)
                 self.emit(f"{indent}{{")
                 self.block(body, indent + "  ")
                 self.emit(f"{indent}}}")
+                # The body may run zero or many times: keep only names owned
+                # both before the loop and at the end of its body.
+                self.owned &= pre_owned
             case ast.For():
                 it = stmt.iter
                 if isinstance(it, ast.Call) and isinstance(it.func, ast.Name) \
@@ -826,6 +839,7 @@ class _MethodEncoder:
         else:
             lo_expr, hi_expr = self.expr(it.args[0]), self.expr(it.args[1])
         mv = self._mangle(var)
+        pre_owned = set(self.owned)
         # Python evaluates range() bounds ONCE; hoist them. Fresh names are
         # made injective against every identifier in the function.
         lo = self._fresh(f"{mv}_lo")
@@ -844,6 +858,7 @@ class _MethodEncoder:
         self.block(stmt.body, indent + "  ")
         self.emit(f"{indent}  {mv} := {mv} + 1;")
         self.emit(f"{indent}}}")
+        self.owned &= pre_owned
         # Python's index survives the loop with a DIFFERENT value than the
         # lowering's; retire it so later reads are rejected, not miscompiled.
         self.retired.add(var)
@@ -887,8 +902,11 @@ class _MethodEncoder:
         self.emit(f"{indent}{{")
         mv = self._mangle(var)
         self.emit(f"{indent}  var {mv} := {snap}[{idx}];", stmt.lineno)
+        pre_owned = set(self.owned)
+        # Freeze the iterated name; only unfreeze if WE froze it, so nested
+        # loops over the same list cannot thaw an enclosing iteration.
         frozen_added = None
-        if isinstance(stmt.iter, ast.Name):
+        if isinstance(stmt.iter, ast.Name) and stmt.iter.id not in self.frozen:
             frozen_added = stmt.iter.id
             self.frozen.add(frozen_added)
         self.scopes.append({var})
@@ -900,6 +918,7 @@ class _MethodEncoder:
             self.scopes.pop()
             if frozen_added is not None:
                 self.frozen.discard(frozen_added)
+        self.owned &= pre_owned
         self.emit(f"{indent}  {idx} := {idx} + 1;")
         self.emit(f"{indent}}}")
         # The target's post-loop value differs between the languages (last
