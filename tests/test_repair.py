@@ -97,8 +97,11 @@ def test_apply_is_lock_serialized_and_backup_preserves_first(tmp_path):
     sidecar = tmp_path / "m.proofs.dfy"
     lock = tmp_path / "m.proofs.dfy.lock"
 
-    # Contention: a held lock means nothing is written, with a clear reason.
-    lock.write_text("")
+    # Contention: a lock held by a LIVE process means nothing is written,
+    # with a clear reason. (A dead-owner or junk lock is reaped instead —
+    # see test_orphaned_lock_is_reaped_live_lock_respected.)
+    import os
+    lock.write_text(str(os.getpid()))
     outcome = repair_file(src, tmp_path / "o1", make_engine(f"file:{attempts}"),
                           apply=True)
     assert outcome.verified and "apply skipped" in outcome.reason
@@ -138,6 +141,44 @@ def test_apply_first_wins_when_sidecar_changed_mid_repair(tmp_path):
     assert reason == "verified (sidecar applied)"
     assert _apply_sidecar(sidecar, GOOD, expected_prior=GOOD) \
         == "verified (sidecar already up to date)"
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_source_changed_mid_repair_skips_apply(tmp_path):
+    # The engine simulates a concurrent editor save: it edits the LIVE
+    # source while proposing the proof. The proof holds for the snapshot,
+    # so nothing is installed beside the changed source.
+    src = tmp_path / "m.py"
+    src.write_text(NEEDS_LEMMA)
+
+    def editing_engine(request):
+        src.write_text(NEEDS_LEMMA + "\n# edited mid-repair\n")
+        return GOOD
+
+    outcome = repair_file(src, tmp_path / "out", editing_engine, apply=True)
+    assert outcome.verified
+    assert "source changed" in outcome.reason
+    assert not (tmp_path / "m.proofs.dfy").exists()
+
+
+def test_orphaned_lock_is_reaped_live_lock_respected(tmp_path):
+    import os
+
+    from lemmapy.repair import _apply_sidecar
+
+    sidecar = tmp_path / "m.proofs.dfy"
+    lock = tmp_path / "m.proofs.dfy.lock"
+    # Dead owner: reaped, apply proceeds.
+    lock.write_text("999999999")
+    assert _apply_sidecar(sidecar, GOOD, expected_prior=None) \
+        == "verified (sidecar applied)"
+    assert sidecar.read_text() == GOOD and not lock.exists()
+    # Live owner (us): genuine contention, apply skipped.
+    sidecar.unlink()
+    lock.write_text(str(os.getpid()))
+    reason = _apply_sidecar(sidecar, GOOD, expected_prior=None)
+    assert "apply skipped" in reason and not sidecar.exists()
+    lock.unlink()
 
 
 def test_unrepairable_source_stops_immediately(tmp_path):
