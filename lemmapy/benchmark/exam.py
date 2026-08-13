@@ -15,8 +15,10 @@ loop's contract is that the source is frozen.
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from ..repair import Engine, repair_file
 
@@ -37,7 +39,8 @@ def exam_tasks(tasks_root: Path) -> list[Path]:
     )
 
 
-def run_repair_exam(tasks_root: Path, workdir: Path, engine: Engine,
+def run_repair_exam(tasks_root: Path, workdir: Path,
+                    engine_factory: Callable[[], Engine],
                     max_iterations: int = 4, time_limit: int = 60) -> list[ExamScore]:
     from ..backends.dafny.encoder import load_proof_sidecar
 
@@ -45,12 +48,18 @@ def run_repair_exam(tasks_root: Path, workdir: Path, engine: Engine,
     for task_dir in exam_tasks(tasks_root):
         task_id = task_dir.name
         exam_dir = workdir / task_id
-        exam_dir.mkdir(parents=True, exist_ok=True)
+        if exam_dir.exists():
+            # A rerun must start stripped: a retained workspace proof would
+            # score a stale restoration.
+            shutil.rmtree(exam_dir)
+        exam_dir.mkdir(parents=True)
         stripped = exam_dir / "task.py"
         stripped.write_text((task_dir / "task.py").read_text())
-        # No sidecar is copied: that is the exam.
+        # No sidecar is copied: that is the exam. Each task gets a FRESH
+        # engine so a stateful engine (file:<dir>) replays its own attempt
+        # sequence per task instead of continuing a previous task's counter.
         golden = load_proof_sidecar(task_dir / "task.py")
-        outcome = repair_file(stripped, exam_dir / "repair", engine,
+        outcome = repair_file(stripped, exam_dir / "repair", engine_factory(),
                               max_iterations=max_iterations,
                               time_limit=time_limit)
         scores.append(ExamScore(

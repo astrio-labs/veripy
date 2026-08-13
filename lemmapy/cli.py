@@ -315,23 +315,35 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             failed += 1
             print(f"{path}: VERIFICATION FAILED -> {stub}")
             errs = []
+            stub_extent = encoded.dafny_source.count("\n") + 1
             for d in result.diagnostics:
                 if d.severity == "error":
                     where = f"{path}:{d.py_line}" if d.py_line is not None else f"{stub}:{d.dafny_line}"
                     print(f"  {where}: {d.message}")
                     errs.append(d)
-            # Attribute failures to the enclosing function by source span;
-            # dafny verifies methods independently, so unattributed
-            # functions in a failing file still verified.
+            # Attribute failures to the enclosing function by source span.
+            # Failures in the appended sidecar region (beyond the stub) or
+            # with no mapped Python line belong to no span; they must not
+            # let the other functions read as verified.
+            unattributed = [d for d in errs
+                            if d.py_line is None or d.dafny_line > stub_extent]
+            attributable = [d for d in errs if d not in unattributed]
             spans = sorted(specs.functions, key=lambda f: f.lineno)
             for i, fn in enumerate(spans):
                 hi = spans[i + 1].lineno if i + 1 < len(spans) else 10**9
-                mine = [d for d in errs
+                mine = [d for d in attributable
                         if d.py_line is not None and fn.lineno <= d.py_line < hi]
                 fails = [{"file": str(path), "line": d.py_line, "message": d.message}
                          for d in mine]
-                fn_reports.append(function_report(
-                    fn, str(path), "failed" if mine else "verified", fails))
+                if not mine and unattributed:
+                    status_str = "indeterminate"
+                    fails = [{"file": str(stub), "line": d.dafny_line,
+                              "message": f"unattributed (proof sidecar or "
+                                         f"generated region): {d.message}"}
+                             for d in unattributed]
+                else:
+                    status_str = "failed" if mine else "verified"
+                fn_reports.append(function_report(fn, str(path), status_str, fails))
     if report is not None:
         payload = build_report(fn_reports, sidecar_lemmas, dafny_version)
         report.parent.mkdir(parents=True, exist_ok=True)
@@ -610,7 +622,26 @@ def main(argv: list[str] | None = None) -> int:
             if not args.no_types:
                 gate = run_type_gate(args.files)
                 if not gate.available or gate.errors:
-                    print("type gate failed; fix types or pass --no-types",
+                    # The agent asked for JSON; a gate failure is still a
+                    # structured payload, never a silent empty run.
+                    by_file: dict[str, list] = {str(p): [] for p in args.files}
+                    for d in (gate.errors if gate.available else []):
+                        by_file.setdefault(d.file, []).append(
+                            {"kind": "type", "py_line": d.line,
+                             "message": d.message})
+                    payloads = [
+                        {"schema": "lemmapy-failures/1", "file": f,
+                         "status": "gate-error", "functions": [],
+                         "failures": fails or (
+                             [] if gate.available else
+                             [{"kind": "type", "py_line": None,
+                               "message": f"type gate unavailable: {gate.error}"}]),
+                         "sidecar": None}
+                        for f, fails in by_file.items()
+                    ]
+                    dump(payloads, args.json_out)
+                    print("type gate failed; structured payloads written to "
+                          f"{args.json_out}; fix types or pass --no-types",
                           file=sys.stderr)
                     return 2
             payloads = verify_structured_many(
@@ -641,11 +672,12 @@ def main(argv: list[str] | None = None) -> int:
             from .repair import make_engine
 
             try:
-                engine = make_engine(args.engine)
+                make_engine(args.engine)  # validate the spec up front
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
-            scores = run_repair_exam(args.tasks, args.outdir / "exam", engine)
+            scores = run_repair_exam(args.tasks, args.outdir / "exam",
+                                     lambda: make_engine(args.engine))
             print(render_exam_report(scores))
             return 0 if scores and all(s.restored for s in scores) else 1
         return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
