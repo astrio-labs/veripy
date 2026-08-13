@@ -16,6 +16,7 @@ callers elide guard cost by importing the original module directly.
 from __future__ import annotations
 
 import ast
+import hashlib
 
 from ..frontend.parse import FunctionSpec, ModuleSpecs, rewrite_old
 
@@ -106,30 +107,28 @@ def _wrapper(fn: ast.FunctionDef, spec: FunctionSpec, check_ensures: bool) -> li
     if "result" in {p.arg for p in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs)}:
         raise GuardGenError("parameter named 'result' shadows the spec word", fn.lineno)
     def_params, call_args, params = _signature(fn)
-    island = f"_lemmapy_island_{name}"
-    lines = [f"{island} = {name}", "", ""]
-    lines.append(f"def {name}({def_params}):")
+    body: list[str] = [f"def {name}({def_params}):"]
     for pname, ann in params:
         desc = _descriptor(ann, fn)
-        lines.append(
-            f"    {pname} = _lemmapy_guard_value({pname}, {desc!r}, "
+        body.append(
+            f"    {pname} = _lemmapy_bound_guard({pname}, {desc!r}, "
             f"function={name!r}, param={pname!r})"
         )
     for clause in spec.by_kind("requires"):
         # A requires whose evaluation itself raises (min([]) etc.) is still
-        # a caller-side boundary failure, with blame — never a bare builtin
+        # a caller-side boundary failure, with blame -- never a bare builtin
         # exception escaping the wrapper.
-        lines.append("    try:")
-        lines.append(f"        _lemmapy_ok = bool({clause.desugared})")
-        lines.append("    except Exception as _lemmapy_exc:")
-        lines.append(
-            f"        raise _LemmapyPreconditionError({name!r}, "
+        body.append("    try:")
+        body.append(f"        _lemmapy_ok = bool({clause.desugared})")
+        body.append("    except Exception as _lemmapy_exc:")
+        body.append(
+            f"        raise _lemmapy_bound_pre({name!r}, "
             f"{'requires ' + clause.raw!r} + "
             f"f' raised {{type(_lemmapy_exc).__name__}}: {{_lemmapy_exc}}')"
         )
-        lines.append("    if not _lemmapy_ok:")
-        lines.append(
-            f"        raise _LemmapyPreconditionError({name!r}, "
+        body.append("    if not _lemmapy_ok:")
+        body.append(
+            f"        raise _lemmapy_bound_pre({name!r}, "
             f"{'requires ' + clause.raw!r})"
         )
     ensures = spec.by_kind("ensures") if check_ensures else []
@@ -138,7 +137,7 @@ def _wrapper(fn: ast.FunctionDef, spec: FunctionSpec, check_ensures: bool) -> li
     for n in old_names:
         if n not in descs:
             raise GuardGenError(f"old({n}) does not name a parameter", fn.lineno)
-        lines.append(f"    _lemmapy_old_{n} = _lemmapy_copy_value({n}, {descs[n]!r})")
+        body.append(f"    _lemmapy_old_{n} = _lemmapy_bound_copy({n}, {descs[n]!r})")
     if ensures and params:
         # The island gets its own copies so post-call ensures evaluation
         # reads the wrapper's pre-call values even if the island mutates
@@ -146,19 +145,37 @@ def _wrapper(fn: ast.FunctionDef, spec: FunctionSpec, check_ensures: bool) -> li
         island_parts = []
         for part in call_args.split(", "):
             p = part.split("=")[0]
-            copied = f"_lemmapy_copy_value({p}, {descs[p]!r})"
+            copied = f"_lemmapy_bound_copy({p}, {descs[p]!r})"
             island_parts.append(f"{p}={copied}" if "=" in part else copied)
-        lines.append(f"    result = {island}({', '.join(island_parts)})")
+        body.append(f"    result = _lemmapy_bound_island({', '.join(island_parts)})")
     else:
-        lines.append(f"    result = {island}({call_args})")
+        body.append(f"    result = _lemmapy_bound_island({call_args})")
     for clause in ensures:
         expr = rewrite_old(clause.desugared, "_lemmapy_old_{name}")
-        lines.append(f"    if not ({expr}):")
-        lines.append(
-            f"        raise _LemmapyPostconditionError({name!r}, "
+        body.append(f"    if not ({expr}):")
+        body.append(
+            f"        raise _lemmapy_bound_post({name!r}, "
             f"{'ensures ' + clause.raw!r})"
         )
-    lines.append("    return result")
+    body.append("    return result")
+    # The factory closes over the island and the helpers at definition
+    # time: rebinding the guarded module's attributes afterwards cannot
+    # redirect an already-defined wrapper (island integrity, ARCHITECTURE
+    # 5). Closure-cell surgery remains under assumption A1.
+    lines = [f"_lemmapy_island_{name} = {name}", "", ""]
+    lines.append(
+        f"def _lemmapy_make_{name}(_lemmapy_bound_island, _lemmapy_bound_guard, "
+        f"_lemmapy_bound_copy, _lemmapy_bound_pre, _lemmapy_bound_post):"
+    )
+    lines.extend("    " + b if b else b for b in body)
+    lines.append(f"    return {name}")
+    lines.append("")
+    lines.append("")
+    lines.append(
+        f"{name} = _lemmapy_make_{name}(_lemmapy_island_{name}, "
+        f"_lemmapy_guard_value, _lemmapy_copy_value, "
+        f"_LemmapyPreconditionError, _LemmapyPostconditionError)"
+    )
     lines.append("")
     lines.append("")
     return lines
@@ -172,6 +189,10 @@ def emit_guarded(
 ) -> str:
     """Emit the guarded sibling module for every spec'd function."""
     module = ast.parse(source)
+    # Specs cannot smuggle generated identifiers either: the frontend
+    # rejects unknown names in clauses, and the two ways a _lemmapy* name
+    # could become KNOWN (a parameter, a module-level binding) are both
+    # rejected by _reject_reserved_names.
     _reject_reserved_names(module)
     for stmt in module.body:
         if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
@@ -207,12 +228,15 @@ def emit_guarded(
         "    guard_value as _lemmapy_guard_value,",
         ")",
         "",
-        "# ---- island (verbatim copy of the admitted source) ----",
-        "",
+        "# ---- LEMMAPY ISLAND BEGIN (verbatim copy of the admitted source) ----",
         source.rstrip("\n"),
+        "# ---- LEMMAPY ISLAND END ----",
         "",
         "",
         "# ---- boundary guards (generated) ----",
+        "",
+        f'_LEMMAPY_ISLAND_SHA256 = "{hashlib.sha256(source.rstrip(chr(10)).encode()).hexdigest()}"',
+        "",
         "",
     ]
     for spec in specs.functions:

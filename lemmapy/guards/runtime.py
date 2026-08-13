@@ -113,3 +113,41 @@ def guard_value(value: object, desc: Descriptor, *, function: str, param: str) -
     """Check then copy — the argument the island actually receives."""
     check_value(value, desc, function=function, path=param)
     return copy_value(value, desc)
+
+
+class IslandIntegrityError(GuardError):
+    """The on-disk island region no longer matches the embedded digest."""
+
+    blame = "environment"
+
+
+_ISLAND_BEGIN = "# ---- LEMMAPY ISLAND BEGIN (verbatim copy of the admitted source) ----\n"
+_ISLAND_END = "\n# ---- LEMMAPY ISLAND END ----"
+
+
+def verify_island_integrity(guarded_path) -> str:
+    """Recompute the island digest of a guarded module on disk and compare
+    it with the embedded `_LEMMAPY_ISLAND_SHA256`. Returns the digest, or
+    raises IslandIntegrityError on tampering (assumption A1's on-disk half
+    made checkable)."""
+    import re
+    from pathlib import Path
+
+    text = Path(guarded_path).read_text()
+    try:
+        island = text.split(_ISLAND_BEGIN, 1)[1].split(_ISLAND_END, 1)[0]
+    except IndexError:
+        raise IslandIntegrityError(str(guarded_path), "island markers missing")
+    m = re.search(r'^_LEMMAPY_ISLAND_SHA256 = "([0-9a-f]{64})"$', text, re.M)
+    if m is None:
+        raise IslandIntegrityError(str(guarded_path), "embedded digest missing")
+    import hashlib
+
+    actual = hashlib.sha256(island.encode()).hexdigest()
+    if actual != m.group(1):
+        raise IslandIntegrityError(
+            str(guarded_path),
+            f"island digest mismatch: embedded {m.group(1)[:12]}…, "
+            f"on disk {actual[:12]}…",
+        )
+    return actual

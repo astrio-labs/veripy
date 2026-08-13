@@ -246,11 +246,17 @@ def cmd_hunt(paths: list[Path], outdir: Path, per_condition_timeout: int) -> int
     return 1 if findings else 0
 
 
-def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = True) -> int:
+def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = True,
+               report: Path | None = None) -> int:
     """Encode to Dafny and verify: the M1 pipeline (clean-bucket fragment)."""
+    from .report import build_report, function_report, render_report_text
+
     outdir.mkdir(parents=True, exist_ok=True)
     failed = 0
     trouble = 0
+    fn_reports: list = []
+    sidecar_lemmas: dict[str, list[str]] = {}
+    dafny_version: str | None = None
     if types:
         # The A7 first pass applies to verification too: an untyped or
         # ill-typed file must not reach the encoder.
@@ -273,6 +279,7 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
         if specs.errors or specs.orphans:
             print(f"{path}: spec errors; run `lemmapy check` first", file=sys.stderr)
             trouble += 1
+            fn_reports += [function_report(fn, str(path), "error") for fn in specs.functions]
             continue
         try:
             sidecar = load_proof_sidecar(path)
@@ -283,27 +290,54 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             loc = f":{exc.line}" if exc.line is not None else ""
             print(f"{path}{loc}: cannot encode: {exc.message}", file=sys.stderr)
             trouble += 1
+            fn_reports += [function_report(fn, str(path), "error") for fn in specs.functions]
             continue
         except (OSError, UnicodeDecodeError) as exc:
             print(f"{path}: unreadable proof sidecar: {exc}", file=sys.stderr)
             trouble += 1
+            fn_reports += [function_report(fn, str(path), "error") for fn in specs.functions]
             continue
+        if sidecar.lemmas:
+            sidecar_lemmas[str(path)] = sorted(sidecar.lemmas)
         stub = outdir / f"{path.stem}.dfy"
         stub.write_text(encoded.dafny_source + sidecar.text)
         result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
         if result.error is not None:
             print(f"{path}: dafny trouble: {result.error}", file=sys.stderr)
             trouble += 1
+            fn_reports += [function_report(fn, str(path), "error") for fn in specs.functions]
             continue
+        dafny_version = dafny_version or result.summary or "ran"
         if result.ok:
             print(f"{path}: VERIFIED ({', '.join(encoded.methods)}) -> {stub}")
+            fn_reports += [function_report(fn, str(path), "verified") for fn in specs.functions]
         else:
             failed += 1
             print(f"{path}: VERIFICATION FAILED -> {stub}")
+            errs = []
             for d in result.diagnostics:
                 if d.severity == "error":
                     where = f"{path}:{d.py_line}" if d.py_line is not None else f"{stub}:{d.dafny_line}"
                     print(f"  {where}: {d.message}")
+                    errs.append(d)
+            # Attribute failures to the enclosing function by source span;
+            # dafny verifies methods independently, so unattributed
+            # functions in a failing file still verified.
+            spans = sorted(specs.functions, key=lambda f: f.lineno)
+            for i, fn in enumerate(spans):
+                hi = spans[i + 1].lineno if i + 1 < len(spans) else 10**9
+                mine = [d for d in errs
+                        if d.py_line is not None and fn.lineno <= d.py_line < hi]
+                fails = [{"file": str(path), "line": d.py_line, "message": d.message}
+                         for d in mine]
+                fn_reports.append(function_report(
+                    fn, str(path), "failed" if mine else "verified", fails))
+    if report is not None:
+        payload = build_report(fn_reports, sidecar_lemmas, dafny_version)
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps(payload, indent=1))
+        print(f"\n{render_report_text(payload)}")
+        print(f"\nreport -> {report}")
     if trouble:
         return 2
     return 1 if failed else 0
@@ -464,6 +498,11 @@ def main(argv: list[str] | None = None) -> int:
     p_verify.add_argument("-o", "--outdir", type=Path, default=Path("build/dafny"))
     p_verify.add_argument("--time-limit", type=int, default=30)
     p_verify.add_argument("--no-types", action="store_true", help="skip the basedpyright type gate")
+    p_verify.add_argument(
+        "--report", type=Path, default=None,
+        help="write the verification report (per-function verdicts, "
+             "assumptions A1-A7, guard modes) as JSON",
+    )
 
     p_difftest = sub.add_parser(
         "difftest",
@@ -503,7 +542,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "hunt":
         return cmd_hunt(args.files, args.outdir, args.per_condition_timeout)
     if args.command == "verify":
-        return cmd_verify(args.files, args.outdir, args.time_limit, types=not args.no_types)
+        return cmd_verify(args.files, args.outdir, args.time_limit,
+                          types=not args.no_types, report=args.report)
     if args.command == "difftest":
         return cmd_difftest(args.files, args.outdir, args.examples)
     if args.command == "benchmark":
