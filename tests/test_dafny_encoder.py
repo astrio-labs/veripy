@@ -332,6 +332,201 @@ def test_assert_lowers_to_dafny_assert():
     assert "assert (n >= 0);" in _encode(src)
 
 
+# --- sum() folds (slice 6) ------------------------------------------------------
+
+
+def test_sum_encodes_to_pysum_in_spec_and_code():
+    src = (
+        "#@ ensures result == sum(l)\n"
+        "def f(l: list[int]) -> int:\n"
+        "    total = sum(l)\n"
+        "    return total\n"
+    )
+    assert _encode(src).count("PySum(l)") == 2
+
+
+def test_sum_over_slice():
+    src = (
+        "#@ ensures result == sum(l[:2])\n"
+        "def f(l: list[int]) -> int:\n"
+        "    return sum(l[:2])\n"
+    )
+    assert "PySum(PySlice(l, 0, 2))" in _encode(src)
+
+
+def test_sum_of_genexp_maps_then_folds():
+    src = (
+        "#@ ensures result == sum(x * x for x in l)\n"
+        "def f(l: list[int]) -> int:\n"
+        "    return sum(x * x for x in l)\n"
+    )
+    out = _encode(src)
+    assert out.count("PySum(seq(|l|") == 2
+
+
+def test_sum_needs_int_list():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(n: int) -> int:\n"
+        "    return sum(n)\n"
+    )
+    with pytest.raises(EncodeError, match="list\\[int\\]"):
+        _encode(src)
+
+
+def test_sum_of_filtered_genexp_rejected():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(l: list[int]) -> int:\n"
+        "    return sum(x for x in l if x > 0)\n"
+    )
+    with pytest.raises(EncodeError, match="filterless"):
+        _encode(src)
+
+
+def test_sum_of_non_int_genexp_rejected():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(l: list[int]) -> int:\n"
+        "    return sum(l[:x] for x in l)\n"
+    )
+    with pytest.raises(EncodeError, match="int-valued"):
+        _encode(src)
+
+
+def test_two_arg_sum_rejected():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(l: list[int]) -> int:\n"
+        "    return sum(l, 1)\n"
+    )
+    with pytest.raises(EncodeError, match="outside the slice"):
+        _encode(src)
+
+
+def test_keyword_arguments_rejected_not_dropped():
+    # Silently dropping a keyword (max's key=...) would change the meaning.
+    src = (
+        "#@ ensures result == a or result == b\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return max(a, b, key=abs)\n"
+    )
+    with pytest.raises(EncodeError, match="keyword arguments"):
+        _encode(src)
+
+
+# --- builtin shadowing / binder capture (adversarial round on slice 6) ----------
+
+
+def test_module_level_def_shadowing_builtin_rejected():
+    # An unspecced `def sum` vanishes from the Dafny model while call sites
+    # encode as the builtin: verified-but-false unless rejected.
+    src = (
+        "def sum(xs: list[int]) -> int:\n"
+        "    return 1\n"
+        "\n"
+        "\n"
+        "#@ ensures result == 0\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    return sum(xs[:0])\n"
+    )
+    with pytest.raises(EncodeError, match="shadows a builtin"):
+        _encode(src)
+
+
+def test_module_level_assignment_and_import_shadowing_rejected():
+    for line in ("sum = 5\n", "from math import prod as sum\n"):
+        src = line + "#@ ensures result == 0\ndef f() -> int:\n    return 0\n"
+        with pytest.raises(EncodeError, match="shadows a builtin"):
+            _encode(src)
+
+
+def test_parameter_shadowing_builtin_rejected():
+    # CPython raises TypeError calling an int; Dafny would model builtin sum.
+    src = (
+        "#@ ensures result == 0\n"
+        "def h(sum: int) -> int:\n"
+        "    return sum\n"
+    )
+    with pytest.raises(EncodeError, match="shadows a builtin"):
+        _encode(src)
+
+
+def test_local_shadowing_builtin_rejected():
+    src = (
+        "#@ ensures result == 3\n"
+        "def g(x: int) -> int:\n"
+        "    abs = 0\n"
+        "    return abs\n"
+    )
+    with pytest.raises(EncodeError, match="shadows a builtin"):
+        _encode(src)
+
+
+def test_quantifier_binder_capture_by_genexp_binder_rejected():
+    # A quantifier binder colliding with an enclosing comprehension binder
+    # would be rewritten by name_overrides — the quantified variable would
+    # go unused and the spec would mean something else than CPython.
+    src = (
+        "#@ ensures result == sum((1 if all(x >= 0 for x in xs) else 0) for x in xs)\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    return 0\n"
+    )
+    with pytest.raises(EncodeError, match="shadows an existing name"):
+        _encode(src)
+
+
+def test_range_keywords_rejected_everywhere():
+    # range() takes no keywords in CPython (TypeError); the structural
+    # matchers must not read `range(5, step=2)` as `range(5)`. The spec
+    # position is the dangerous one — specs are comments, invisible to
+    # the type gate.
+    spec_side = (
+        "#@ ensures result == 0 or (forall i in range(5, step=2) :: i >= 0)\n"
+        "def f() -> int:\n"
+        "    return 0\n"
+    )
+    comp_side = (
+        "#@ ensures len(result) >= 0\n"
+        "def g() -> list[int]:\n"
+        "    return [i for i in range(5, step=2)]\n"
+    )
+    loop_side = (
+        "#@ ensures result >= 0\n"
+        "def h() -> int:\n"
+        "    t = 0\n"
+        "    for i in range(5, step=2):\n"
+        "        t = t + 1\n"
+        "    return t\n"
+    )
+    for src in (spec_side, comp_side, loop_side):
+        with pytest.raises(EncodeError):
+            _encode(src)
+
+
+def test_sum_of_optional_genexp_projects_through_deopt():
+    # sum over list[int | None]: elements project through .v, whose
+    # well-formedness VC is exactly Python's would-raise-TypeError condition.
+    src = (
+        "#@ ensures result >= 0 or result < 0\n"
+        "def f(l: list[int | None]) -> int:\n"
+        "    return sum(x for x in l)\n"
+    )
+    assert ").v" in _encode(src)
+
+
+def test_int_truthiness_condition_rejected_at_encode_time():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    if sum(xs):\n"
+        "        return 1\n"
+        "    return 0\n"
+    )
+    with pytest.raises(EncodeError, match="truthiness"):
+        _encode(src)
+
+
 # --- proof additions (#@ proof + sidecar) --------------------------------------
 
 
