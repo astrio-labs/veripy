@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from tokenize import TokenError
 from typing import Any
 
 from .backends.dafny.driver import verify_dafny_file
@@ -59,6 +60,14 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         payload["status"] = "spec-error"
         payload["failures"] = [
             {"kind": "syntax", "py_line": exc.lineno, "message": exc.msg}
+        ]
+        return payload
+    except (ValueError, TokenError) as exc:
+        # Null bytes raise ValueError on older Pythons; the comment
+        # tokenizer raises TokenError on some malformed buffers.
+        payload["status"] = "spec-error"
+        payload["failures"] = [
+            {"kind": "syntax", "py_line": None, "message": str(exc)}
         ]
         return payload
     payload["functions"] = [fn.name for fn in specs.functions]
