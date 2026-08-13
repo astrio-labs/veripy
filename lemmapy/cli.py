@@ -563,6 +563,15 @@ def main(argv: list[str] | None = None) -> int:
     p_benchmark.add_argument("-o", "--outdir", type=Path, default=Path("build/benchmark"))
     p_benchmark.add_argument("--report", type=Path, default=None)
     p_benchmark.add_argument("--mutant-cap", type=int, default=8)
+    p_benchmark.add_argument(
+        "--exam", choices=["proof-repair"], default=None,
+        help="run an exam instead of the ladder: strip proof additions "
+             "from golden tasks and score restoration under frozen specs",
+    )
+    p_benchmark.add_argument(
+        "--engine", default="claude",
+        help="repair engine for --exam (claude | file:<dir>)",
+    )
     p_benchmark.add_argument("--quick", action="store_true",
                             help="small mutant panels and example counts (CI mode)")
 
@@ -664,6 +673,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "difftest":
         return cmd_difftest(args.files, args.outdir, args.examples)
     if args.command == "benchmark":
+        if args.exam == "proof-repair":
+            from .benchmark.exam import render_exam_report, run_repair_exam
+            from .repair import make_engine
+
+            try:
+                make_engine(args.engine)  # validate the spec up front
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            try:
+                scores = run_repair_exam(args.tasks, args.outdir / "exam",
+                                         lambda: make_engine(args.engine))
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            print(render_exam_report(scores))
+            return 0 if scores and all(s.restored for s in scores) else 1
         return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
     if args.command == "survey":
         return cmd_survey(args.paths, args.top, args.json)
