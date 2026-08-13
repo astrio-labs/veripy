@@ -7,11 +7,10 @@ name = "lemmapy"
 version = "0.0.1"
 description = "Verify annotated production Python: #@ specs on real code, runtime contracts today (M0), typed-fragment translation to Dafny next (M1)."
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
 dependencies = [
     "icontract>=2.6.6",
 ]
-# NOTE: no license declared yet — deliberately all-rights-reserved while the
-# project home (Astrio / MidSpiral / Metareflection) is being settled.
 
 [project.optional-dependencies]
 types = [
