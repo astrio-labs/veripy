@@ -335,23 +335,69 @@ def test_assert_lowers_to_dafny_assert():
 # --- proof additions (#@ proof + sidecar) --------------------------------------
 
 
+def _encode_with_lemmas(source: str, lemmas: set[str]) -> str:
+    specs = parse_source(source)
+    return encode_module(
+        source, specs, module_name="m.py", proof_lemmas=frozenset(lemmas)
+    ).dafny_source
+
+
+PROOF_IN_WHILE = (
+    "#@ requires n >= 0\n"
+    "#@ ensures result >= 0\n"
+    "def f(n: int) -> int:\n"
+    "    s = 0\n"
+    "    while s < n:\n"
+    "        #@ invariant 0 <= s <= max(n, 0)\n"
+    "        #@ proof HelperLemma(s, max(n, 0))\n"
+    "        s = s + 1\n"
+    "    return s\n"
+)
+
+
 def test_proof_clause_emits_ghost_lemma_call():
-    src = (
-        "#@ requires n >= 0\n"
-        "#@ ensures result >= 0\n"
-        "def f(n: int) -> int:\n"
-        "    s = 0\n"
-        "    while s < n:\n"
-        "        #@ invariant 0 <= s <= max(n, 0)\n"
-        "        #@ proof HelperLemma(s, max(n, 0))\n"
-        "        s = s + 1\n"
-        "    return s\n"
-    )
-    dfy = _encode(src)
+    dfy = _encode_with_lemmas(PROOF_IN_WHILE, {"HelperLemma"})
     assert "HelperLemma(s, PyMax(n, 0));" in dfy
     # emitted INSIDE the loop body, before the statement that follows it
     body = dfy[dfy.index("while (s < n)"):]
     assert body.index("HelperLemma") < body.index("s := (s + 1);")
+
+
+def test_proof_clause_target_must_be_declared_lemma():
+    specs = parse_source(PROOF_IN_WHILE)
+    with pytest.raises(EncodeError) as exc:
+        encode_module(PROOF_IN_WHILE, specs, module_name="m.py")
+    assert "unknown lemma" in exc.value.message
+
+
+def test_proof_clause_works_inside_foreach_body():
+    src = (
+        "#@ ensures result >= 0 or result < 0\n"
+        "def f(l: list[int]) -> int:\n"
+        "    s = 0\n"
+        "    for v in l:\n"
+        "        #@ proof StepFact(s)\n"
+        "        s = s + v\n"
+        "    return s\n"
+    )
+    dfy = _encode_with_lemmas(src, {"StepFact"})
+    inner = dfy[dfy.index("var v :="):]
+    assert inner.index("StepFact(s);") < inner.index("s := (s + v);")
+
+
+def test_trailing_proof_clause_rejected():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(n: int) -> int:\n"
+        "    if n > 0:\n"
+        "        s = 1\n"
+        "        #@ proof StepFact(s)\n"
+        "    return 0\n"
+    )
+    specs = parse_source(src)
+    with pytest.raises(EncodeError) as exc:
+        encode_module(src, specs, module_name="m.py", proof_lemmas=frozenset({"StepFact"}))
+    assert "trails its block" in exc.value.message
 
 
 def test_proof_clause_must_be_a_call():
@@ -366,17 +412,42 @@ def test_proof_clause_must_be_a_call():
     assert fn.errors and "lemma call" in fn.errors[0].error
 
 
-def test_proof_sidecar_rejects_methods(tmp_path):
+def _sidecar_error(tmp_path, content: str) -> str:
     from lemmapy.backends.dafny.encoder import load_proof_sidecar
 
     src = tmp_path / "m.py"
     src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
-    (tmp_path / "m.proofs.dfy").write_text(
-        "method Evil() { print 1; }\n"
-    )
+    (tmp_path / "m.proofs.dfy").write_text(content)
     with pytest.raises(EncodeError) as exc:
         load_proof_sidecar(src)
-    assert "ghost" in exc.value.message
+    return exc.value.message
+
+
+def test_proof_sidecar_rejects_methods(tmp_path):
+    assert "not allowed" in _sidecar_error(tmp_path, "method Evil() { print 1; }\n")
+
+
+def test_proof_sidecar_rejects_comment_prefixed_method(tmp_path):
+    # A blacklist keyed on line starts would miss this.
+    assert "not allowed" in _sidecar_error(
+        tmp_path, "/* innocent */ method Evil() {}\n"
+    )
+
+
+def test_proof_sidecar_rejects_axioms(tmp_path):
+    # A bodiless lemma is an axiom — anything would verify.
+    assert "axiom" in _sidecar_error(
+        tmp_path, "lemma FreeLunch(x: int)\n  ensures x == x + 1\n"
+    )
+
+
+def test_proof_sidecar_rejects_assume_and_attributes(tmp_path):
+    assert "not allowed" in _sidecar_error(
+        tmp_path, "lemma L(x: int) ensures x == x { assume x == x; }\n"
+    )
+    assert "attributes" in _sidecar_error(
+        tmp_path, "lemma {:axiom} L(x: int) ensures x == x\n"
+    )
 
 
 def test_proof_sidecar_loads_lemmas(tmp_path):
@@ -387,8 +458,9 @@ def test_proof_sidecar_loads_lemmas(tmp_path):
     (tmp_path / "m.proofs.dfy").write_text(
         "lemma Triv(x: int)\n  ensures x == x\n{\n}\n"
     )
-    text = load_proof_sidecar(src)
-    assert "lemma Triv" in text and "proof additions" in text
+    sidecar = load_proof_sidecar(src)
+    assert "lemma Triv" in sidecar.text
+    assert "Triv" in sidecar.lemmas
 
 
 def test_loop_index_read_after_loop_rejected():

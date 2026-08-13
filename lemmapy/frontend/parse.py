@@ -195,6 +195,7 @@ class Clause:
     desugared: str | None = None
     error: str | None = None
     old_names: tuple[str, ...] = ()
+    col: int = 0  # column of the `#@` comment (block attachment for `proof`)
 
 
 @dataclass

@@ -59,22 +59,137 @@ from ...frontend.parse import Clause, FunctionSpec, ModuleSpecs
 from .preamble import PREAMBLE
 
 
-def load_proof_sidecar(source_path: Path) -> str:
+@dataclass(frozen=True)
+class ProofSidecar:
+    text: str
+    lemmas: frozenset[str]
+
+    @staticmethod
+    def empty() -> "ProofSidecar":
+        return ProofSidecar("", frozenset())
+
+
+def _strip_dafny_comments(text: str) -> str:
+    """Remove // and (nested) /* */ comments, string-aware."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_str = False
+    depth = 0
+    while i < n:
+        c = text[i]
+        if in_str:
+            if depth == 0:
+                out.append(c)
+            if c == "\\" and i + 1 < n:
+                if depth == 0:
+                    out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if depth == 0 and c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            depth += 1
+            i += 2
+            continue
+        if c == "*" and i + 1 < n and text[i + 1] == "/" and depth > 0:
+            depth -= 1
+            i += 2
+            continue
+        if depth == 0 and c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if depth == 0:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+_SIDECAR_FORBIDDEN = frozenset({
+    "method", "import", "include", "print", "expect", "assume", "axiom",
+    "twostate", "iterator", "class", "trait", "module", "new", "modifies",
+})
+_SIDECAR_DECL_KEYWORDS = frozenset({"lemma", "function", "predicate", "ghost"})
+
+
+def _validate_sidecar(text: str, name: str) -> frozenset[str]:
+    """Whitelist-structural validation of a proof sidecar. Returns declared
+    lemma names. Rejects (a) any non-ghost or trust-bypassing token —
+    method/import/assume/{:attributes}/... — and (b) bodiless declarations
+    (a lemma without a body is an axiom)."""
+    stripped = _strip_dafny_comments(text)
+    if "{:" in stripped:
+        raise EncodeError(f"proof sidecar {name}: attributes ({{:...}}) are not allowed")
+    tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_']*|\{|\}|.", stripped)
+    words = [t for t in tokens if t.strip()]
+    for w in words:
+        if w in _SIDECAR_FORBIDDEN:
+            raise EncodeError(
+                f"proof sidecar {name}: {w!r} is not allowed — sidecars may "
+                f"contain only proved ghost declarations (lemma/function/predicate)"
+            )
+    lemmas: set[str] = set()
+    depth = 0
+    expecting_decl = True
+    current_decl_has_body = True  # vacuously, before any declaration
+    idx = 0
+    while idx < len(words):
+        w = words[idx]
+        if w == "{":
+            if depth == 0:
+                current_decl_has_body = True
+            depth += 1
+        elif w == "}":
+            depth = max(0, depth - 1)
+            if depth == 0:
+                expecting_decl = True
+        elif depth == 0 and expecting_decl and w not in ("", None):
+            if w not in _SIDECAR_DECL_KEYWORDS:
+                raise EncodeError(
+                    f"proof sidecar {name}: top-level {w!r} is not a ghost "
+                    f"declaration (lemma/function/predicate)"
+                )
+            if not current_decl_has_body:
+                raise EncodeError(
+                    f"proof sidecar {name}: a declaration without a body is an "
+                    f"axiom — every lemma/function must be proved"
+                )
+            if w == "ghost":
+                if idx + 1 >= len(words) or words[idx + 1] not in ("function", "predicate"):
+                    raise EncodeError(f"proof sidecar {name}: `ghost` must qualify function/predicate")
+                idx += 1
+            if w == "lemma" and idx + 1 < len(words):
+                lemmas.add(words[idx + 1])
+            expecting_decl = False
+            current_decl_has_body = False
+        idx += 1
+    if not current_decl_has_body:
+        raise EncodeError(
+            f"proof sidecar {name}: a declaration without a body is an axiom — "
+            f"every lemma/function must be proved"
+        )
+    return frozenset(lemmas)
+
+
+def load_proof_sidecar(source_path: Path) -> ProofSidecar:
     """Proof additions from `<stem>.proofs.dfy` beside the source file:
-    lemma packs referenced by `#@ proof` clauses. Ghost declarations only
-    (lemma/function/predicate) — a method could mutate state, an import or
-    include could smuggle arbitrary code."""
+    lemma packs referenced by `#@ proof` clauses. Whitelist-validated as
+    proved ghost declarations only."""
     sidecar = source_path.with_name(source_path.stem + ".proofs.dfy")
     if not sidecar.exists():
-        return ""
+        return ProofSidecar.empty()
     text = sidecar.read_text()
-    if re.search(r"^\s*(method|import|include)\b", text, re.M) \
-            or re.search(r"\b(print|expect)\b", text):
-        raise EncodeError(
-            f"proof sidecar {sidecar.name} may contain only ghost "
-            f"declarations (lemma/function/predicate)"
-        )
-    return f"\n// ---- proof additions from {sidecar.name} ----\n{text}"
+    lemmas = _validate_sidecar(text, sidecar.name)
+    return ProofSidecar(
+        f"\n// ---- proof additions from {sidecar.name} ----\n{text}", lemmas
+    )
 
 DAFNY_KEYWORDS = frozenset({
     "method", "function", "lemma", "var", "ghost", "returns", "requires",
@@ -135,9 +250,11 @@ class _Scope:
 
 
 class _MethodEncoder:
-    def __init__(self, node: ast.FunctionDef, spec: FunctionSpec):
+    def __init__(self, node: ast.FunctionDef, spec: FunctionSpec,
+                 proof_lemmas: frozenset[str] = frozenset()):
         self.node = node
         self.spec = spec
+        self.proof_lemmas = proof_lemmas
         self.lines: list[str] = []
         self.line_map: dict[int, int] = {}  # emitted index -> python line
         self.params: set[str] = {
@@ -154,11 +271,10 @@ class _MethodEncoder:
         self._invariants_by_loop: dict[int, list[Clause]] = {}
         self._decreases_by_loop: dict[int, list[Clause]] = {}
         self._assign_loop_clauses()
-        # `#@ proof` clauses: ghost lemma calls, emitted before the next
-        # statement after their source line.
-        self._pending_proofs: list[Clause] = sorted(
-            spec.by_kind("proof"), key=lambda c: c.line
-        )
+        # `#@ proof` clauses: AST-anchored to the exact statement they
+        # precede, so they can never drift into an enclosing/sibling scope.
+        self._proofs_by_stmt: dict[int, list[Clause]] = {}
+        self._assign_proof_clauses()
         self.hoisted: dict[str, str] = {}
         # Ownership-lite (§3.2, conservative): a list local may be appended
         # to only while it is a fresh, unaliased allocation.
@@ -764,28 +880,82 @@ class _MethodEncoder:
 
     # -- statements -------------------------------------------------------------------------------
 
-    def _flush_proofs(self, before_line: int | None, indent: str) -> None:
-        while self._pending_proofs and (
-            before_line is None or self._pending_proofs[0].line < before_line
-        ):
-            clause = self._pending_proofs.pop(0)
+    def _assign_proof_clauses(self) -> None:
+        """Anchor each `#@ proof` clause to the statement it lexically
+        precedes; a clause not followed by a statement in its block is a
+        detected error, never a scope leak."""
+        clauses = sorted(self.spec.by_kind("proof"), key=lambda c: c.line)
+        if not clauses:
+            return
+        for clause in clauses:
             tree = ast.parse(clause.desugared, mode="eval")
-            call = tree.body
-            assert isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
-            self.spec_mode = True
-            try:
-                args = ", ".join(self.expr(a) for a in call.args)
-            finally:
-                self.spec_mode = False
-            # The lemma name is Dafny-side (preamble or proofs sidecar) —
-            # never mangled; ghost-only, so it cannot affect program state.
-            self.emit(f"{indent}{call.func.id}({args});", clause.line)
+            assert isinstance(tree.body, ast.Call) and isinstance(tree.body.func, ast.Name)
+            target = tree.body.func.id
+            if target not in self.proof_lemmas:
+                raise EncodeError(
+                    f"unknown lemma {target!r} — `#@ proof` targets must be "
+                    f"lemmas declared in the proof sidecar (<stem>.proofs.dfy)",
+                    clause.line,
+                )
+        unattached = {id(c): c for c in clauses}
+
+        def visit(stmts: list[ast.stmt], header_line: int, territory_end: int) -> None:
+            """Attach clauses whose COLUMN matches this block's indentation
+            and whose line falls in this block's territory — column is what
+            distinguishes 'trailing inside the inner block' from 'between
+            statements of the outer one'."""
+            col = min(s.col_offset for s in stmts)
+            for clause in list(unattached.values()):
+                if clause.col == col and header_line < clause.line < territory_end:
+                    following = [s for s in stmts if s.lineno > clause.line]
+                    if not following:
+                        raise EncodeError(
+                            "`#@ proof` must directly precede the statement it "
+                            "justifies (this one trails its block)",
+                            clause.line,
+                        )
+                    self._proofs_by_stmt.setdefault(id(following[0]), []).append(clause)
+                    del unattached[id(clause)]
+            for i, s in enumerate(stmts):
+                next_boundary = stmts[i + 1].lineno if i + 1 < len(stmts) else territory_end
+                match s:
+                    case ast.For(body=body) | ast.While(body=body):
+                        visit(body, s.lineno, next_boundary)
+                    case ast.If(body=body, orelse=orelse):
+                        if orelse:
+                            visit(body, s.lineno, orelse[0].lineno)
+                            visit(orelse, body[-1].end_lineno or s.lineno, next_boundary)
+                        else:
+                            visit(body, s.lineno, next_boundary)
+                    case _:
+                        pass
+
+        visit(self.node.body, self.node.lineno, (self.node.end_lineno or self.node.lineno) + 1)
+        if unattached:
+            first = next(iter(unattached.values()))
+            raise EncodeError(
+                "`#@ proof` could not be attached to a statement — align it "
+                "with the block it belongs to, directly before a statement",
+                first.line,
+            )
+
+    def _emit_proof(self, clause: Clause, indent: str) -> None:
+        tree = ast.parse(clause.desugared, mode="eval")
+        call = tree.body
+        assert isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+        self.spec_mode = True
+        try:
+            args = ", ".join(self.expr(a) for a in call.args)
+        finally:
+            self.spec_mode = False
+        # The lemma name is Dafny-side (validated against the sidecar's
+        # declared lemmas) — never mangled; ghost, so it cannot affect state.
+        self.emit(f"{indent}{call.func.id}({args});", clause.line)
 
     def block(self, stmts: list[ast.stmt], indent: str) -> None:
         self.scopes.append(set())
         try:
             for stmt in stmts:
-                self._flush_proofs(stmt.lineno, indent)
                 self.stmt(stmt, indent)
         finally:
             self.scopes.pop()
@@ -851,6 +1021,8 @@ class _MethodEncoder:
         return self.expr(node)
 
     def stmt(self, stmt: ast.stmt, indent: str) -> None:
+        for clause in self._proofs_by_stmt.pop(id(stmt), []):
+            self._emit_proof(clause, indent)
         match stmt:
             case ast.Expr(value=ast.Constant(value=str())):
                 return  # docstring
@@ -1130,7 +1302,6 @@ class _MethodEncoder:
             self.types.setdefault(name, dtype)
         self.scopes[-1].update()  # top scope: hoisted handled via self.hoisted
         self.block(node.body, "  ")
-        self._flush_proofs(None, "  ")  # trailing proof clauses
         self.emit("}")
 
 
@@ -1141,7 +1312,12 @@ class EncodedModule:
     methods: list[str]
 
 
-def encode_module(source: str, specs: ModuleSpecs, module_name: str) -> EncodedModule:
+def encode_module(
+    source: str,
+    specs: ModuleSpecs,
+    module_name: str,
+    proof_lemmas: frozenset[str] = frozenset(),
+) -> EncodedModule:
     if specs.errors:
         first = specs.errors[0]
         raise EncodeError(f"spec error: {first.error}", first.line)
@@ -1171,7 +1347,7 @@ def encode_module(source: str, specs: ModuleSpecs, module_name: str) -> EncodedM
         node = functions.get((spec.name, spec.lineno))
         if node is None:
             raise EncodeError(f"cannot locate function {spec.name!r}", spec.lineno)
-        enc = _MethodEncoder(node, spec)
+        enc = _MethodEncoder(node, spec, proof_lemmas)
         enc.encode()
         offset = len(lines)
         lines.extend(enc.lines)

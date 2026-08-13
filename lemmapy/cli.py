@@ -245,15 +245,17 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             trouble += 1
             continue
         try:
-            encoded = encode_module(source, specs, module_name=path.name)
             sidecar = load_proof_sidecar(path)
+            encoded = encode_module(
+                source, specs, module_name=path.name, proof_lemmas=sidecar.lemmas
+            )
         except EncodeError as exc:
             loc = f":{exc.line}" if exc.line is not None else ""
             print(f"{path}{loc}: cannot encode: {exc.message}", file=sys.stderr)
             trouble += 1
             continue
         stub = outdir / f"{path.stem}.dfy"
-        stub.write_text(encoded.dafny_source + sidecar)
+        stub.write_text(encoded.dafny_source + sidecar.text)
         result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
         if result.error is not None:
             print(f"{path}: dafny trouble: {result.error}", file=sys.stderr)
