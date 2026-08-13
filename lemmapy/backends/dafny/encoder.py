@@ -122,6 +122,14 @@ class _MethodEncoder:
         self._decreases_by_loop: dict[int, list[Clause]] = {}
         self._assign_loop_clauses()
         self.hoisted: dict[str, str] = {}
+        # Ownership-lite (§3.2, conservative): a list local may be appended
+        # to only while it is a fresh, unaliased allocation.
+        self.owned: set[str] = set()
+        # Containers currently being iterated by an enclosing for-each —
+        # mutating them mid-iteration is rejected (§3.2).
+        self.frozen: set[str] = set()
+        # Comprehension binders: raw name -> dafny expression to substitute.
+        self.name_overrides: dict[str, str] = {}
 
     # -- naming ---------------------------------------------------------------
 
@@ -241,8 +249,40 @@ class _MethodEncoder:
             case ast.IfExp(body=body, orelse=orelse):
                 bt, ot = self._infer(body), self._infer(orelse)
                 return bt if bt == ot else None
+            case ast.List(elts=elts):
+                inner = {self._infer(e) for e in elts}
+                if len(inner) == 1 and None not in inner:
+                    return f"seq<{inner.pop()}>"
+                return None
+            case ast.ListComp(elt=elt, generators=[comp]) if not comp.ifs:
+                binder_type = self._comp_binder_type(comp)
+                if binder_type is None or not isinstance(comp.target, ast.Name):
+                    return None
+                saved = self.types.get(comp.target.id)
+                self.types[comp.target.id] = binder_type
+                try:
+                    et = self._infer(elt)
+                finally:
+                    if saved is None:
+                        self.types.pop(comp.target.id, None)
+                    else:
+                        self.types[comp.target.id] = saved
+                return f"seq<{et}>" if et is not None else None
             case _:
                 return None
+
+    def _comp_binder_type(self, comp: ast.comprehension) -> str | None:
+        it = comp.iter
+        if isinstance(it, ast.Call) and isinstance(it.func, ast.Name) \
+                and it.func.id == "range" and 1 <= len(it.args) <= 2:
+            return "int"
+        dt = self._infer(it)
+        if dt is not None and dt.startswith("seq<"):
+            return dt[4:-1]
+        return None
+
+    def _is_seqish(self, tdesc: str | None) -> bool:
+        return tdesc is not None and (tdesc == "string" or tdesc.startswith("seq<"))
 
     # -- emission helpers --------------------------------------------------------------
 
@@ -262,6 +302,8 @@ class _MethodEncoder:
             case ast.Constant(value=str() as s):
                 return self._escape_str(s, node)
             case ast.Name(id=name):
+                if name in self.name_overrides:
+                    return self.name_overrides[name]
                 if name == "result":
                     if not self.spec_mode:
                         raise _err(node, "`result` is spec-only")
@@ -274,10 +316,19 @@ class _MethodEncoder:
                     ))
                 return self._mangle(name)
             case ast.UnaryOp(op=ast.Not(), operand=operand):
+                if self._is_seqish(self._infer(operand)):
+                    # §7.3 truthiness: `not xs` on a list/str means emptiness.
+                    return f"(|{self.expr(operand)}| == 0)"
                 return f"!({self.expr(operand)})"
             case ast.UnaryOp(op=ast.USub(), operand=operand):
                 return f"(-{self.expr(operand)})"
             case ast.BoolOp(op=op, values=values):
+                for v in values:
+                    if self._is_seqish(self._infer(v)):
+                        raise _err(node, (
+                            "and/or on list/str operands returns an operand "
+                            "(§7.3 truthiness); outside the slice-1 encoder"
+                        ))
                 joiner = " && " if isinstance(op, ast.And) else " || "
                 return "(" + joiner.join(f"({self.expr(v)})" for v in values) + ")"
             case ast.BinOp(left=left, op=op, right=right):
@@ -312,8 +363,58 @@ class _MethodEncoder:
                 # — special-casing literals produces mixed bare/wrapped terms
                 # that break quantifier trigger matching.
                 return f"{base}[PyIndex({idx}, |{base}|)]"
+            case ast.List(elts=elts):
+                return "[" + ", ".join(self.expr(e) for e in elts) + "]"
+            case ast.ListComp(elt=elt, generators=[comp]) if not comp.ifs \
+                    and not comp.is_async and isinstance(comp.target, ast.Name):
+                return self._list_comp(node, elt, comp)
+            case ast.ListComp():
+                raise _err(node, "only single-generator, filterless list comprehensions are in the slice encoder")
             case _:
                 raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder")
+
+    def _list_comp(self, node: ast.ListComp, elt: ast.expr, comp: ast.comprehension) -> str:
+        raw = comp.target.id  # type: ignore[union-attr]
+        if raw in self.params or self._declared(raw):
+            raise _err(node, (
+                f"comprehension binder {raw!r} shadows an existing name — "
+                f"rename the binder"
+            ))
+        it = comp.iter
+        idx = self._fresh(f"{raw}_c")
+        if isinstance(it, ast.Call) and isinstance(it.func, ast.Name) \
+                and it.func.id == "range" and 1 <= len(it.args) <= 2:
+            if len(it.args) == 1:
+                lo, hi = "0", self.expr(it.args[0])
+            else:
+                lo, hi = self.expr(it.args[0]), self.expr(it.args[1])
+            count = f"PyMax(0, ({hi}) - ({lo}))"
+            override = f"(({lo}) + {idx})"
+            binder_type: str | None = "int"
+        else:
+            dt = self._infer(it)
+            if not (dt is not None and dt.startswith("seq<")):
+                raise _err(node, "comprehension sources must be range(...) or a list")
+            src = self.expr(it)
+            count = f"|{src}|"
+            override = f"{src}[{idx}]"
+            binder_type = dt[4:-1]
+        saved_override = self.name_overrides.get(raw)
+        saved_type = self.types.get(raw)
+        self.name_overrides[raw] = override
+        self.types[raw] = binder_type
+        try:
+            body = self.expr(elt)
+        finally:
+            if saved_override is None:
+                self.name_overrides.pop(raw, None)
+            else:
+                self.name_overrides[raw] = saved_override
+            if saved_type is None:
+                self.types.pop(raw, None)
+            else:
+                self.types[raw] = saved_type
+        return f"seq({count}, {idx} requires 0 <= {idx} < {count} => {body})"
 
     def _escape_str(self, value: str, node: ast.expr) -> str:
         out = []
@@ -566,6 +667,9 @@ class _MethodEncoder:
                      rhs_node: ast.expr | None = None, ann: str | None = None) -> None:
         if name in self.params:
             raise _err(stmt, "parameter rebinding is outside the fragment (parameters are immutable)")
+        if isinstance(rhs_node, ast.List) and not rhs_node.elts and ann is None \
+                and self.types.get(name) is None:
+            raise _err(stmt, f"annotate the empty list (`{name}: list[...] = []`) — its element type is undecidable")
         self.retired.discard(name)
         if name in self.hoisted or self._declared(name):
             self.emit(f"{indent}{self._mangle(name)} := {rhs};", stmt.lineno)
@@ -575,6 +679,24 @@ class _MethodEncoder:
             self._declare(name)
         if name not in self.types:
             self.types[name] = ann or (self._infer(rhs_node) if rhs_node is not None else None)
+        self._update_ownership(name, rhs_node)
+
+    def _update_ownership(self, name: str, rhs_node: ast.expr | None) -> None:
+        """Ownership-lite: fresh allocations are appendable; aliases are not,
+        and aliasing a list forfeits the source's ownership too."""
+        if isinstance(rhs_node, (ast.List, ast.ListComp)):
+            self.owned.add(name)
+            return
+        self.owned.discard(name)
+        if isinstance(rhs_node, ast.Name) and self._is_seqish(self._infer(rhs_node)):
+            self.owned.discard(rhs_node.id)
+
+    def _bool_ctx(self, test: ast.expr) -> str:
+        """Encode an expression used as a condition; §7.3 truthiness for
+        list/str operands."""
+        if self._is_seqish(self._infer(test)):
+            return f"(|{self.expr(test)}| != 0)"
+        return self.expr(test)
 
     def stmt(self, stmt: ast.stmt, indent: str) -> None:
         match stmt:
@@ -582,6 +704,27 @@ class _MethodEncoder:
                 return  # docstring
             case ast.Pass():
                 return
+            case ast.Expr(value=ast.Call(
+                func=ast.Attribute(value=ast.Name(id=target), attr="append"),
+                args=[arg],
+            )):
+                if target in self.frozen:
+                    raise _err(stmt, (
+                        f"appending to {target!r} while iterating it — CPython's "
+                        f"iterator would see the growth, the lowering's snapshot "
+                        f"would not (§3.2: no mutation of an iterated container)"
+                    ))
+                if target not in self.owned:
+                    raise _err(stmt, (
+                        f"append target {target!r} is not a fresh, unaliased local "
+                        f"list — the value lowering is sound only for owned "
+                        f"containers (§3.2 ownership)"
+                    ))
+                mt = self._mangle(target)
+                self.emit(f"{indent}{mt} := {mt} + [{self.expr(arg)}];", stmt.lineno)
+                return
+            case ast.Expr(value=ast.Call(func=ast.Attribute(attr=method))):
+                raise _err(stmt, f"method call .{method}(...) is outside the slice encoder")
             case ast.AnnAssign(target=ast.Name(id=name), annotation=ann, value=value) if value is not None:
                 dtype = _dafny_type(ann, stmt)
                 self._assign_name(name, self.expr(value), indent, stmt, rhs_node=value, ann=dtype)
@@ -604,8 +747,11 @@ class _MethodEncoder:
                     for n, v in zip(names, values):
                         self._declare(n)
                         self.types.setdefault(n, self._infer(v))
+                        self._update_ownership(n, v)
                 elif not fresh:
                     self.emit(f"{indent}{lhs} := {rhs};", stmt.lineno)
+                    for n, v in zip(names, values):
+                        self._update_ownership(n, v)
                 else:
                     raise _err(stmt, "tuple assignment mixing new and existing variables is outside the slice-1 encoder")
             case ast.AugAssign(target=ast.Name(id=name), op=op, value=value):
@@ -626,22 +772,40 @@ class _MethodEncoder:
                 self.emit(f"{indent}result := {self.expr(value)};", stmt.lineno)
                 self.emit(f"{indent}return;")
             case ast.If(test=test, body=body, orelse=orelse):
-                self.emit(f"{indent}if {self.expr(test)} {{", stmt.lineno)
+                # Ownership is path-sensitive: a name is owned after the If
+                # only if it is owned on EVERY path through it.
+                pre_owned = set(self.owned)
+                self.emit(f"{indent}if {self._bool_ctx(test)} {{", stmt.lineno)
                 self.block(body, indent + "  ")
+                then_owned = set(self.owned)
                 if orelse:
+                    self.owned = set(pre_owned)
                     self.emit(f"{indent}}} else {{")
                     self.block(orelse, indent + "  ")
+                    else_owned = set(self.owned)
+                else:
+                    else_owned = pre_owned
+                self.owned = then_owned & else_owned
                 self.emit(f"{indent}}}")
             case ast.While(test=test, body=body, orelse=orelse):
                 if orelse:
                     raise _err(stmt, "while/else is outside the fragment")
-                self.emit(f"{indent}while {self.expr(test)}", stmt.lineno)
+                pre_owned = set(self.owned)
+                self.emit(f"{indent}while {self._bool_ctx(test)}", stmt.lineno)
                 self._loop_clauses(stmt, indent)
                 self.emit(f"{indent}{{")
                 self.block(body, indent + "  ")
                 self.emit(f"{indent}}}")
+                # The body may run zero or many times: keep only names owned
+                # both before the loop and at the end of its body.
+                self.owned &= pre_owned
             case ast.For():
-                self._for_range(stmt, indent)
+                it = stmt.iter
+                if isinstance(it, ast.Call) and isinstance(it.func, ast.Name) \
+                        and it.func.id == "range":
+                    self._for_range(stmt, indent)
+                else:
+                    self._for_each(stmt, indent)
             case _:
                 raise _err(stmt, f"statement {type(stmt).__name__} is outside the slice-1 encoder")
 
@@ -675,6 +839,7 @@ class _MethodEncoder:
         else:
             lo_expr, hi_expr = self.expr(it.args[0]), self.expr(it.args[1])
         mv = self._mangle(var)
+        pre_owned = set(self.owned)
         # Python evaluates range() bounds ONCE; hoist them. Fresh names are
         # made injective against every identifier in the function.
         lo = self._fresh(f"{mv}_lo")
@@ -693,8 +858,71 @@ class _MethodEncoder:
         self.block(stmt.body, indent + "  ")
         self.emit(f"{indent}  {mv} := {mv} + 1;")
         self.emit(f"{indent}}}")
+        self.owned &= pre_owned
         # Python's index survives the loop with a DIFFERENT value than the
         # lowering's; retire it so later reads are rejected, not miscompiled.
+        self.retired.add(var)
+
+    def _for_each(self, stmt: ast.For, indent: str) -> None:
+        """`for v in xs` over a list: snapshot the iterable (Python evaluates
+        it once), drive a hidden index, bind the element per iteration."""
+        if stmt.orelse:
+            raise _err(stmt, "for/else is outside the fragment")
+        if not isinstance(stmt.target, ast.Name):
+            raise _err(stmt, "only a simple target variable is supported in for-each")
+        it_type = self._infer(stmt.iter)
+        if not (it_type is not None and it_type.startswith("seq<")):
+            raise _err(stmt, "for-each iterables must be list-typed (or use `for i in range(...)`)")
+        var = stmt.target.id
+        if var in self.params:
+            raise _err(stmt, "the loop target may not shadow a parameter (parameters are immutable)")
+        if self._declared(var):
+            raise _err(stmt, "the for-each target may not reuse an existing variable")
+        for n in ast.walk(ast.Module(body=stmt.body, type_ignores=[])):
+            if isinstance(n, (ast.Break, ast.Continue)):
+                raise _err(n, "break/continue inside for-each is outside the slice encoder")
+            if isinstance(n, ast.Name) and n.id == var and isinstance(n.ctx, ast.Store):
+                raise _err(n, "reassigning the loop target is outside the fragment")
+        for clause in self._invariants_by_loop.get(id(stmt), []):
+            if clause.desugared:
+                tree = ast.parse(clause.desugared, mode="eval")
+                if any(isinstance(n, ast.Name) and n.id == var for n in ast.walk(tree)):
+                    raise EncodeError(
+                        f"the invariant references the for-each target {var!r}, which is "
+                        f"not in scope at the loop head — rewrite the loop over "
+                        f"`range(len(...))` to name the iteration state",
+                        clause.line,
+                    )
+        snap = self._fresh(f"{self._mangle(var)}_it")
+        idx = self._fresh(f"{self._mangle(var)}_i")
+        self.emit(f"{indent}var {snap} := {self.expr(stmt.iter)};", stmt.lineno)
+        self.emit(f"{indent}var {idx} := 0;", stmt.lineno)
+        self.emit(f"{indent}while {idx} < |{snap}|", stmt.lineno)
+        self._loop_clauses(stmt, indent, extra=(f"0 <= {idx} <= |{snap}|",))
+        self.emit(f"{indent}{{")
+        mv = self._mangle(var)
+        self.emit(f"{indent}  var {mv} := {snap}[{idx}];", stmt.lineno)
+        pre_owned = set(self.owned)
+        # Freeze the iterated name; only unfreeze if WE froze it, so nested
+        # loops over the same list cannot thaw an enclosing iteration.
+        frozen_added = None
+        if isinstance(stmt.iter, ast.Name) and stmt.iter.id not in self.frozen:
+            frozen_added = stmt.iter.id
+            self.frozen.add(frozen_added)
+        self.scopes.append({var})
+        self.types[var] = it_type[4:-1]
+        try:
+            for body_stmt in stmt.body:
+                self.stmt(body_stmt, indent + "  ")
+        finally:
+            self.scopes.pop()
+            if frozen_added is not None:
+                self.frozen.discard(frozen_added)
+        self.owned &= pre_owned
+        self.emit(f"{indent}  {idx} := {idx} + 1;")
+        self.emit(f"{indent}}}")
+        # The target's post-loop value differs between the languages (last
+        # element vs out-of-scope); reject later reads.
         self.retired.add(var)
 
     # -- method -----------------------------------------------------------------------------------
