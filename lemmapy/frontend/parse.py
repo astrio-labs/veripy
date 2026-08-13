@@ -38,6 +38,31 @@ _BINDER_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s+in\s+(.+)$", re.S)
 _OLD_RE = re.compile(r"\bold\(\s*([A-Za-z_]\w*)\s*\)")
 
 
+def rewrite_old(desugared: str, template: str) -> str:
+    """Rewrite `old(x)` calls to `template.format(name='x')` — AST-based, so
+    `old(...)` text inside string literals is untouched (a textual regex
+    rewrite silently changed the meaning of specs mentioning that text)."""
+
+    class _Rewriter(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.expr:
+            self.generic_visit(node)
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "old"
+                and len(node.args) == 1
+                and not node.keywords
+                and isinstance(node.args[0], ast.Name)
+            ):
+                replacement = ast.parse(
+                    template.format(name=node.args[0].id), mode="eval"
+                ).body
+                return ast.copy_location(replacement, node)
+            return node
+
+    tree = _Rewriter().visit(ast.parse(desugared, mode="eval"))
+    return ast.unparse(tree)
+
+
 class SpecError(Exception):
     """A spec clause the grammar rejects; message is the diagnostic."""
 
