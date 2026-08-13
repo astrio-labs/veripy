@@ -87,6 +87,41 @@ def test_apply_writes_sidecar_and_cli_reports(tmp_path, capsys):
     assert outcome.verified and outcome.iterations == 0
 
 
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_apply_is_lock_serialized_and_backup_preserves_first(tmp_path):
+    src = tmp_path / "m.py"
+    src.write_text(NEEDS_LEMMA)
+    attempts = tmp_path / "attempts"
+    attempts.mkdir()
+    (attempts / "1.dfy").write_text(GOOD)
+    sidecar = tmp_path / "m.proofs.dfy"
+    lock = tmp_path / "m.proofs.dfy.lock"
+
+    # Contention: a held lock means nothing is written, with a clear reason.
+    lock.write_text("")
+    outcome = repair_file(src, tmp_path / "o1", make_engine(f"file:{attempts}"),
+                          apply=True)
+    assert outcome.verified and "apply skipped" in outcome.reason
+    assert not sidecar.exists()
+    lock.unlink()
+
+    # First-backup-wins: the earliest .bak (closest to the user's original)
+    # survives later applies. The pre-existing sidecars are whitelist-legal
+    # but name the wrong lemma, so each run genuinely repairs and applies.
+    original = "lemma Wrong(x: int)\n  ensures x == x\n{\n}\n"
+    sidecar.write_text(original)
+    outcome = repair_file(src, tmp_path / "o2", make_engine(f"file:{attempts}"),
+                          apply=True)
+    assert outcome.verified and sidecar.read_text() == GOOD
+    bak = tmp_path / "m.proofs.dfy.bak"
+    assert bak.read_text() == original
+    sidecar.write_text("lemma Wrong2(x: int)\n  ensures x == x\n{\n}\n")
+    repair_file(src, tmp_path / "o3", make_engine(f"file:{attempts}"), apply=True)
+    assert sidecar.read_text() == GOOD
+    assert bak.read_text() == original  # not clobbered by the second apply
+    assert not lock.exists()  # lock released
+
+
 def test_unrepairable_source_stops_immediately(tmp_path):
     src = tmp_path / "m.py"
     src.write_text(
