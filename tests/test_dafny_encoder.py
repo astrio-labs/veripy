@@ -494,6 +494,35 @@ def test_proof_clause_leading_else_branch_accepted():
     assert else_part.index("StepFact(n);") < else_part.index("s := 2;")
 
 
+def test_proof_sidecar_string_brace_cannot_be_a_body(tmp_path):
+    # A `{` inside a string literal must never count as declaration
+    # structure — string interiors are blanked before tokenization.
+    msg = _sidecar_error(
+        tmp_path,
+        'lemma FreeLunch(s: string)\n  ensures s != "a{"\n',
+    )
+    assert "axiom" in msg
+
+
+def test_proof_sidecar_verbatim_strings_forbidden(tmp_path):
+    msg = _sidecar_error(
+        tmp_path,
+        'lemma L(s: string)\n  ensures s != @"x"\n{\n}\n',
+    )
+    assert "@" in msg
+
+
+def test_proof_sidecar_string_in_body_still_fine(tmp_path):
+    from lemmapy.backends.dafny.encoder import load_proof_sidecar
+
+    src = tmp_path / "m.py"
+    src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (tmp_path / "m.proofs.dfy").write_text(
+        'lemma L(s: string)\n  ensures s == s\n{\n  assert "{{" == "{{";\n}\n'
+    )
+    assert "L" in load_proof_sidecar(src).lemmas
+
+
 def test_proof_sidecar_implication_still_legal(tmp_path):
     from lemmapy.backends.dafny.encoder import load_proof_sidecar
 
