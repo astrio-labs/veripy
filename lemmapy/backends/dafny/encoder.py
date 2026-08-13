@@ -70,27 +70,44 @@ class ProofSidecar:
 
 
 def _strip_dafny_comments(text: str) -> str:
-    """Remove // and (nested) /* */ comments, string-aware."""
+    """Remove // and (nested) /* */ comments AND blank all string/char
+    literal interiors — string contents are irrelevant to structural
+    validation, and a brace inside a string must never read as declaration
+    structure (the `ensures s == "a{"` axiom vector)."""
     out: list[str] = []
     i, n = 0, len(text)
-    in_str = False
     depth = 0
     while i < n:
         c = text[i]
-        if in_str:
-            if depth == 0:
-                out.append(c)
-            if c == "\\" and i + 1 < n:
-                if depth == 0:
-                    out.append(text[i + 1])
-                i += 2
-                continue
-            if c == '"':
-                in_str = False
-            i += 1
-            continue
         if depth == 0 and c == '"':
-            in_str = True
+            # Emit an EMPTY string literal; skip the real contents.
+            out.append('""')
+            i += 1
+            while i < n:
+                if text[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if depth == 0 and c == "'":
+            # A quote directly after an identifier char is a prime
+            # (Dafny allows x' names), not a char literal.
+            prev = out[-1][-1] if out and out[-1] else ""
+            if not (prev.isalnum() or prev in "_'"):
+                out.append("'?'")
+                i += 1
+                while i < n:
+                    if text[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if text[i] == "'":
+                        i += 1
+                        break
+                    i += 1
+                continue
             out.append(c)
             i += 1
             continue
@@ -148,6 +165,10 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
     stripped = _strip_dafny_comments(text)
     if "{:" in stripped:
         raise EncodeError(f"proof sidecar {name}: attributes ({{:...}}) are not allowed")
+    if "@" in stripped:
+        # Verbatim @-strings don't use backslash escapes and would evade the
+        # string blanking above; nothing a lemma pack needs uses `@`.
+        raise EncodeError(f"proof sidecar {name}: `@` is not allowed")
     tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_']*|\{|\}|.", stripped)
     words = [t for t in tokens if t.strip()]
     for w in words:
