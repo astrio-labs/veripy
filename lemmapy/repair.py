@@ -23,11 +23,13 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from .agentio import verify_structured
+from .backends.dafny.encoder import EncodeError, validate_sidecar_text
 
 Engine = Callable[[dict[str, Any]], str]
 
@@ -87,34 +89,151 @@ def _strip_fences(text: str) -> str:
     return stripped.rstrip() + "\n"
 
 
-def _claude_cmd(exe: str, prompt: str) -> list[str]:
+def _claude_cmd(exe: str, prompt: str, model: str | None = None,
+                json_output: bool = False) -> list[str]:
     """Measurement integrity: the engine must work from the request alone.
     With tools enabled, a headless agent FOUND the golden sidecar in the
     repository and returned it verbatim — a retrieval result masquerading
     as proof completion. All tools are denied, and ORDER MATTERS: the
     prompt must precede --disallowedTools (a variadic flag that would
-    otherwise swallow the prompt text as tool-name rules). Both the "*"
-    pattern and the ordering are verified by live token-file probes."""
-    return [exe, "-p", prompt, "--disallowedTools", "*"]
+    otherwise swallow the prompt text as tool-name rules), so
+    `--disallowedTools "*"` are pinned as the FINAL two argv entries.
+    Both the "*" pattern and the ordering are verified by live token-file
+    probes."""
+    cmd = [exe, "-p", prompt]
+    if model is not None:
+        cmd += ["--model", model]
+    if json_output:
+        cmd += ["--output-format", "json"]
+    cmd += ["--disallowedTools", "*"]
+    return cmd
+
+
+def _parse_claude_json(stdout: str) -> tuple[str, dict[str, Any] | None]:
+    """Parse `claude -p --output-format json` output into (text, usage).
+    Tolerant by design: a CLI format drift degrades to text mode (usage
+    None) instead of breaking runs. Field names pinned from a live 2.1.193
+    sample; `models` records the RESOLVED model ids (what actually served
+    the call) for the run ledger."""
+    try:
+        obj = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return stdout, None
+    if not isinstance(obj, dict):
+        return stdout, None
+    text = obj.get("result", "")
+    if obj.get("is_error"):
+        raise RuntimeError(f"claude engine error: {str(text)[:400]}")
+    raw = obj.get("usage") or {}
+    usage = {
+        "input_tokens": raw.get("input_tokens"),
+        "cache_creation_input_tokens": raw.get("cache_creation_input_tokens"),
+        "cache_read_input_tokens": raw.get("cache_read_input_tokens"),
+        "output_tokens": raw.get("output_tokens"),
+        "cost_usd": obj.get("total_cost_usd"),
+        "duration_api_ms": obj.get("duration_api_ms"),
+        "num_turns": obj.get("num_turns"),
+        "models": sorted((obj.get("modelUsage") or {}).keys()),
+    }
+    return text, usage
+
+
+class _ClaudeEngine:
+    """Headless `claude -p` engine: no tools, and an isolated empty working
+    directory (defense in depth against path guessing from the payload).
+    Usage flows out via `usage_log` (one entry per call, None when the CLI
+    output was not parseable JSON) — a side channel that keeps the
+    `Engine = Callable[[dict], str]` contract intact."""
+
+    def __init__(self, model: str | None = None):
+        self.model = model
+        self.usage_log: list[dict[str, Any] | None] = []
+
+    def __call__(self, request: dict[str, Any]) -> str:
+        exe = shutil.which("claude")
+        if exe is None:
+            raise RuntimeError("engine 'claude' needs the claude CLI on PATH")
+        with tempfile.TemporaryDirectory(prefix="lemmapy-engine-") as sandbox:
+            proc = subprocess.run(
+                _claude_cmd(exe, _render_prompt(request), model=self.model,
+                            json_output=True),
+                capture_output=True, text=True, timeout=600, cwd=sandbox,
+            )
+        if proc.returncode != 0:
+            raise RuntimeError(f"claude engine failed: {proc.stderr[:400]}")
+        text, usage = _parse_claude_json(proc.stdout)
+        self.usage_log.append(usage)
+        return _strip_fences(text)
 
 
 def claude_engine(request: dict[str, Any]) -> str:
-    """Headless `claude -p` as the default repair engine: no tools, and an
-    isolated empty working directory (defense in depth against path
-    guessing from the payload)."""
-    import tempfile
+    """Compatibility shim over `_ClaudeEngine` (docs and tests reference
+    the function form; per-call usage is discarded here)."""
+    return _ClaudeEngine()(request)
 
-    exe = shutil.which("claude")
-    if exe is None:
-        raise RuntimeError("engine 'claude' needs the claude CLI on PATH")
-    with tempfile.TemporaryDirectory(prefix="lemmapy-engine-") as sandbox:
-        proc = subprocess.run(
-            _claude_cmd(exe, _render_prompt(request)),
-            capture_output=True, text=True, timeout=600, cwd=sandbox,
-        )
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude engine failed: {proc.stderr[:400]}")
-    return _strip_fences(proc.stdout)
+
+# provider -> (default base URL, API-key env var). Overridable via
+# LEMMAPY_API_BASE_<PROVIDER>. `openrouter` reaches the open models
+# (Kimi, GLM, ...) through one key.
+_API_PROVIDERS = {
+    "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+}
+
+
+class _ApiEngine:
+    """OpenAI-compatible chat-completions engine (`api:<provider>/<model>`).
+    A raw HTTP completion has no tools by construction — a strictly
+    tighter sandbox than the CLI path (nothing to deny). stdlib-only on
+    purpose: no new dependency for the harness."""
+
+    def __init__(self, provider: str, model: str):
+        import os
+
+        if provider not in _API_PROVIDERS:
+            known = ", ".join(sorted(_API_PROVIDERS))
+            raise ValueError(f"unknown api provider {provider!r} (known: {known})")
+        default_base, key_env = _API_PROVIDERS[provider]
+        self.base = os.environ.get(f"LEMMAPY_API_BASE_{provider.upper()}",
+                                   default_base).rstrip("/")
+        self.key_env = key_env
+        self.provider = provider
+        self.model = model
+        self.usage_log: list[dict[str, Any] | None] = []
+
+    def __call__(self, request: dict[str, Any]) -> str:
+        import os
+        import urllib.request
+
+        key = os.environ.get(self.key_env)
+        if not key:
+            raise RuntimeError(
+                f"engine 'api:{self.provider}/{self.model}' needs "
+                f"{self.key_env} set")
+        body = json.dumps({
+            "model": self.model,
+            "messages": [{"role": "user",
+                          "content": _render_prompt(request)}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.base}/chat/completions", data=body,
+            headers={"Authorization": f"Bearer {key}",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            obj = json.loads(resp.read().decode())
+        choices = obj.get("choices") or []
+        if not choices:
+            raise RuntimeError(
+                f"api engine returned no choices: {str(obj)[:400]}")
+        raw = obj.get("usage") or {}
+        self.usage_log.append({
+            "input_tokens": raw.get("prompt_tokens"),
+            "output_tokens": raw.get("completion_tokens"),
+            "cost_usd": None,  # not reported by chat-completions APIs
+            "models": [obj.get("model") or self.model],
+        })
+        return _strip_fences(
+            (choices[0].get("message") or {}).get("content") or "")
 
 
 class _FileEngine:
@@ -135,10 +254,26 @@ class _FileEngine:
 
 def make_engine(spec: str) -> Engine:
     if spec == "claude":
-        return claude_engine
+        return _ClaudeEngine()
+    if spec.startswith("claude:"):
+        model = spec[len("claude:"):]
+        # argv hygiene: an empty or dash-leading "model" would be read as a
+        # flag by the CLI, silently reshaping the pinned command.
+        if not model or model.startswith("-"):
+            raise ValueError(f"unknown engine {spec!r}: bad model {model!r}")
+        return _ClaudeEngine(model)
+    if spec.startswith("api:"):
+        rest = spec[len("api:"):]
+        provider, sep, model = rest.partition("/")
+        if not sep or not provider or not model:
+            raise ValueError(
+                f"unknown engine {spec!r} (use 'api:<provider>/<model>')")
+        return _ApiEngine(provider, model)
     if spec.startswith("file:"):
         return _FileEngine(Path(spec[5:]))
-    raise ValueError(f"unknown engine {spec!r} (use 'claude' or 'file:<dir>')")
+    raise ValueError(f"unknown engine {spec!r} (use 'claude', "
+                     f"'claude:<model>', 'api:<provider>/<model>', or "
+                     f"'file:<dir>')")
 
 
 def _acquire_apply_lock(lock: Path):
@@ -214,6 +349,21 @@ class RepairOutcome:
     reason: str
     sidecar_text: str | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
+    # Telemetry: one record per verify, with the engine call that followed
+    # it (if any) — {attempt, status, failure_kinds, verify_ms, engine_ms,
+    # rejection}. `rejection` classifies a proposal the sidecar whitelist
+    # would refuse ({rule, message}), counted at proposal time so the LAST
+    # proposal of an exhausted budget is counted too (it never gets a
+    # next-iteration payload).
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _classify_rejection(proposal: str, name: str) -> dict[str, Any] | None:
+    try:
+        validate_sidecar_text(proposal, name)
+    except EncodeError as exc:
+        return {"rule": exc.rule or "other", "message": exc.message}
+    return None
 
 
 def _repairable(payload: dict[str, Any]) -> bool:
@@ -250,29 +400,47 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
         work_sidecar.unlink(missing_ok=True)
     source = work_src.read_text()
     history: list[dict[str, Any]] = []
+    attempts: list[dict[str, Any]] = []
 
     for attempt in range(max_iterations + 1):
+        t0 = time.monotonic()
         payload = verify_structured(work_src, work / f"iter{attempt}",
                                     time_limit=time_limit)
+        record: dict[str, Any] = {
+            "attempt": attempt,
+            "status": payload["status"],
+            "failure_kinds": sorted({f.get("kind") or "?"
+                                     for f in payload["failures"]}),
+            "verify_ms": int((time.monotonic() - t0) * 1000),
+            "engine_ms": None,
+            "rejection": None,
+        }
+        attempts.append(record)
         if payload["status"] == "ok":
             text = work_sidecar.read_text() if work_sidecar.exists() else None
             if apply and text is not None:
                 reason = _apply_sidecar(user_sidecar, text, initial_sidecar,
                                         path, source)
-                return RepairOutcome(True, attempt, reason, text, history)
-            return RepairOutcome(True, attempt, "verified", text, history)
+                return RepairOutcome(True, attempt, reason, text, history,
+                                     attempts)
+            return RepairOutcome(True, attempt, "verified", text, history,
+                                 attempts)
         if not _repairable(payload):
             return RepairOutcome(False, attempt,
                                  f"not repairable by proof edits: "
-                                 f"{payload['status']}", None, history)
+                                 f"{payload['status']}", None, history,
+                                 attempts)
         if attempt == max_iterations:
             break
         request = build_request(source, payload, attempt, history)
+        t1 = time.monotonic()
         try:
             proposal = _strip_fences(engine(request))
         except Exception as exc:
             return RepairOutcome(False, attempt, f"engine error: {exc}",
-                                 None, history)
+                                 None, history, attempts)
+        record["engine_ms"] = int((time.monotonic() - t1) * 1000)
+        record["rejection"] = _classify_rejection(proposal, work_sidecar.name)
         work_sidecar.write_text(proposal)
         history.append({
             "attempt": attempt,
@@ -280,4 +448,4 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
             "proposal": proposal,
         })
     return RepairOutcome(False, max_iterations, "iteration budget exhausted",
-                         None, history)
+                         None, history, attempts)

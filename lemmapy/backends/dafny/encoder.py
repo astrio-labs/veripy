@@ -149,7 +149,12 @@ _SIDECAR_NON_ENDERS = frozenset({
 def _is_value_ender(token: str | None) -> bool:
     if token is None:
         return False
-    if token in (")", "]", ">"):
+    if token in (")", "]", ">", "|"):
+        # `|` is the closing pipe of a cardinality — `decreases |s|` right
+        # before a body is idiomatic Dafny. This admits no new masquerade:
+        # a brace display ENDING a bodiless declaration after `|` cannot be
+        # valid Dafny (`|expr|` must close its pipe, and the trailing `|`
+        # after the display trips the declaration scan as a stray token).
         return True
     if token.isdigit():
         return True
@@ -164,21 +169,25 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
     (a lemma without a body is an axiom)."""
     stripped = _strip_dafny_comments(text)
     if "{:" in stripped:
-        raise EncodeError(f"proof sidecar {name}: attributes ({{:...}}) are not allowed")
+        raise EncodeError(f"proof sidecar {name}: attributes ({{:...}}) are not allowed",
+                          rule="attribute")
     if "@" in stripped:
         # Verbatim @-strings don't use backslash escapes and would evade the
         # string blanking above; nothing a lemma pack needs uses `@`.
-        raise EncodeError(f"proof sidecar {name}: `@` is not allowed")
+        raise EncodeError(f"proof sidecar {name}: `@` is not allowed",
+                          rule="forbidden-token")
     tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_']*|\{|\}|.", stripped)
     words = [t for t in tokens if t.strip()]
     for w in words:
         if w in _SIDECAR_FORBIDDEN:
             raise EncodeError(
                 f"proof sidecar {name}: {w!r} is not allowed — sidecars may "
-                f"contain only proved ghost declarations (lemma/function/predicate)"
+                f"contain only proved ghost declarations (lemma/function/predicate)",
+                rule="forbidden-token",
             )
         if w == "~":
-            raise EncodeError(f"proof sidecar {name}: partial-arrow types are not allowed")
+            raise EncodeError(f"proof sidecar {name}: partial-arrow types are not allowed",
+                              rule="forbidden-token")
     for i in range(len(words) - 1):
         # An isolated `=>` is a lambda (its body brace follows a `>`, which
         # would defeat the value-ender body check); `==>` (implication) has a
@@ -186,7 +195,8 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
         if words[i] == "=" and words[i + 1] == ">" \
                 and (i == 0 or words[i - 1] != "="):
             raise EncodeError(
-                f"proof sidecar {name}: lambda expressions (`=>`) are not allowed"
+                f"proof sidecar {name}: lambda expressions (`=>`) are not allowed",
+                rule="lambda",
             )
     lemmas: set[str] = set()
     depth = 0
@@ -206,7 +216,8 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
                         f"proof sidecar {name}: brace-delimited literals in "
                         f"specification position are not supported — a bodiless "
                         f"declaration could masquerade as proved; restate the "
-                        f"spec without set/map displays"
+                        f"spec without set/map displays",
+                        rule="spec-literal",
                     )
                 current_decl_has_body = True
             depth += 1
@@ -221,11 +232,13 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
             if not current_decl_has_body:
                 raise EncodeError(
                     f"proof sidecar {name}: a declaration without a body is an "
-                    f"axiom — every lemma/function must be proved"
+                    f"axiom — every lemma/function must be proved",
+                    rule="bodiless",
                 )
             if w == "ghost":
                 if idx + 1 >= len(words) or words[idx + 1] not in ("function", "predicate"):
-                    raise EncodeError(f"proof sidecar {name}: `ghost` must qualify function/predicate")
+                    raise EncodeError(f"proof sidecar {name}: `ghost` must qualify function/predicate",
+                                      rule="malformed-ghost")
                 idx += 1
             if w == "lemma" and idx + 1 < len(words):
                 lemmas.add(words[idx + 1])
@@ -234,13 +247,15 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
         elif depth == 0 and expecting_decl:
             raise EncodeError(
                 f"proof sidecar {name}: top-level {w!r} is not a ghost "
-                f"declaration (lemma/function/predicate)"
+                f"declaration (lemma/function/predicate)",
+                rule="non-declaration",
             )
         idx += 1
     if not current_decl_has_body:
         raise EncodeError(
             f"proof sidecar {name}: a declaration without a body is an axiom — "
-            f"every lemma/function must be proved"
+            f"every lemma/function must be proved",
+            rule="bodiless",
         )
     return frozenset(lemmas)
 
@@ -258,6 +273,13 @@ def load_proof_sidecar(source_path: Path) -> ProofSidecar:
         f"\n// ---- proof additions from {sidecar.name} ----\n{text}", lemmas
     )
 
+
+def validate_sidecar_text(text: str, name: str) -> frozenset[str]:
+    """Public entry to the sidecar whitelist: returns declared lemma names,
+    raises EncodeError (with `.rule` set) on rejection. Used by the repair
+    loop for proposal-time telemetry."""
+    return _validate_sidecar(text, name)
+
 DAFNY_KEYWORDS = frozenset({
     "method", "function", "lemma", "var", "ghost", "returns", "requires",
     "ensures", "invariant", "decreases", "reads", "modifies", "assert",
@@ -268,10 +290,14 @@ DAFNY_KEYWORDS = frozenset({
 
 
 class EncodeError(Exception):
-    def __init__(self, message: str, line: int | None = None):
+    def __init__(self, message: str, line: int | None = None,
+                 rule: str | None = None):
         super().__init__(message)
         self.message = message
         self.line = line
+        # Machine-readable classification for sidecar-whitelist rejections
+        # (telemetry: which rule an engine proposal tripped); None elsewhere.
+        self.rule = rule
 
 
 def _err(node: ast.AST, message: str) -> EncodeError:

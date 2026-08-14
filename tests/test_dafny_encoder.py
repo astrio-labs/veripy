@@ -780,6 +780,76 @@ def test_proof_sidecar_loads_lemmas(tmp_path):
     assert "Triv" in sidecar.lemmas
 
 
+def _sidecar_rule(content: str) -> str | None:
+    from lemmapy.backends.dafny.encoder import validate_sidecar_text
+
+    with pytest.raises(EncodeError) as exc:
+        validate_sidecar_text(content, "m.proofs.dfy")
+    return exc.value.rule
+
+
+def test_sidecar_rejection_rules_classified():
+    # Telemetry: every whitelist rejection carries a machine-readable rule
+    # id, so the repair loop can report WHICH rule an engine proposal
+    # tripped (the paper's "attempted axioms" number).
+    assert _sidecar_rule(
+        "lemma FreeLunch(x: int)\n  ensures x == x + 1\n") == "bodiless"
+    assert _sidecar_rule(
+        "lemma L(x: int) ensures x == x { assume x == x; }\n"
+    ) == "forbidden-token"
+    assert _sidecar_rule(
+        "lemma {:axiom} L(x: int) ensures x == x\n") == "attribute"
+    assert _sidecar_rule(
+        "lemma L(x: int)\n  ensures (y => true)(x)\n{\n}\n") == "lambda"
+    assert _sidecar_rule(
+        "lemma L(x: int)\n  ensures x in {1, 2}\n{\n}\n") == "spec-literal"
+    assert _sidecar_rule("assert 1 == 1;\n") == "non-declaration"
+    assert _sidecar_rule(
+        "ghost lemma L(x: int)\n  ensures x == x\n{\n}\n") == "malformed-ghost"
+    assert _sidecar_rule(
+        "lemma L(x: int)\n  ensures x in multiset{1}\n{\n}\n"
+    ) == "forbidden-token"
+
+
+def test_validate_sidecar_text_accepts_good_pack():
+    from lemmapy.backends.dafny.encoder import validate_sidecar_text
+
+    lemmas = validate_sidecar_text(
+        "lemma A(x: int)\n  ensures x == x\n{\n}\n"
+        "lemma B(x: int)\n  ensures x <= x\n{\n  A(x);\n}\n",
+        "m.proofs.dfy",
+    )
+    assert lemmas == frozenset({"A", "B"})
+
+
+def test_sidecar_decreases_cardinality_before_body_accepted():
+    # `decreases |s|` right before the body brace is idiomatic Dafny; the
+    # closing pipe must count as a value ender or every engine writing it
+    # burns an iteration on a false rejection.
+    from lemmapy.backends.dafny.encoder import validate_sidecar_text
+
+    lemmas = validate_sidecar_text(
+        "lemma Sum(s: seq<int>)\n  ensures 0 <= |s|\n  decreases |s|\n"
+        "{\n  if |s| > 0 { Sum(s[..|s|-1]); }\n}\n",
+        "m.proofs.dfy",
+    )
+    assert lemmas == frozenset({"Sum"})
+
+
+def test_sidecar_cardinality_of_display_still_no_masquerade():
+    # `ensures 0 <= |{x}|`: the display brace follows `|` and would now
+    # count as a body — but the cardinality's CLOSING pipe then dangles at
+    # top level, tripping the declaration scan. No bodiless lemma slips
+    # through via cardinality-of-display.
+    assert _sidecar_rule(
+        "lemma FreeLunch(x: int)\n  ensures 0 <= |{x}|\n"
+    ) == "non-declaration"
+    # And the plain display in spec position stays blocked as before.
+    assert _sidecar_rule(
+        "lemma FreeLunch(x: int)\n  ensures x in {1, 2}\n"
+    ) == "spec-literal"
+
+
 def test_loop_index_read_after_loop_rejected():
     _expect_encode_error(
         "#@ requires n >= 1\n#@ ensures result == n\n"
