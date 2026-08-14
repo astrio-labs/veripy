@@ -44,8 +44,15 @@ Two properties fall out of this design that no static benchmark has:
    strips each sidecar-bearing task's `.proofs.dfy` (the `#@ proof` clauses
    stay in the frozen source) and scores restoration through the repair
    loop — the same whitelist and prover as the golden proof, so R4 must be
-   re-earned, never asserted. Roster today: `gcd` (8-lemma divisibility
-   pack); executable proof-hint asserts are admitted source and stay.
+   re-earned, never asserted. Roster today (5 tasks, each with a
+   sidecar-less control pinned by `test_sidecar_is_load_bearing`): `gcd`
+   (8-lemma divisibility pack), `is_prime` (7-lemma sqrt-bounded
+   primality pack sharing gcd's lemma family), `below_zero` (`SliceSnoc`),
+   `rolling_max` (`SeqMaxDominates` induction), `sum_squares`
+   (`SumNonNeg`, instantiated at a mapped-seq `#@ proof` argument).
+   Executable proof-hint asserts remain admitted source and stay where
+   present. The divisibility family is deliberately NOT promoted into the
+   preamble while the exam depends on those lemmas being absent.
 
 ## Backend policy (and the "ultimate benchmark" question)
 

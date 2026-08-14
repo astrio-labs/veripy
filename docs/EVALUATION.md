@@ -93,9 +93,13 @@ frozen `#@ proof` clause names. The first proposal failed verification and
 the structured-failure feedback produced the verified pack on the second
 attempt — the loop, not one-shot recall, did the work. The artifact is
 preserved at [exam-artifacts/gcd-engine-pack-2026-08.dfy](exam-artifacts/gcd-engine-pack-2026-08.dfy).
-Caveat stated plainly: the roster is n=1 today (`gcd` is the corpus's
-hardest proof, but one task is one task) — the number's statistical power
-grows with every sidecar-bearing task the corpus gains.
+Caveat stated plainly: the roster was n=1 at this measurement (`gcd` is
+the corpus's hardest proof, but one task is one task). *Update (late
+August 2026): the roster is now n=5* — `is_prime`, `below_zero`,
+`rolling_max`, and `sum_squares` gained load-bearing sidecars (each with
+a pinned sidecar-less control that must fail), and the experiment
+harness (`lemmapy experiment`) runs the exam as a (task × engine × arm ×
+trial) matrix with an append-only JSONL ledger.
 
 **Methodology notes — two invalid runs preceded the measurement, in
 opposite directions, and both are part of the record:**
