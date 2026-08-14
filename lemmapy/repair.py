@@ -20,6 +20,7 @@ written (with a `.bak` of any previous content) on success with
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -85,16 +86,86 @@ def _render_prompt(request: dict[str, Any]) -> str:
         if as_json:
             if not value:
                 continue
+            if key == "failures" and isinstance(value, dict) \
+                    and isinstance(value.get("sidecar"), dict):
+                # The payload carries the sidecar's full text and the
+                # dedicated section shows it verbatim: rendering both put
+                # two copies of the largest item in every prompt.
+                value = dict(value)
+                value["sidecar"] = {
+                    k: v for k, v in value["sidecar"].items() if k != "text"}
+                value["sidecar"]["text"] = "(shown in full in its own section)"
             body = json.dumps(value, indent=1)
         else:
             body = value or "(none)"
         parts.append(f"\n{title}\n{body}")
     if request.get("history"):
-        parts.append("\n## Prior attempts (most recent last)\n"
-                     + json.dumps(request["history"][-3:], indent=1))
+        entries, dropped = history_for_prompt(request["history"])
+        notes = []
+        if dropped:
+            notes.append(f"{dropped} earlier attempt(s) omitted to bound "
+                         f"this prompt")
+        if any("proposal_digest" in e for e in entries):
+            notes.append("earlier proposal text is digested — the newest one "
+                         "is shown in full above")
+        suffix = f"; {'; '.join(notes)}" if notes else ""
+        parts.append(f"\n## Prior attempts (most recent last{suffix})\n"
+                     + _history_json(entries))
     parts.append("\n" + request.get(
         "reply_with", "Reply with the complete new sidecar content only."))
     return "\n".join(parts)
+
+
+# History budget. The newest proposal is ALREADY shown verbatim in the
+# "Current sidecar" section, so carrying full text for prior attempts is
+# redundant — and it grew the prompt until the engine call outran its own
+# wall (modp, iteration 3 of an 8-iteration probe, which is why that probe
+# produced no number). Prior attempts keep their FAILURES in full — that is
+# the signal — and their proposals collapse to a digest.
+_HISTORY_ATTEMPTS = 3
+_HISTORY_BUDGET_CHARS = 8000
+_DECL_RE = re.compile(
+    r"^\s*(?:lemma|ghost\s+function|function)\s+([A-Za-z_]\w*)", re.M)
+
+
+def _history_json(entries: list[dict[str, Any]]) -> str:
+    """The ONE serialization of history. The budget must measure exactly
+    what the prompt emits: measuring compact JSON while rendering indented
+    JSON let entries near the threshold render well over budget."""
+    return json.dumps(entries, indent=1)
+
+
+def _proposal_digest(text: str) -> str:
+    names = _DECL_RE.findall(text or "")
+    lines = (text or "").count("\n") + 1 if text else 0
+    return (f"{lines} lines; declares: "
+            f"{', '.join(names) if names else '(nothing)'}")
+
+
+def history_for_prompt(
+    history: list[dict[str, Any]],
+    attempts: int = _HISTORY_ATTEMPTS,
+    budget_chars: int = _HISTORY_BUDGET_CHARS,
+) -> tuple[list[dict[str, Any]], int]:
+    """(entries, dropped) — most recent last, proposals digested, oldest
+    entries dropped to fit a character budget. The newest entry is never
+    dropped, and `dropped` is surfaced in the prompt so the engine is never
+    silently shown a partial record."""
+    # Schema-agnostic on purpose: ONE renderer serves every exam's request
+    # shape (#29), so keep every key an entry carries and digest only the
+    # bulky `proposal` text. Whitelisting keys here silently dropped the
+    # spec-writing exam's `errors` field.
+    kept = []
+    for h in (history[-attempts:] if attempts > 0 else []):
+        entry = {k: v for k, v in h.items() if k != "proposal"}
+        if "proposal" in h:
+            entry["proposal_digest"] = _proposal_digest(h["proposal"] or "")
+        kept.append(entry)
+    dropped = len(history) - len(kept)
+    while len(kept) > 1 and len(_history_json(kept)) > budget_chars:
+        kept.pop(0)
+        dropped += 1
+    return kept, dropped
 
 
 def _strip_fences(text: str) -> str:
@@ -390,7 +461,18 @@ def _repairable(payload: dict[str, Any]) -> bool:
     """A proof edit can help with failed proofs and sidecar-validation
     rejections — not with spec errors or source-conformance rejections."""
     if payload["status"] == "failed":
-        return True
+        # ...and not with a failure the producer EXPLICITLY could not
+        # attribute. The published contract (docs/AGENT-INTERFACE.md) says
+        # a null `region` is diagnostic output for a human, not a repair
+        # target; iterating anyway spends the whole budget on engine calls
+        # no proof edit can address.
+        #
+        # Absence of the key is NOT that declaration — other producers
+        # (exam harnesses, ablation fixtures) omit `region` without
+        # claiming the failure is unattributable. Only an explicit null
+        # blocks, and only when EVERY failure carries one.
+        return any("region" not in f or f["region"] is not None
+                   for f in payload["failures"])
     if payload["status"] == "encode-error":
         return any("proof sidecar" in (f.get("message") or "")
                    or "proof clause" in (f.get("message") or "")
@@ -446,9 +528,12 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
             return RepairOutcome(True, attempt, "verified", text, history,
                                  attempts)
         if not _repairable(payload):
-            return RepairOutcome(False, attempt,
-                                 f"not repairable by proof edits: "
-                                 f"{payload['status']}", None, history,
+            reason = f"not repairable by proof edits: {payload['status']}"
+            if payload["status"] == "failed":
+                reason = ("not repairable by proof edits: the prover failed "
+                          "but no failure could be attributed to source or "
+                          "sidecar (see the raw message)")
+            return RepairOutcome(False, attempt, reason, None, history,
                                  attempts)
         if attempt == max_iterations:
             break

@@ -240,9 +240,19 @@ def test_unadjudicated_timeout_fails_the_rung(tmp_path, monkeypatch):
     assert len(score.timeouts) == 1
 
 
-def test_adjudicated_timeout_counts_as_visible_kill(tmp_path, monkeypatch):
-    # With the divergence adjudicated in meta.json, the timeout is a kill,
-    # visibly labeled in the passing rung.
+def test_adjudicated_timeout_passes_the_rung_without_being_credited(
+        tmp_path, monkeypatch):
+    """Adjudicated divergence: does not FAIL the rung, does not COUNT as
+    spec strength.
+
+    This test previously asserted the timeout was a kill
+    (`mutants_killed == mutants_total`). That was the same hole crediting
+    crashes had: the hunt wall expires on a diverging mutant whatever the
+    specification says, so `#@ ensures True` "kills" it equally and the
+    mutant carries no information about the spec. The human ruling
+    establishes a behaviour change — which is why the rung still passes —
+    not that the spec discriminated it.
+    """
     import json as json_mod
 
     from lemmapy.benchmark import runner as runner_mod
@@ -271,9 +281,9 @@ def test_adjudicated_timeout_counts_as_visible_kill(tmp_path, monkeypatch):
     score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=4)
     mutants = next(r for r in score.rungs if r.name == "mutants")
     assert mutants.status == "pass"
-    assert "adjudicated timeout kill" in mutants.detail
+    assert "diverged" in mutants.detail and "not credited" in mutants.detail
     assert score.adjudicated_timeouts == 1
-    assert score.mutants_killed == score.mutants_total
+    assert score.mutants_killed == score.mutants_total - 1
 
 
 def test_mutant_descriptions_are_unique_within_a_panel():
@@ -620,3 +630,102 @@ def test_bump_climbs_the_full_ladder(tmp_path):
     assert score.height == 6, [(r.name, r.status, r.detail) for r in score.rungs]
     assert score.mutants_total >= 1
     assert score.mutants_killed == score.mutants_total
+
+
+def test_thin_panels_are_marked_not_presented_as_comparable():
+    """A rate over one mutant is one bit; it must not read like 8/8.
+
+    Small panels are a real limit of mutation-based scoring on short
+    functions. They still pool into the corpus total, but the per-task cell
+    is marked so a reader does not compare `1/1` with `8/8` as equals.
+    """
+    from lemmapy.benchmark.runner import (
+        LOW_RESOLUTION_PANEL,
+        PASS,
+        Rung,
+        TaskScore,
+        render_report,
+    )
+
+    def scored(task_id, killed, total):
+        s = TaskScore(task_id=task_id)
+        s.rungs = [Rung(n, PASS) for n in
+                   ["gate", "hunt", "mutants", "encode", "prove", "fidelity"]]
+        s.mutants_killed, s.mutants_total = killed, total
+        return s
+
+    thin, thick = scored("thin", 1, 1), scored("thick", 8, 8)
+    report = render_report([thin, thick])
+    assert "1/1?" in report, "a one-mutant panel must be marked"
+    assert "8/8?" not in report and "8/8" in report
+    assert LOW_RESOLUTION_PANEL == 3
+
+    # The profile must report the median it computed. `[1, 8]` has median
+    # 4.5, and a `.0f` format rounded it to "4" — an inaccurate statistic
+    # inside the line whose whole job is to state the instrument's
+    # precision. (Banker's rounding makes it read LOW, understating the
+    # resolution rather than overstating it, which is the less obvious
+    # direction to notice.)
+    assert "median 4.5" in report, report
+    assert "min 1" in report and "max 8" in report
+    assert "1 task(s) marked ?" in report
+
+    # A whole-number median must not gain a spurious decimal.
+    even = render_report([scored("a", 4, 4), scored("b", 4, 4)])
+    assert "median 4 " in even, even
+
+def test_adjudicated_timeout_is_not_credited_as_spec_strength(tmp_path,
+                                                              monkeypatch):
+    """Divergence is caught by the wall, not by the specification.
+
+    A human ruling that a mutant diverges establishes a real behaviour
+    change, so it must not FAIL the rung. But it is not evidence the spec
+    discriminated anything — the hunt wall expires the same way under
+    `#@ ensures True` — so crediting it to `mutants_killed` would reopen
+    exactly the hole that crediting crashes did.
+    """
+    import lemmapy.benchmark.runner as runner_mod
+    from lemmapy.benchmark.runner import PASS, run_task
+
+    src = ("#@ ensures result >= 0\n"
+           "def f(n: int) -> int:\n"
+           "    if n < 0:\n"
+           "        return 0\n"
+           "    return n\n")
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "task.py").write_text(src)
+    panel = [desc for desc, _ in generate_mutations(src, max_mutants=12)]
+    assert panel, "need a panel to adjudicate against"
+    import json as json_mod
+
+    (d / "meta.json").write_text(json_mod.dumps(
+        {"id": "t", "timeout_kills": [panel[0]]}))
+
+    # Gate/hunt clean; the adjudicated mutant times out, the rest refute.
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True,
+                                                     "errors": [],
+                                                     "error": None})())
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, per_condition_timeout, wall=None):
+        if name == "t":
+            return "clean", ""            # R1 on the original
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "timeout", "wall exceeded"
+        return "counterexample", "false when calling f(...)"
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    score = run_task(d, tmp_path / "w", mutant_cap=12)
+
+    rung = next(r for r in score.rungs if r.name == "mutants")
+    assert rung.status == PASS, f"adjudicated divergence must not fail: {rung.detail}"
+    assert score.adjudicated_timeouts == 1
+    # The refuted count excludes it, and the buckets still add up.
+    assert score.mutants_killed == score.mutants_total - 1
+    assert (score.mutants_killed + score.mutants_crashed
+            + score.adjudicated_timeouts + len(score.survivors)
+            + len(score.timeouts)) == score.mutants_total
+    assert "diverged" in rung.detail and "not credited" in rung.detail

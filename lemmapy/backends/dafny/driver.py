@@ -3,6 +3,7 @@ back to Python source lines."""
 
 from __future__ import annotations
 
+import functools
 import re
 import shutil
 import subprocess
@@ -16,8 +17,9 @@ _SUMMARY_RE = re.compile(r"finished with (?P<ok>\d+) verified, (?P<bad>\d+) erro
 
 
 # Obligation classification: Dafny's message text -> the kind of proof
-# obligation that failed. The agent interface (lemmapy verify --json)
-# keys repair strategies on this.
+# obligation that failed. Every value here must be a member of the
+# published taxonomy (lemmapy/failures.py PROVER_KINDS) — that is what a
+# host branches on, and tests/test_failures.py fails if this drifts.
 _OBLIGATION_KINDS: tuple[tuple[str, str], ...] = (
     ("postcondition", "postcondition"),
     ("loop invariant", "invariant"),
@@ -27,6 +29,13 @@ _OBLIGATION_KINDS: tuple[tuple[str, str], ...] = (
     ("decreases", "termination"),
     ("timed out", "timeout"),
     ("out of resource", "timeout"),
+    # Resolution/type errors in the (engine- or hand-written) sidecar: the
+    # proof was never attempted, so they are not obligations. Checked
+    # before the obligation patterns because their text can mention one.
+    ("unresolved identifier", "resolution"),
+    ("wrong number of arguments", "resolution"),
+    ("incorrect argument type", "resolution"),
+    ("duplicate name", "resolution"),
     ("index out of range", "bounds"),
     ("divisor is always non-zero", "division"),
 )
@@ -63,6 +72,41 @@ class VerifyResult:
 
 def find_dafny() -> str | None:
     return shutil.which("dafny")
+
+
+@functools.lru_cache(maxsize=1)
+def dafny_version() -> str | None:
+    """The prover's own version string, or None if it cannot be determined.
+
+    Provenance in a verification report has to be the REAL version: a
+    backend must be able to tell whether "verified" meant the same thing
+    across two runs. (This field once held `result.summary` — "finished
+    with N verified, 0 errors" — which is an outcome, not an identity.)
+    Cached because it shells out and the answer cannot change mid-run."""
+    exe = find_dafny()
+    if exe is None:
+        return None
+    try:
+        # `--version` is trivial (~0.1s); a longer wait means a broken or
+        # stalled binary, and callers should not pay a minute for that.
+        proc = subprocess.run([exe, "--version"], capture_output=True,
+                              text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    first = (proc.stdout or proc.stderr).strip().splitlines()
+    if not first:
+        return None
+    # Builds differ: 4.11.0 prints a bare "4.11.0", others print
+    # "Dafny version 4.x.y". Strip the redundant prefix so a renderer's own
+    # "dafny " label cannot produce "dafny Dafny version 4.x.y".
+    version = first[0].strip()
+    for prefix in ("Dafny version ", "Dafny "):
+        if version.startswith(prefix):
+            version = version[len(prefix):].strip()
+            break
+    return version or None
 
 
 def _map_line(line_map: dict[int, int], dafny_line: int) -> int | None:
