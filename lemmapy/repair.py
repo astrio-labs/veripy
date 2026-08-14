@@ -20,6 +20,7 @@ written (with a `.bak` of any previous content) on success with
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -85,16 +86,79 @@ def _render_prompt(request: dict[str, Any]) -> str:
         if as_json:
             if not value:
                 continue
+            if key == "failures" and isinstance(value, dict) \
+                    and isinstance(value.get("sidecar"), dict):
+                # The payload carries the sidecar's full text and the
+                # dedicated section shows it verbatim: rendering both put
+                # two copies of the largest item in every prompt.
+                value = dict(value)
+                value["sidecar"] = {
+                    k: v for k, v in value["sidecar"].items() if k != "text"}
+                value["sidecar"]["text"] = "(shown in full in its own section)"
             body = json.dumps(value, indent=1)
         else:
             body = value or "(none)"
         parts.append(f"\n{title}\n{body}")
     if request.get("history"):
-        parts.append("\n## Prior attempts (most recent last)\n"
-                     + json.dumps(request["history"][-3:], indent=1))
+        entries, dropped = history_for_prompt(request["history"])
+        notes = []
+        if dropped:
+            notes.append(f"{dropped} earlier attempt(s) omitted to bound "
+                         f"this prompt")
+        if any("proposal_digest" in e for e in entries):
+            notes.append("earlier proposal text is digested — the newest one "
+                         "is shown in full above")
+        suffix = f"; {'; '.join(notes)}" if notes else ""
+        parts.append(f"\n## Prior attempts (most recent last{suffix})\n"
+                     + json.dumps(entries, indent=1))
     parts.append("\n" + request.get(
         "reply_with", "Reply with the complete new sidecar content only."))
     return "\n".join(parts)
+
+
+# History budget. The newest proposal is ALREADY shown verbatim in the
+# "Current sidecar" section, so carrying full text for prior attempts is
+# redundant — and it grew the prompt until the engine call outran its own
+# wall (modp, iteration 3 of an 8-iteration probe, which is why that probe
+# produced no number). Prior attempts keep their FAILURES in full — that is
+# the signal — and their proposals collapse to a digest.
+_HISTORY_ATTEMPTS = 3
+_HISTORY_BUDGET_CHARS = 8000
+_DECL_RE = re.compile(
+    r"^\s*(?:lemma|ghost\s+function|function)\s+([A-Za-z_]\w*)", re.M)
+
+
+def _proposal_digest(text: str) -> str:
+    names = _DECL_RE.findall(text or "")
+    lines = (text or "").count("\n") + 1 if text else 0
+    return (f"{lines} lines; declares: "
+            f"{', '.join(names) if names else '(nothing)'}")
+
+
+def history_for_prompt(
+    history: list[dict[str, Any]],
+    attempts: int = _HISTORY_ATTEMPTS,
+    budget_chars: int = _HISTORY_BUDGET_CHARS,
+) -> tuple[list[dict[str, Any]], int]:
+    """(entries, dropped) — most recent last, proposals digested, oldest
+    entries dropped to fit a character budget. The newest entry is never
+    dropped, and `dropped` is surfaced in the prompt so the engine is never
+    silently shown a partial record."""
+    # Schema-agnostic on purpose: ONE renderer serves every exam's request
+    # shape (#29), so keep every key an entry carries and digest only the
+    # bulky `proposal` text. Whitelisting keys here silently dropped the
+    # spec-writing exam's `errors` field.
+    kept = []
+    for h in (history[-attempts:] if attempts > 0 else []):
+        entry = {k: v for k, v in h.items() if k != "proposal"}
+        if "proposal" in h:
+            entry["proposal_digest"] = _proposal_digest(h["proposal"] or "")
+        kept.append(entry)
+    dropped = len(history) - len(kept)
+    while len(kept) > 1 and len(json.dumps(kept)) > budget_chars:
+        kept.pop(0)
+        dropped += 1
+    return kept, dropped
 
 
 def _strip_fences(text: str) -> str:
