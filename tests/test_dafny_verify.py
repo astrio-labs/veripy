@@ -102,7 +102,13 @@ def test_isqrt_maximality_verifies_without_proof_additions(tmp_path, capsys):
     # within Z3's reach where divisibility was not — so this one needs no
     # sidecar. Worth pinning: if it ever starts needing one, the fragment's
     # nonlinear reach has regressed.
+    #
+    # The no-sidecar half has to be asserted, not assumed: cmd_verify loads
+    # `<stem>.proofs.dfy` silently whenever it exists, so dropping proof
+    # additions beside isqrt.py would leave a success-only test green while
+    # destroying the very contrast it is here to record.
+    assert not (EXAMPLES / "isqrt.proofs.dfy").exists()
     status = cmd_verify([EXAMPLES / "isqrt.py"], tmp_path, time_limit=60,
                         types=False)
     assert status == 0
-    assert "isqrt" in capsys.readouterr().out
+    assert "VERIFIED (isqrt)" in capsys.readouterr().out

@@ -1,6 +1,6 @@
 # lemmapy-benchmark
 
-> **Status: v0 — runner and 14-task seed corpus shipped.** `lemmapy benchmark`
+> **Status: v0 — runner and 15-task seed corpus shipped.** `lemmapy benchmark`
 > runs it; the scorecard below regenerates with `--report`.
 
 ## Why not a skeleton-completion benchmark
@@ -94,8 +94,8 @@ Two properties fall out of this design that no static benchmark has:
    ```
 
    *(Both figures predate the operand-replacement family and the modp/
-   triples tasks; the golden baseline on the current 14-task panel is
-   49/63 = 78%.)*
+   triples tasks; the golden baseline on the current 15-task panel is
+   57/71 = 80%.)*
 
    All twelve tautologies clear the type gate, the runtime-contract hunt,
    the encoder, and the SMT prover — *every automated check the toolchain
@@ -176,11 +176,11 @@ benchmark/tasks/<id>/
                     #   equivalent_mutants[], timeout_kills[]
 ```
 
-Seed corpus: 14 tasks (11 adapted from HumanEval, MIT; 3 project-original),
+Seed corpus: 15 tasks (11 adapted from HumanEval, MIT; 4 project-original),
 every one at full ladder height as the golden baseline. Growth is free:
 each fragment slice makes more of the 20-task contact corpus (and the 65%
 of HumanEval that surveys in-fragment) eligible — slice 6 (`sum()`/genexp
-folds) admitted `below_zero` and `sum_squares`; slice 7 (`**` -> `PyPow`) admitted `modp` (whose mod/pow lemma sidecar joins the proof-repair exam roster) and, verified as-is, `triples_sum_to_zero`.
+folds) admitted `below_zero` and `sum_squares`; slice 7 (`**` -> `PyPow`) admitted `modp` (whose mod/pow lemma sidecar joins the proof-repair exam roster) and, verified as-is, `triples_sum_to_zero`. `isqrt` joined as the counterpoint to `gcd`: the same maximality shape, closed by Z3 with no sidecar at all.
 
 ## Seed baseline (August 2026)
 
@@ -189,24 +189,34 @@ Full run (defaults: 12-mutant cap, 5s hunt budget, 60s prove budget,
 
 ```
 task                   gate     hunt     mutants  encode   prove    fidelity height
-below_threshold        pass     pass     1/1      pass     pass     pass     6/6
+-----------------------------------------------------------------------------------
+below_threshold        pass     pass     1/1?     pass     pass     pass     6/6
 below_zero             pass     pass     3/3      pass     pass     pass     6/6
-bump                   pass     pass     2/2      pass     pass     pass     6/6
+bump                   pass     pass     2/2?     pass     pass     pass     6/6
 clamp                  pass     pass     8/8      pass     pass     pass     6/6
 gcd                    pass     pass     4/4      pass     pass     pass     6/6
-incr_list              pass     pass     2/2      pass     pass     pass     6/6
+incr_list              pass     pass     2/2?     pass     pass     pass     6/6
 intersperse            pass     pass     1/3      pass     pass     pass     6/6
 is_palindrome          pass     pass     2/4      pass     pass     pass     6/6
 is_prime               pass     pass     8/8      pass     pass     pass     6/6
-max_element            pass     pass     0/1*     pass     pass     pass     6/6
-modp                   pass     pass     8/8*     pass     pass     pass     6/6
+isqrt                  pass     pass     8/8      pass     pass     pass     6/6
+max_element            pass     pass     0/1*?    pass     pass     pass     6/6
+modp                   pass     pass     7/8*     pass     pass     pass     6/6
 rolling_max            pass     pass     1/5      pass     pass     pass     6/6
 sum_squares            pass     pass     2/6      pass     pass     pass     6/6
 triples_sum_to_zero    pass     pass     8/8      pass     pass     pass     6/6
 -----------------------------------------------------------------------------------
-tasks: 14   full-ladder: 14   spec strength: 49/63 mutants REFUTED by the specs (78%); 13 crashed (caught by the interpreter, not the spec — never credited); 1 diverged (adjudicated nontermination — caught by the wall, not the spec, so never credited)
+tasks: 15   full-ladder: 15   spec strength: 57/71 mutants REFUTED by the specs (80%); 13 crashed (caught by the interpreter, not the spec — never credited); 1 diverged (adjudicated nontermination — caught by the wall, not the spec, so never credited)
+panel resolution: median 4 mutants/task, min 1, max 8; 4 task(s) marked ? — panel too small for a per-task rate to be comparable
 * 1 mutant(s) human-adjudicated as divergent; counted separately, NOT as spec strength; 1 mutant(s) excluded as adjudicated equivalent
 ```
+
+Two conventions in that block postdate the first baseline and are worth
+reading carefully. A `?` marks a panel under three mutants: the rate is one
+or two bits and cannot be compared with an eight-mutant panel, though it
+still pools into the corpus total. And `modp` reads `7/8*`, not `8/8*`: its
+adjudicated divergence earns the ladder rung but is never added to spec
+strength, so the numerator here is the refutation count alone.
 
 The benchmark's first run also exercised its adjudication path: the raw run
 surfaced one surviving mutant on `max_element` (`>` → `>=` in the max
