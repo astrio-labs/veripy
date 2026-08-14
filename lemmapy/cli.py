@@ -17,6 +17,7 @@ from .agentio import atomic_write_text, stub_dir_for
 from .backends.dafny.driver import verify_dafny_file
 from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from .backends.runtime.emit import emit_checked
+from .hints import proof_hint
 
 def _engine_wall(value: str) -> int:
     """argparse type for --engine-wall: a positive number of seconds.
@@ -359,6 +360,9 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
                 if d.severity == "error":
                     where = f"{path}:{d.py_line}" if d.py_line is not None else f"{stub}:{d.dafny_line}"
                     print(f"  {where}: {d.message}")
+                    hint = proof_hint(d, source, specs)
+                    if hint:
+                        print(f"    hint: {hint}")
                     errs.append(d)
             # Attribute failures to the enclosing function by source span.
             # Failures in the appended sidecar region (beyond the stub) or
