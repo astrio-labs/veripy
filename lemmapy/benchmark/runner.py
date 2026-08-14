@@ -165,17 +165,24 @@ def run_task(
         equivalents = set(meta.get("equivalent_mutants", []))
         timeout_adjudicated = set(meta.get("timeout_kills", []))
     mutants = generate_mutations(source, max_mutants=mutant_cap)
-    # Every adjudication must name EXACTLY ONE mutant in the generated
-    # panel. A ruling that matches nothing is stale (a source edit shifted
-    # the site) or a typo; one that matches several would apply a single
-    # human judgement to several mutants. Either way the panel's meaning is
-    # unknown, so the rung errors instead of scoring.
+    # Every adjudication must name EXACTLY ONE mutant. A ruling that
+    # matches nothing is stale (a source edit shifted the site) or a typo;
+    # one that matches several would apply a single human judgement to
+    # several mutants. Either way the panel's meaning is unknown, so the
+    # rung errors instead of scoring.
+    #
+    # Validate against the COMPLETE panel, not the capped one: --quick
+    # truncates the panel, and a ruling about a mutant the truncated run
+    # never hunts is out of scope, not stale. Generation is deterministic
+    # and side-effect-free, and the capped panel is a prefix of the full
+    # one, so this is cheap and stable.
+    full_panel = [d for d, _ in generate_mutations(source, max_mutants=10**6)]
     panel_descriptions = [d for d, _ in mutants]
     stale: list[str] = []
     for key, entries in (("equivalent_mutants", equivalents),
                          ("timeout_kills", timeout_adjudicated)):
         for entry in sorted(entries):
-            hits = panel_descriptions.count(entry)
+            hits = full_panel.count(entry)
             if hits != 1:
                 stale.append(
                     f"{key} entry {entry!r} matches {hits} mutants (expected 1)")

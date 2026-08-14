@@ -247,6 +247,49 @@ def test_stale_or_ambiguous_adjudication_errors_the_rung(tmp_path, monkeypatch):
     assert score.height == 2  # gate + hunt only; the panel never scored
 
 
+def test_adjudication_outside_the_capped_panel_is_not_stale(tmp_path, monkeypatch):
+    # --quick truncates the panel. A ruling about a mutant the truncated
+    # run never hunts is OUT OF SCOPE, not stale — validating against the
+    # capped panel instead of the complete one made `lemmapy benchmark
+    # --quick` error on modp in CI.
+    import json as json_mod
+
+    from lemmapy.benchmark import runner as runner_mod
+
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(n: int) -> int:\n"
+        "    s = 0\n"
+        "    for i in range(n):\n"
+        "        if i < n - 1:\n"
+        "            s = s + 1\n"
+        "    return s\n"
+    )
+    full = [d for d, _ in generate_mutations(src, max_mutants=10**6)]
+    assert len(full) > 2, full
+    beyond_cap = full[-1]  # exists in the full panel, not in a cap-2 run
+
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(src)
+    (task_dir / "meta.json").write_text(json_mod.dumps(
+        {"id": "t", "timeout_kills": [beyond_cap]}))
+
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        calls["n"] += 1
+        return ("clean", "") if calls["n"] == 1 else ("counterexample", "")
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=2)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == "pass", mutants.detail
+    assert score.mutants_total == 2
+
+
 def test_panel_emptied_by_adjudication_fails_not_skips(tmp_path, monkeypatch):
     # SKIP counts toward ladder height: a panel whose every mutant was
     # ruled equivalent measured NOTHING and must not read as "no mutation
