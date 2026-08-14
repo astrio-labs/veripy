@@ -787,7 +787,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if scores and all(s.valid for s in scores) else 1
         return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
     if args.command == "experiment":
-        from .benchmark.experiment import run_experiment, summarize_ledger
+        from .benchmark.experiment import (
+            matrix_rows,
+            run_experiment,
+            summarize_ledger,
+        )
 
         if args.summarize is not None:
             if not args.summarize.exists():
@@ -814,9 +818,27 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        print(f"\n{len(written)} cell-task row(s) appended -> {ledger}\n")
+        # Exit status covers the WHOLE requested matrix, read back from the
+        # ledger — not just the rows this invocation wrote. On resume the
+        # completed cells are skipped and never re-emitted, so judging by
+        # `written` would report success while the ledger still holds
+        # failed trials from an earlier run.
+        only = set(args.only_tasks) if args.only_tasks else None
+        matrix = matrix_rows(ledger, exam=args.exam, engines=args.engines,
+                             arms=arms, trials=args.trials, tasks=only)
+        resumed = len(matrix) - len(written)
+        print(f"\n{len(written)} cell-task row(s) appended -> {ledger}"
+              + (f" ({resumed} resumed from earlier runs)" if resumed > 0 else "")
+              + "\n")
         print(summarize_ledger(ledger))
-        if any(not row["restored"] for row in written):
+        if not matrix:
+            print("no trials recorded for the requested matrix",
+                  file=sys.stderr)
+            return 2
+        failed = [r for r in matrix if not r["restored"]]
+        if failed:
+            print(f"\n{len(failed)}/{len(matrix)} trial(s) in this matrix did "
+                  f"not succeed", file=sys.stderr)
             return 1
         return 0
     if args.command == "survey":

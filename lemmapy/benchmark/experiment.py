@@ -312,6 +312,30 @@ def _rows(ledger: Path) -> list[dict[str, Any]]:
     return list(latest.values())
 
 
+def matrix_rows(ledger: Path, *, exam: str, engines: list[str],
+                arms: list[str], trials: int,
+                tasks: set[str] | None = None) -> list[dict[str, Any]]:
+    """Latest ledger row for every cell of the REQUESTED matrix.
+
+    Exit status must reflect the whole matrix, not just the cells this
+    invocation happened to run. `run_experiment` returns only newly written
+    rows so that resume stays idempotent — which means a resumed run whose
+    failures were all recorded earlier would otherwise look like a clean
+    pass to CI.
+    """
+    if not ledger.exists():
+        return []
+    want_engines, want_arms = set(engines), set(arms)
+    return [
+        row for row in _rows(ledger)
+        if row["exam"] == exam
+        and row["engine"] in want_engines
+        and row["arm"] in want_arms
+        and row["trial"] < trials
+        and (tasks is None or row["task"] in tasks)
+    ]
+
+
 def summarize_ledger(ledger: Path) -> str:
     """The headline table: per (task, engine, arm) — restored k/n, mean
     iterations among restorations, whitelist-rejection rate, tokens."""

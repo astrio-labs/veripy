@@ -277,6 +277,79 @@ def test_summarize_groups_and_rejection_breakdown(tmp_path, monkeypatch):
                                       "cost_usd": 0.03}
 
 
+def test_resume_does_not_hide_failed_cells(tmp_path, capsys):
+    """A resumed run must not report success over an earlier run's failures.
+
+    `run_experiment` returns only NEWLY written rows so resume stays
+    idempotent; judging exit status by that list means a second invocation
+    — which re-runs nothing — reports a clean pass while the ledger still
+    holds failed trials. CI would accept an unsuccessful matrix.
+    """
+    corpus = _mini_corpus(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    argv = ["experiment", "--tasks", str(corpus), "-o", str(tmp_path / "o"),
+            "--engines", f"file:{empty}", "--arms", "full", "--trials", "1"]
+
+    # First run: the file engine is exhausted, so the cell fails.
+    assert main(argv) == 1
+    capsys.readouterr()
+
+    # Second run: every cell is already in the ledger, so nothing re-runs
+    # and no rows are written — but the matrix still contains a failure.
+    assert main(argv) == 1
+    out = capsys.readouterr()
+    assert "0 cell-task row(s) appended" in out.out
+    assert "1 resumed from earlier runs" in out.out
+    assert "did not succeed" in out.err
+
+
+def test_resume_reports_success_when_the_matrix_passed(tmp_path, monkeypatch):
+    # The mirror case: a fully-resumed matrix of successes must exit 0, not
+    # fall through the "nothing recorded" branch.
+    import lemmapy.benchmark.experiment as exp_mod
+
+    monkeypatch.setattr(exp_mod, "run_repair_exam", _fake_exam([]))
+    corpus = _mini_corpus(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    argv = ["experiment", "--tasks", str(corpus), "-o", str(tmp_path / "o"),
+            "--engines", f"file:{empty}", "--arms", "full", "--trials", "1"]
+    assert main(argv) == 0
+    assert main(argv) == 0  # resumed, still passing
+
+
+def test_matrix_rows_scopes_to_the_requested_cells(tmp_path, monkeypatch):
+    import lemmapy.benchmark.experiment as exp_mod
+    from lemmapy.benchmark.experiment import matrix_rows
+
+    monkeypatch.setattr(exp_mod, "run_repair_exam", _fake_exam([]))
+    corpus = _mini_corpus(tmp_path, names=("alpha", "beta"))
+    ledger = tmp_path / "ledger.jsonl"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    spec = f"file:{empty}"
+    run_experiment(corpus, tmp_path / "cells", [spec], ["full", "one-shot"],
+                   2, ledger)
+    everything = matrix_rows(ledger, exam="proof-repair", engines=[spec],
+                             arms=["full", "one-shot"], trials=2)
+    assert len(everything) == 8  # 2 tasks x 2 arms x 2 trials
+    # Narrowing any axis narrows the matrix; other exams never leak in.
+    assert len(matrix_rows(ledger, exam="proof-repair", engines=[spec],
+                           arms=["full"], trials=2)) == 4
+    assert len(matrix_rows(ledger, exam="proof-repair", engines=[spec],
+                           arms=["full", "one-shot"], trials=1)) == 4
+    assert len(matrix_rows(ledger, exam="proof-repair", engines=[spec],
+                           arms=["full", "one-shot"], trials=2,
+                           tasks={"alpha"})) == 4
+    assert matrix_rows(ledger, exam="spec-writing", engines=[spec],
+                       arms=["one-shot"], trials=2) == []
+    assert matrix_rows(ledger, exam="proof-repair", engines=["claude"],
+                       arms=["full"], trials=2) == []
+    assert matrix_rows(tmp_path / "nonesuch.jsonl", exam="proof-repair",
+                       engines=[spec], arms=["full"], trials=2) == []
+
+
 def test_cli_experiment_exit_codes_and_summary(tmp_path, capsys):
     # An exhausted file engine on an encode-error loop needs no prover:
     # the full CLI path runs (matrix -> ledger -> summary) and exits 1.
