@@ -710,9 +710,13 @@ def main(argv: list[str] | None = None) -> int:
                           f"{args.json_out}; fix types or pass --no-types",
                           file=sys.stderr)
                     return 2
+            # The CLI is a human-facing surface: keep the emitted stub so
+            # the payload's `stub` path can actually be opened. A library
+            # caller gets the cleaning default instead.
             payloads = verify_structured_many(
                 args.files, args.outdir, time_limit=args.time_limit,
-                hunt_counterexamples=args.hunt_counterexamples)
+                hunt_counterexamples=args.hunt_counterexamples,
+                keep_artifacts=True)
             try:
                 dump(payloads, args.json_out)
             except OSError as exc:

@@ -10,6 +10,7 @@ agent needs to act without re-parsing human-oriented output.
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 from pathlib import Path
 from tokenize import TokenError
@@ -37,7 +38,8 @@ def _attribute(specs: Any, py_line: int | None) -> str | None:
 
 
 def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
-                      hunt_counterexamples: bool = False) -> dict[str, Any]:
+                      hunt_counterexamples: bool = False,
+                      keep_artifacts: bool = False) -> dict[str, Any]:
     """Encode + verify one module; return the structured outcome. Never
     raises for expected failure modes — every outcome is a payload.
 
@@ -50,6 +52,15 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     module came back `failed` with failures belonging to the other file.
     An embedding host naturally shares one scratch directory across
     callers, so this is a soundness break, not a tidiness issue.
+
+    Private staging costs one directory per call, so it is removed again
+    unless `keep_artifacts` — an embedded backend verifying continuously
+    would otherwise grow `outdir` without bound, where the old shared path
+    was at least capped by the number of distinct stems. The artifacts are
+    purely diagnostic (nothing downstream reads the stub; the CLI prints
+    its path for a human), so cleaning is the right default and
+    `payload["stub"]` is None when they are not kept, rather than a path
+    that no longer exists.
     """
     payload: dict[str, Any] = {
         "schema": SCHEMA,
@@ -58,12 +69,30 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         "functions": [],
         "failures": [],
         "sidecar": None,
+        "stub": None,
+        "artifacts_kept": keep_artifacts,
     }
     try:
         outdir.mkdir(parents=True, exist_ok=True)
         # mkdtemp is atomic and unique per process AND per thread, which a
         # stem- or PID-derived name is not.
         workdir = Path(tempfile.mkdtemp(prefix="verify-", dir=outdir))
+    except OSError as exc:
+        payload["status"] = "tool-error"
+        payload["error"] = f"cannot create work directory: {exc}"
+        return payload
+    try:
+        return _verify_into(path, workdir, payload, time_limit,
+                            hunt_counterexamples, keep_artifacts)
+    finally:
+        if not keep_artifacts:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _verify_into(path: Path, workdir: Path, payload: dict[str, Any],
+                 time_limit: int, hunt_counterexamples: bool,
+                 keep_artifacts: bool) -> dict[str, Any]:
+    try:
         source = path.read_text()
     except (OSError, UnicodeDecodeError) as exc:
         payload["status"] = "tool-error"
@@ -121,7 +150,7 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         payload["status"] = "tool-error"
         payload["error"] = f"cannot write stub: {exc}"
         return payload
-    payload["stub"] = str(stub)
+    payload["stub"] = str(stub) if keep_artifacts else None
     stub_extent = encoded.dafny_source.count("\n") + 1
     result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
     if result.error is not None:
@@ -167,14 +196,16 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
 
 
 def verify_structured_many(paths: list[Path], outdir: Path, time_limit: int = 30,
-                           hunt_counterexamples: bool = False) -> list[dict[str, Any]]:
+                           hunt_counterexamples: bool = False,
+                           keep_artifacts: bool = False) -> list[dict[str, Any]]:
     """Same-stem inputs no longer need special handling: `verify_structured`
     stages each invocation privately, so stub paths are unique by
     construction — across calls, threads and processes, not just within
     one batch as the old `dup{n}` scheme managed."""
     return [
         verify_structured(p, outdir, time_limit=time_limit,
-                          hunt_counterexamples=hunt_counterexamples)
+                          hunt_counterexamples=hunt_counterexamples,
+                          keep_artifacts=keep_artifacts)
         for p in paths
     ]
 

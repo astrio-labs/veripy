@@ -179,9 +179,35 @@ def test_same_stem_files_get_distinct_stubs(tmp_path):
     (a_dir / "m.py").write_text(GOOD)
     (b_dir / "m.py").write_text(BROKEN_CLAMP)
     payloads = verify_structured_many(
-        [a_dir / "m.py", b_dir / "m.py"], tmp_path / "out")
+        [a_dir / "m.py", b_dir / "m.py"], tmp_path / "out",
+        keep_artifacts=True)
     assert payloads[0]["stub"] != payloads[1]["stub"]
     assert payloads[0]["status"] == "ok" and payloads[1]["status"] == "failed"
+
+
+def test_artifacts_are_cleaned_unless_requested(tmp_path):
+    """Private staging must not grow `outdir` without bound.
+
+    Per-invocation directories fixed a soundness race, but a backend
+    verifying continuously would accumulate one directory per call — where
+    the old shared path was at least capped by the number of distinct
+    stems. Artifacts are diagnostic only, so they are cleaned by default.
+    """
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    out = tmp_path / "out"
+
+    for _ in range(3):
+        payload = verify_structured(src, out)
+        assert payload["artifacts_kept"] is False
+        # No dangling path is advertised when the directory is gone.
+        assert payload["stub"] is None
+    assert list(out.iterdir()) == [], "scratch directories accumulated"
+
+    kept = verify_structured(src, out, keep_artifacts=True)
+    assert kept["artifacts_kept"] is True
+    assert kept["stub"] is not None and Path(kept["stub"]).exists()
+    assert len(list(out.iterdir())) == 1
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
@@ -207,9 +233,11 @@ def test_concurrent_same_stem_verifications_do_not_swap_verdicts(tmp_path):
 
     # Repeat: the race is timing-dependent and one pass can pass by luck.
     for _ in range(4):
+        # keep_artifacts so the stub paths survive to be compared — that
+        # uniqueness is what the race violated.
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(verify_structured, d / "m.py", shared,
-                                   60)
+                                   time_limit=60, keep_artifacts=True)
                        for d in (a_dir, b_dir)]
             good, broken = (f.result() for f in futures)
         assert good["status"] == "ok", (
