@@ -152,11 +152,19 @@ needs reading, because one task never produced a measurement at all:
 | modp | **no** | 4 (budget) | genuine failure: nonlinear mod-multiplication congruence not reached within budget |
 | rolling_max | **unmeasured** | 3 | the engine call exceeded its own 600 s wall — a HARNESS failure, not a statement about proof-completion |
 
-So: **4/5 = 80% of tasks that produced a measurement**, or 4/6 = 67% if the
-harness failure is counted against the engine. Both are stated because
-silently choosing the flattering denominator is exactly the kind of thing
-the trivial-spec floor exists to prevent elsewhere. `rolling_max` should be
-re-run before either number is quoted.
+So: **4/5 = 80% (95% Wilson CI 38–96%) of tasks that produced a
+measurement**, or 4/6 = 67% (95% Wilson CI 30–90%) if the harness failure
+is counted against the engine. Both are stated because silently choosing
+the flattering denominator is exactly the kind of thing the trivial-spec
+floor exists to prevent elsewhere. `rolling_max` should be re-run before
+either number is quoted.
+
+Read the intervals, not the point estimates: at n=6 the data is compatible
+with a true rate anywhere from ~a third to ~all, so this run **cannot**
+distinguish a good repair loop from a mediocre one. It is a floor showing
+the loop works end-to-end on real proofs, not a rate. Narrowing it needs
+roster growth and repeated trials (the matrix arms above), not a better
+sentence about six tasks.
 
 Note the prompt-budget fix was already in effect for this run (prior
 proposals digested, the duplicate sidecar copy removed), so it reduced
@@ -171,7 +179,9 @@ of arguments`, `incorrect argument type`). That is the most common failure
 the repair loop actually hits, it was unlabelled, and it needs the
 opposite instruction from the obligation kinds it resembled: the sidecar
 did not typecheck, so the proof was never attempted and strengthening it
-is wrong. It is now its own `resolution` kind in the published taxonomy.
+is wrong. It gets its own `resolution` kind in the failure taxonomy —
+shipping separately in the taxonomy PR, so on this revision the
+classification is not yet available and these still arrive as `unknown`.
 
 **Methodology notes — two invalid runs preceded the first measurement, in
 opposite directions, and both are part of the record:**
