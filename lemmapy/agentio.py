@@ -130,6 +130,16 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
             "message": d.message,
         }
         payload["failures"].append(failure)
+    if not payload["failures"]:
+        # A failed run must never carry an EMPTY failure list — an engine
+        # (or a person) needs something actionable. Belt-and-braces: with
+        # --allow-warnings in the driver this path should be unreachable.
+        payload["failures"].append({
+            "kind": "unknown", "function": None, "region": "source",
+            "py_line": None, "dafny_line": None,
+            "message": (result.summary or result.raw[:400]
+                        or "verifier failed without diagnostics"),
+        })
     if hunt_counterexamples and payload["failures"]:
         from .benchmark.runner import _hunt
 

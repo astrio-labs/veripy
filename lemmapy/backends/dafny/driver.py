@@ -79,7 +79,13 @@ def verify_dafny_file(
     exe = find_dafny()
     if exe is None:
         return VerifyResult(ok=False, error="dafny not found on PATH")
-    cmd = [exe, "verify", "--verification-time-limit", str(time_limit), str(path)]
+    # --allow-warnings: the prover's VERDICT is the authority. Without it,
+    # Dafny exits non-zero on style warnings (e.g. a triggerless forall in
+    # an engine-authored sidecar) even after "N verified, 0 errors" — which
+    # would surface as `failed` with zero failure records, a payload no
+    # repair loop can act on.
+    cmd = [exe, "verify", "--allow-warnings",
+           "--verification-time-limit", str(time_limit), str(path)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=time_limit * 20 + 120)
     except (OSError, subprocess.TimeoutExpired) as exc:
