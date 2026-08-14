@@ -366,18 +366,42 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
     return 1 if failed else 0
 
 
+# Directories that hold code nobody wrote as corpus: dependencies, build
+# output, caches. Sweeping them is not merely slow — every third-party file
+# lands in the report as "trouble" or as compared functions, and `compared`
+# is exactly the number `--min-functions` is measured against, so a floor
+# meant to prove the corpus is still covered could be satisfied entirely by
+# whatever happens to be vendored into the tree.
+_SWEEP_PRUNED = frozenset({
+    "__pycache__", "node_modules", "site-packages", "build", "dist",
+    "venv", "env",
+})
+
+
+def _swept(root: Path, file: Path) -> bool:
+    """Is `file` corpus, or is it something that landed under `root`?"""
+    rel = file.relative_to(root).parts
+    # Hidden at any depth: `.venv/lib/.../x.py` is not hidden by filename,
+    # only by the directory it sits in.
+    return not any(part.startswith(".") or part in _SWEEP_PRUNED
+                   or part.endswith(".egg-info") for part in rel)
+
+
 def _difftest_targets(paths: list[Path]) -> list[Path]:
     """Expand directories to the `.py` files under them.
 
     A nightly sweep is pointed at a corpus, not at a hand-written file
     list — a list goes stale silently the moment a task is added, which is
     the failure mode this whole command exists to prevent.
+
+    Pruning applies to directory expansion only: a file named on the command
+    line is swept wherever it lives, because naming it is the intent.
     """
     targets: list[Path] = []
     for path in paths:
         if path.is_dir():
             targets.extend(sorted(p for p in path.rglob("*.py")
-                                  if not p.name.startswith(".")))
+                                  if _swept(path, p)))
         else:
             targets.append(path)
     # A file reachable twice (listed AND inside a listed directory) would
@@ -454,9 +478,20 @@ def cmd_difftest(paths: list[Path], outdir: Path, examples: int,
                        "skipped": len(skipped), "diverged": diverged,
                        "trouble": trouble},
         }
-        report.parent.mkdir(parents=True, exist_ok=True)
-        report.write_text(json.dumps(payload, indent=1))
-        print(f"report -> {report}")
+        try:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(json.dumps(payload, indent=1))
+            print(f"report -> {report}")
+        except OSError as exc:
+            # The sweep's verdict must outlive a bad --report path. Letting
+            # this raise threw away the exit code the whole command exists
+            # to produce, and an uncaught exception exits 1 — the code that
+            # means DIVERGENCE, so an unwritable directory would have been
+            # read as an encoder bug (or, on a run that had diverged, would
+            # have suppressed the summary the next steps read).
+            print(f"could not write the difftest report to {report}: {exc}",
+                  file=sys.stderr)
+            trouble += 1
     if diverged:
         return 1
     if compared < min_functions:

@@ -50,10 +50,32 @@ def test_hidden_files_are_not_swept(tmp_path):
     assert [p.name for p in _difftest_targets([tmp_path])] == ["a.py"]
 
 
+def test_generated_and_vendored_trees_are_not_swept(tmp_path):
+    # None of these is hidden by FILENAME, so a name-only filter sweeps a
+    # virtualenv's whole site-packages as corpus. Two things then break at
+    # once: third-party files report as trouble, and their functions count
+    # toward `compared` — the number --min-functions checks, so the floor
+    # proving "the corpus is still covered" could be met by dependencies.
+    _write(tmp_path / "task.py")
+    _write(tmp_path / ".venv" / "lib" / "python3.12" / "site-packages" / "dep.py")
+    _write(tmp_path / "__pycache__" / "cached.py")
+    _write(tmp_path / "build" / "lib" / "generated.py")
+    _write(tmp_path / "node_modules" / "vendored.py")
+    _write(tmp_path / "lemmapy.egg-info" / "stale.py")
+    assert [p.name for p in _difftest_targets([tmp_path])] == ["task.py"]
+
+
 def test_explicit_files_pass_through_in_order(tmp_path):
     a = _write(tmp_path / "a.py")
     b = _write(tmp_path / "b.py")
     assert _difftest_targets([b, a]) == [b, a]
+
+
+def test_naming_a_pruned_file_still_sweeps_it(tmp_path):
+    # Pruning is about what a DIRECTORY expands to. Naming a file is the
+    # intent, so it must not be silently dropped for where it lives.
+    dep = _write(tmp_path / "build" / "generated.py")
+    assert _difftest_targets([dep]) == [dep]
 
 
 # -- a sweep that stopped testing must not look like a sweep that passed -----
@@ -103,6 +125,35 @@ def test_report_carries_the_reproducer(tmp_path, monkeypatch):
         "args": "(1, -2)", "python": "-1", "dafny": "1"}
 
 
+def test_unwritable_report_does_not_swallow_the_verdict(
+        tmp_path, capsys, monkeypatch):
+    # A --report path that cannot be written used to raise straight out of
+    # the command. The sweep's whole result went with it, and an uncaught
+    # exception exits 1 — the code that means DIVERGENCE — so a bad path on
+    # a clean corpus would have been read as an encoder bug.
+    src = _write(tmp_path / "a.py")
+    _stub(monkeypatch, lambda n: [FunctionDiff("f", n)])
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where a directory would have to be\n")
+    assert cmd_difftest([src], tmp_path / "out", 10,
+                        report=blocker / "report.json") == 2
+    err = capsys.readouterr().err
+    assert "could not write the difftest report" in err
+    # and it is not green either: the record the nightly uploads never landed.
+
+
+def test_divergence_survives_an_unwritable_report(tmp_path, monkeypatch):
+    # The divergence is the finding; a failed report write must not reclassify
+    # it as mere trouble.
+    src = _write(tmp_path / "a.py")
+    _stub(monkeypatch, lambda n: [FunctionDiff(
+        "f", n, mismatch=Mismatch(args=(1,), python_result=0, dafny_result=1))])
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory\n")
+    assert cmd_difftest([src], tmp_path / "out", 10,
+                        report=blocker / "report.json") == 1
+
+
 def test_divergence_beats_the_coverage_floor(tmp_path, monkeypatch):
     # A run that both diverged AND compared too little must report the
     # divergence (exit 1), not hide it behind the coverage complaint.
@@ -145,3 +196,42 @@ def test_nightly_floor_has_not_been_defanged():
         f"nightly --min-functions {floor} covers under half of the {tasks} "
         f"corpus task(s); raise it or the sweep can silently stop testing "
         f"most of the corpus while still passing")
+
+
+def _run_script_lines(text: str):
+    """Yield (line number, line) for every line inside a `run:` block.
+
+    GitHub substitutes `${{ }}` into the script TEXT before any shell exists,
+    so an expression there is not an argument — it is source code. Reading the
+    blocks off the indentation is enough to tell script from surrounding YAML
+    without a YAML parser (there is none in the dev deps).
+    """
+    indent: int | None = None
+    for number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        here = len(line) - len(line.lstrip())
+        if indent is not None:
+            if stripped and here <= indent:
+                indent = None       # dedented back out of the script
+            else:
+                yield number, line
+                continue
+        if stripped.startswith("run:"):
+            indent = here
+            yield number, line
+
+
+def test_no_workflow_interpolates_an_expression_into_a_shell_script():
+    # The sweep takes an `examples` count from workflow_dispatch. Interpolated
+    # into `run:` it is whatever the person dispatching typed, pasted into the
+    # script before the shell parses it; through `env:` it is one string that
+    # argparse either accepts as an int or rejects.
+    offenders = [
+        f"{path.name}:{number}: {line.strip()}"
+        for path in sorted((REPO / ".github" / "workflows").glob("*.yml"))
+        for number, line in _run_script_lines(path.read_text())
+        if "${{" in line and not line.lstrip().startswith("#")
+    ]
+    assert not offenders, (
+        "workflow expression substituted into a shell script — pass it via "
+        "`env:` and reference \"$VAR\" instead:\n  " + "\n  ".join(offenders))

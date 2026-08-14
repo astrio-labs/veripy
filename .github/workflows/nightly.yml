@@ -61,10 +61,18 @@ jobs:
       # the grammar-contact corpus, whose files are deliberately outside the
       # fragment; a nightly red every night for a documented rejection would
       # train everyone to ignore this job.
+      # The dispatch input reaches the shell through `env`, never through
+      # `${{ }}` inside `run`: an expression is substituted into the script
+      # text before a shell exists, so whatever the box contained would be
+      # run as commands. As an env value it is just a string, and "$EXAMPLES"
+      # arrives at argparse as one argument that either parses as an int or
+      # fails there.
       - name: Long differential sweep over the corpus
+        env:
+          EXAMPLES: ${{ github.event.inputs.examples || 5000 }}
         run: |
           lemmapy difftest benchmark/tasks \
-            -n "${{ github.event.inputs.examples || 5000 }}" \
+            -n "$EXAMPLES" \
             -o build/nightly \
             --report build/nightly/difftest-report.json \
             --min-functions 14
