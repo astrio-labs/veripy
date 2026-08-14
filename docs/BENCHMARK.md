@@ -92,6 +92,9 @@ Two properties fall out of this design that no static benchmark has:
    golden                   26/39 (67%)    13      —
    ```
 
+   *(Both figures predate the operand-replacement family; the golden
+   baseline on the current panel is 34/47 = 72%.)*
+
    All twelve tautologies clear the type gate, the runtime-contract hunt,
    the encoder, and the SMT prover — *every automated check the toolchain
    has* — and the panel scores them at zero.
@@ -111,6 +114,39 @@ Two properties fall out of this design that no static benchmark has:
    its single mutant is caught only by a crash. That is exactly the kind of
    gap the rung exists to surface, and it was invisible while crashes
    counted.
+
+### Operator families, and why operand replacement had to exist
+
+The panel's original five families all perturb an **operator** (comparison
+swaps, `+`/`-`, integer ±1, `min`/`max`, `and`/`or`). None perturbs an
+**operand** — so a specification that never says *which input the result
+depends on* scored full marks.
+
+`clamp` was the corpus's own counterexample. Its spec used to read
+`ensures result == x or result == lo or result == hi`, which is satisfied
+by `return lo` — a clamp that ignores its input entirely. On the old panel
+that spec scored **2/2 (100%)**, indistinguishable from one that determines
+the function.
+
+Adding **operand replacement** (swap a parameter read for another
+parameter of the *same declared type* — always in scope and type-compatible,
+so the mutant is a genuine wrong-variable bug rather than a `NameError` or
+`TypeError` the interpreter would catch) separates them:
+
+```
+clamp spec                                    refuted
+"result is one of x, lo, hi"  (old golden)     4/8  (50%)
+case-split spec that DETERMINES the function   8/8  (100%)
+```
+
+The corpus's own `clamp` spec was strengthened as a result — a golden task
+is supposed to be the answer key. Panel totals went 40 → 47 mutants, median
+2.5 → 3.5 per task, and the cap rose to 12.
+
+**The cap is applied round-robin across families, not by position.** A
+positional cap makes the panel a *line-prefix* of the function: `is_prime`
+hit the old cap exactly, so its panel silently became "the first 8 sites in
+line order" and the back half of the function went unprobed.
 
 ## Backend policy (and the "ultimate benchmark" question)
 

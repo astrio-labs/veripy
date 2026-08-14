@@ -391,7 +391,7 @@ def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
     kwargs = dict(mutant_cap=mutant_cap, hunt_timeout=5,
                   dafny_time_limit=60, difftest_examples=60)
     if quick:
-        kwargs.update(mutant_cap=min(mutant_cap, 3), difftest_examples=20)
+        kwargs.update(mutant_cap=min(mutant_cap, 4), difftest_examples=20)
     scores = run_benchmark(tasks, outdir, **kwargs)
     if not scores:
         print(f"no tasks found under {tasks}", file=sys.stderr)
@@ -562,7 +562,7 @@ def main(argv: list[str] | None = None) -> int:
     p_benchmark.add_argument("--tasks", type=Path, default=Path("benchmark/tasks"))
     p_benchmark.add_argument("-o", "--outdir", type=Path, default=Path("build/benchmark"))
     p_benchmark.add_argument("--report", type=Path, default=None)
-    p_benchmark.add_argument("--mutant-cap", type=int, default=8)
+    p_benchmark.add_argument("--mutant-cap", type=int, default=12)
     p_benchmark.add_argument(
         "--exam", choices=["proof-repair", "spec-writing"], default=None,
         help="run an exam instead of the ladder: 'proof-repair' strips the "
@@ -606,7 +606,7 @@ def main(argv: list[str] | None = None) -> int:
     p_experiment.add_argument("--retries", type=int, default=2,
                               help="with --exam spec-writing: retries for a "
                                    "mechanically invalid answer")
-    p_experiment.add_argument("--mutant-cap", type=int, default=8)
+    p_experiment.add_argument("--mutant-cap", type=int, default=12)
     p_experiment.add_argument("--trials", type=int, default=3)
     p_experiment.add_argument("--ledger", type=Path, default=None,
                               help="JSONL ledger path (default: <outdir>/ledger.jsonl)")

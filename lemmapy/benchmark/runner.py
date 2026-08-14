@@ -129,7 +129,7 @@ def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int) -> 
 def run_task(
     task_dir: Path,
     workdir: Path,
-    mutant_cap: int = 8,
+    mutant_cap: int = 12,
     hunt_timeout: int = 5,
     dafny_time_limit: int = 60,
     difftest_examples: int = 60,

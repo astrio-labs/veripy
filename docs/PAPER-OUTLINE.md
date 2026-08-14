@@ -38,7 +38,8 @@ The hook is the measured anti-gaming result, stated early:
 > twelve tautologies clear the type gate, the runtime-contract hunt, the
 > encoder, and the SMT prover — every automated check the toolchain has.
 > The mutant panel scores them **0/39**, against **26/39** for the
-> hand-written specifications.
+> hand-written specifications (both on the pre-operand panel; the current
+> panel puts golden at 34/47).
 
 That is the paper in one experiment: *passing a verifier says nothing about
 whether the property proved was worth proving.*
@@ -71,8 +72,8 @@ no RNG) and why determinism is what makes cross-condition comparison legal.
 Adjudication protocol for equivalent mutants (raw *and* adjudicated rates
 reported).
 
-⬛ Golden baseline: 12 tasks, 12/12 full ladder, **26/39 mutants refuted
-(67%)**, 13 crashed and not credited. `lemmapy benchmark`
+⬛ Golden baseline: 12 tasks, 12/12 full ladder, **34/47 mutants refuted
+(72%)**, 13 crashed and not credited. `lemmapy benchmark`
 
 ### 4. Derived exams (~1.5pp)
 - **Proof-repair**: strip `.proofs.dfy`, restore R4 under frozen specs.
@@ -113,22 +114,37 @@ The section reviewers will remember. Everything here is already recorded.
 - ⬛ **Probe discipline.** Tool denial verified by a live probe with an
   unguessable token file — a first probe against `/etc/hosts` was itself
   invalid, since the model can recite that file from world knowledge.
-- ⬛ **Three harness defects found by live smoke runs**, each of which
-  would have corrupted a headline number silently:
-  1. *Warnings-as-errors poisoned the verdict.* Dafny exits non-zero on a
-     style warning after "N verified, 0 errors" → `failed` with **zero**
-     failure records, a payload no repair loop can act on.
-  2. *A whitelist false positive.* `decreases |s|` before a body brace
-     tripped the spec-literal rule; every engine writing idiomatic Dafny
-     would burn an iteration on a spurious rejection.
-  3. *A silent comparability break.* Equivalent-mutant descriptions keyed
-     to golden line numbers were translated with a stripped-indexed map;
-     the lookup fell through, the exclusion missed, and engine spec
-     strength was biased **downward** on every adjudicated task.
+- ⬛ **Eight harness defects, each of which would have silently corrupted a
+  headline number.** None was caught by the test suite; each was found by
+  a live smoke run or an adversarial arm. This table is the section.
 
-  Lesson, generalized: *validate the harness with positive AND negative
-  probes before trusting either a good or a bad score*, and re-derive every
-  reported number from a recorded command.
+  | # | Defect | Silent effect on the number |
+  |---|---|---|
+  | 1 | Kill rate credited **crashes** as refutations (CrossHair exits non-zero for both) | Tautology floor was **38%, not 0%**; on two tasks a tautology was *indistinguishable from golden* |
+  | 2 | A spec refuted at R1 short-circuits before the panel, contributing 0/0 | Writing a **false** spec outscored writing a weak one — failure was profitable |
+  | 3 | Dafny's warnings-as-errors overrode "N verified, 0 errors" | `failed` with **zero** failure records — a payload no repair loop can act on |
+  | 4 | Whitelist rejected `decreases \|s\|` before a body brace | Every engine writing idiomatic Dafny burned an iteration on a spurious rejection |
+  | 5 | Equivalent-mutant map composed in the wrong coordinate system | Exclusion missed; engine strength biased **downward** on every adjudicated task |
+  | 6 | Mutant identity keyed by line only, not (line, column) | One adjudication could silently retire **two** distinct faults |
+  | 7 | Panel had no **operand**-replacement family, only operator families | A spec that never says which input the result depends on scored 100%; `clamp`'s golden spec — satisfied by `return lo` — was indistinguishable from one that determines the function |
+  | 8 | The `max_mutants` cap truncated by position | The panel became a *line-prefix* of the function; `is_prime` hit the cap exactly, so its back half went unprobed |
+
+  Defects 1 and 2 are the interesting ones, because they are *scoring*
+  bugs rather than plumbing bugs: the harness ran, produced plausible
+  numbers, and those numbers were wrong in a direction that flattered the
+  system. Both were found by an adversarial arm that *should* score zero —
+  which is the generalizable recommendation.
+
+  **Three protocol rules we would give anyone building one of these:**
+  1. *Run a trivial-spec arm and publish its score.* A metric whose floor
+     is unmeasured is uninterpretable; ours was 38% and looked fine.
+  2. *Make the denominator independent of the system under test.* Anything
+     that lets a subject drop a task from its own denominator rewards
+     failing.
+  3. *Validate with positive AND negative probes.* A good score and a bad
+     score are equally suspect until the harness is instrumented — we
+     produced one false-perfect (answer-key retrieval) and one false-zero
+     (a swallowed prompt) before either real number existed.
 
 ### 6. Results (~2pp)
 | Table | Content | Status |
