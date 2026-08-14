@@ -64,7 +64,7 @@ def test_errored_mutant_analysis_blocks_the_rung(tmp_path, monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_hunt(source, name, workdir, timeout):
+    def fake_hunt(source, name, workdir, timeout, wall=None):
         calls["n"] += 1
         if calls["n"] == 1:
             return "clean", ""  # R1 on the original passes
@@ -97,7 +97,7 @@ def test_mixed_survivor_and_error_panel_reports_error(tmp_path, monkeypatch):
 
     verdicts = iter(["clean", "counterexample", "clean", "error-sentinel"])
 
-    def fake_hunt(source, name, workdir, timeout):
+    def fake_hunt(source, name, workdir, timeout, wall=None):
         v = next(verdicts, "error-sentinel")
         if v == "error-sentinel":
             return runner_mod.ERROR, "crosshair exited 2"
@@ -110,6 +110,38 @@ def test_mixed_survivor_and_error_panel_reports_error(tmp_path, monkeypatch):
     mutants = next(r for r in score.rungs if r.name == "mutants")
     assert mutants.status == runner_mod.ERROR
     assert "survivor" in mutants.detail and "analysis error" in mutants.detail
+
+
+def test_timeout_mutants_count_as_labeled_kills(tmp_path, monkeypatch):
+    # A diverging mutant exhausts the hunt wall: standard mutation-testing
+    # practice counts that as a kill (and R4 proves termination), labeled
+    # distinctly so the panel stays auditable.
+    from lemmapy.benchmark import runner as runner_mod
+
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(
+        "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    )
+    (task_dir / "meta.json").write_text('{"id": "t"}')
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "clean", ""  # R1 on the original
+        if calls["n"] == 2:
+            return "timeout", "hunt wall exceeded"
+        return "counterexample", ""
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=4)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == "pass"
+    assert "by timeout" in mutants.detail
+    assert score.mutants_killed == score.mutants_total
 
 
 def test_report_shows_err_not_ratio_for_incomplete_panel():
@@ -167,23 +199,28 @@ def test_run_benchmark_survives_task_staging_failure(tmp_path):
     assert scores[0].height == 0
 
 
-def test_hunt_subprocess_exception_degrades_to_error(tmp_path, monkeypatch):
-    # A stuck CrossHair must not abort the whole run before the scorecard.
+def test_hunt_subprocess_exceptions_have_distinct_verdicts(tmp_path, monkeypatch):
+    # Neither a stuck nor an unlaunchable CrossHair may abort the run:
+    # wall exhaustion is its own verdict (a diverging mutant is a kill),
+    # launch failure stays an analysis error.
     import subprocess as sp
 
     from lemmapy.benchmark import runner as runner_mod
 
-    def raising_run(cmd, **kwargs):
-        raise sp.TimeoutExpired(cmd, 1)
-
-    monkeypatch.setattr(runner_mod.subprocess, "run", raising_run)
+    src = "#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n"
     monkeypatch.setattr(runner_mod, "_find_crosshair", lambda: "crosshair")
-    verdict, detail = runner_mod._hunt(
-        "#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n",
-        "t", tmp_path, per_condition_timeout=1,
-    )
+
+    monkeypatch.setattr(runner_mod.subprocess, "run",
+                        lambda cmd, **kw: (_ for _ in ()).throw(sp.TimeoutExpired(cmd, 1)))
+    verdict, detail = runner_mod._hunt(src, "t", tmp_path, per_condition_timeout=1)
+    assert verdict == "timeout"
+    assert "wall exceeded" in detail
+
+    monkeypatch.setattr(runner_mod.subprocess, "run",
+                        lambda cmd, **kw: (_ for _ in ()).throw(OSError("boom")))
+    verdict, detail = runner_mod._hunt(src, "t2", tmp_path, per_condition_timeout=1)
     assert verdict == runner_mod.ERROR
-    assert "TimeoutExpired" in detail
+    assert "OSError" in detail
 
 
 def _full_stack_available() -> bool:

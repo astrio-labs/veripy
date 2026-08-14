@@ -75,9 +75,10 @@ def _find_crosshair() -> str | None:
     return str(candidate) if candidate.exists() else None
 
 
-def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int) -> tuple[str, str]:
+def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int,
+          wall: int | None = None) -> tuple[str, str]:
     """Emit runtime contracts and let CrossHair hunt. Returns (verdict, detail)
-    with verdict one of: 'clean', 'counterexample', 'error'."""
+    with verdict one of: 'clean', 'counterexample', 'timeout', 'error'."""
     exe = _find_crosshair()
     if exe is None:
         return ERROR, "crosshair not installed"
@@ -96,11 +97,17 @@ def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int) -> 
         proc = subprocess.run(
             [exe, "check", str(checked), "--analysis_kind", "icontract",
              "--per_condition_timeout", str(per_condition_timeout)],
-            capture_output=True, text=True, timeout=per_condition_timeout * 40 + 120,
+            capture_output=True, text=True,
+            timeout=wall if wall is not None else per_condition_timeout * 40 + 120,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        # One stuck or unlaunchable analysis must degrade to a per-item
-        # ERROR, never abort the whole benchmark run mid-scorecard.
+    except subprocess.TimeoutExpired:
+        # A hunt that exhausts its wall is its own verdict: for mutants a
+        # diverging loop is the common cause, and divergence is a behavior
+        # change (this toolchain proves termination at R4).
+        return "timeout", "hunt wall exceeded (nonterminating mutant?)"
+    except OSError as exc:
+        # An unlaunchable analysis must degrade to a per-item ERROR,
+        # never abort the whole benchmark run mid-scorecard.
         return ERROR, f"crosshair failed to run: {type(exc).__name__}"
     if proc.returncode == 0:
         return "clean", ""
@@ -157,10 +164,21 @@ def run_task(
     score.adjudicated = sum(1 for d, _ in mutants if d in equivalents)
     mutants = [(d, m) for d, m in mutants if d not in equivalents]
     score.mutants_total = len(mutants)
+    timeout_kills = 0
     for i, (description, mutated) in enumerate(mutants):
-        verdict, _ = _hunt(mutated, f"{task_id}_m{i}", workdir / "mutants", hunt_timeout)
+        # Mutants get a tighter wall than the original: a diverging mutant
+        # would otherwise stall the panel for the full default wall.
+        verdict, _ = _hunt(mutated, f"{task_id}_m{i}", workdir / "mutants",
+                           hunt_timeout, wall=hunt_timeout * 12 + 60)
         if verdict == "counterexample":
             score.mutants_killed += 1
+        elif verdict == "timeout":
+            # Standard mutation-testing practice: budget exhaustion is a
+            # kill (the mutant observably diverged from the spec'd,
+            # termination-proven behavior) — labeled distinctly below so
+            # panels stay auditable.
+            score.mutants_killed += 1
+            timeout_kills += 1
         elif verdict == "clean":
             score.survivors.append(description)
         # errors excluded from both counts
@@ -185,7 +203,10 @@ def run_task(
             f"survivors: {'; '.join(score.survivors[:3])}",
         ))
     else:
-        score.rungs.append(Rung("mutants", PASS, f"{score.mutants_killed}/{score.mutants_total} killed"))
+        by_timeout = f" ({timeout_kills} by timeout)" if timeout_kills else ""
+        score.rungs.append(Rung(
+            "mutants", PASS,
+            f"{score.mutants_killed}/{score.mutants_total} killed{by_timeout}"))
 
     # R3: encode
     try:

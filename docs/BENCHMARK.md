@@ -1,6 +1,6 @@
 # lemmapy-benchmark
 
-> **Status: v0 — runner and 12-task seed corpus shipped.** `lemmapy benchmark`
+> **Status: v0 — runner and 14-task seed corpus shipped.** `lemmapy benchmark`
 > runs it; the scorecard below regenerates with `--report`.
 
 ## Why not a skeleton-completion benchmark
@@ -72,11 +72,11 @@ benchmark/tasks/<id>/
   meta.json         # {id, origin, license}
 ```
 
-Seed corpus: 12 tasks (9 adapted from HumanEval, MIT; 3 project-original),
+Seed corpus: 14 tasks (11 adapted from HumanEval, MIT; 3 project-original),
 every one at full ladder height as the golden baseline. Growth is free:
 each fragment slice makes more of the 20-task contact corpus (and the 65%
 of HumanEval that surveys in-fragment) eligible — slice 6 (`sum()`/genexp
-folds) admitted `below_zero` and `sum_squares`.
+folds) admitted `below_zero` and `sum_squares`; slice 7 (`**` -> `PyPow`) admitted `modp` (whose mod/pow lemma sidecar joins the proof-repair exam roster) and, verified as-is, `triples_sum_to_zero`.
 
 ## Seed baseline (August 2026)
 
@@ -95,10 +95,13 @@ intersperse            pass  pass  3/3      pass    pass   pass      6/6
 is_palindrome          pass  pass  4/4      pass    pass   pass      6/6
 is_prime               pass  pass  7/7      pass    pass   pass      6/6
 max_element            pass  pass  1/1      pass    pass   pass      6/6
+modp                   pass  pass  6/6      pass    pass   pass      6/6
 rolling_max            pass  pass  5/5      pass    pass   pass      6/6
 sum_squares            pass  pass  6/6      pass    pass   pass      6/6
+triples_sum_to_zero    pass  pass  8/8      pass    pass   pass      6/6
 
-tasks: 12   full-ladder: 12   spec strength: 42/42 killed (+1 adjudicated)
+tasks: 14   full-ladder: 14   spec strength: 56/56 killed (+1 adjudicated;
+modp's panel includes 1 timeout kill — the diverging `+` -> `-` loop mutant)
 ```
 
 The benchmark's first run also exercised its adjudication path: the raw run
@@ -108,6 +111,14 @@ it changes which of several equal elements is picked, unobservable in the
 result). It is recorded in the task's `meta.json` under
 `equivalent_mutants` and excluded from the panel, visibly counted in the
 report. Survivors are guilty until adjudicated, never silently dropped.
+
+A mutant whose hunt exhausts its wall (the common cause: a diverging loop,
+e.g. `i += 1` → `i -= 1` in `modp`) counts as **killed by timeout** —
+standard mutation-testing practice, doubly justified here because R4
+proves termination, so divergence is a behavior change by construction.
+Timeout kills are labeled distinctly in the rung detail (`k/N killed
+(m by timeout)`) so panels stay auditable; a launch failure remains an
+analysis ERROR that blocks the rung.
 
 ## Scoring and reproducibility
 
