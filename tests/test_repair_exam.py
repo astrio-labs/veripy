@@ -250,6 +250,31 @@ def test_strip_proof_clauses_removes_only_proof_clauses():
     assert "return x  # @ proof not a clause" in out
 
 
+def test_strip_agrees_with_the_parser_on_what_a_proof_clause_is():
+    # The parser splits on whitespace after `#@`, so all three spellings are
+    # proof clauses. A prefix match on "#@ proof" leaves the other two behind
+    # naming lemmas the stripped file no longer has, the encoder rejects it,
+    # and the screen reports `inconclusive` for a task it could have judged.
+    src = ("#@ ensures result == x\n"
+           "def f(x: int) -> int:\n"
+           "    #@proof Obvious(x)\n"
+           "    #@  proof Obvious(x)\n"
+           "    #@\tproof Obvious(x)\n"
+           "    y = x  #@ proof Obvious(x)\n"
+           '    """\n'
+           "    #@ proof NotAClause(x)\n"
+           '    """\n'
+           "    return y\n")
+    out = strip_proof_clauses(src)
+    from lemmapy.frontend.extract import parse_source
+    assert not [c for s in parse_source(out).functions
+                for c in s.clauses if c.kind == "proof"]
+    # A clause trailing real code loses the comment, not the statement; text
+    # inside a string literal is not a clause and must survive untouched.
+    assert "    y = x\n" in out
+    assert "    #@ proof NotAClause(x)\n" in out
+
+
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_screen_calls_a_vacuous_pack_vacuous(tmp_path):
     # Z3 proves `result == x` unaided, so the pack does nothing. This is the
@@ -301,6 +326,18 @@ def test_screen_report_renders_the_failing_verdicts(tmp_path):
     # The harness fell over. Not a verdict about the task.
     ({"status": "tool-error", "failures": [], "error": "dafny not found"},
      "inconclusive"),
+    # `resolution` is in PROVER_KINDS but means the sidecar did not
+    # typecheck, so the proof was never attempted. Crediting it would be
+    # this screen's own bug one level down: adoptable on no evidence.
+    ({"status": "failed",
+      "failures": [{"kind": "resolution",
+                    "message": "unresolved identifier: Obvious"}]},
+     "inconclusive"),
+    # ...but a real obligation alongside it still carries the verdict.
+    ({"status": "failed",
+      "failures": [{"kind": "resolution", "message": "unresolved identifier"},
+                   {"kind": "postcondition", "message": "might not hold"}]},
+     "load-bearing"),
     ({"status": "ok", "failures": []}, "vacuous"),
     ({"status": "failed",
       "failures": [{"kind": "postcondition", "message": "might not hold"}]},
@@ -318,6 +355,9 @@ def test_screen_verdict_table(stripped, expected, tmp_path, monkeypatch):
     monkeypatch.setattr("lemmapy.agentio.verify_structured", fake_verify)
     result = screen_sidecar(_task(tmp_path, "t", TRIVIAL, OBVIOUS))
     assert result.verdict == expected, result.detail
+    # Whatever the verdict, the recorded evidence never includes a kind that
+    # establishes nothing about provability.
+    assert "resolution" not in result.prover_kinds
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")

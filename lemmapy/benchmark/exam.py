@@ -48,6 +48,15 @@ def exam_tasks(tasks_root: Path) -> list[Path]:
     )
 
 
+# In PROVER_KINDS, but NOT evidence that an obligation went undischarged.
+# `resolution` means the sidecar did not typecheck, so — by its own entry in
+# lemmapy/failures.py — the proof was never attempted. Reading it as "the
+# prover needed the pack" would repeat this screen's original bug one level
+# down: a load-bearing verdict drawn from a run that observed nothing about
+# provability. The honest verdict for it is `inconclusive`.
+NON_EVIDENCE_KINDS = frozenset({"resolution"})
+
+
 @dataclass
 class ScreenResult:
     """Whether a task's proof pack is LOAD-BEARING — i.e. whether an exam
@@ -66,9 +75,31 @@ class ScreenResult:
 
 def strip_proof_clauses(source: str) -> str:
     """Remove every `#@ proof` clause. The exam keeps them (the engine must
-    define exactly the lemmas they name); the SCREEN must not."""
-    return "".join(line for line in source.splitlines(keepends=True)
-                   if not line.lstrip().startswith("#@ proof"))
+    define exactly the lemmas they name); the SCREEN must not.
+
+    Which lines are clauses is asked of the spec tokenizer, not of a prefix
+    match: the parser splits on whitespace after `#@`, so `#@proof L()` and
+    `#@  proof L()` are clauses too, and a prefix match that misses one
+    leaves it naming a lemma the stripped file no longer has — the encoder
+    then rejects the file and the screen reports `inconclusive` for a task
+    it could have judged. In the other direction a line-based match deletes
+    `#@ proof`-looking text inside a docstring, changing source the screen
+    is supposed to leave alone.
+
+    A clause trailing real code (`y = x  #@ proof L()`) loses the comment
+    only; deleting its line would delete the statement.
+    """
+    from ..frontend.extract import spec_comment_sites
+
+    sites = spec_comment_sites(source, "proof")
+    kept: list[str] = []
+    for n, line in enumerate(source.splitlines(keepends=True), 1):
+        col = sites.get(n)
+        if col is None:
+            kept.append(line)
+        elif line[:col].strip():
+            kept.append(line[:col].rstrip() + line[len(line.rstrip("\r\n")):])
+    return "".join(kept)
 
 
 def screen_sidecar(task_dir: Path, time_limit: int = 60) -> ScreenResult:
@@ -126,16 +157,20 @@ def screen_sidecar(task_dir: Path, time_limit: int = 60) -> ScreenResult:
             "nothing, and the pack is dead weight", status)
     kinds = sorted({f.get("kind") for f in (bare.get("failures") or [])
                     if f.get("kind") in PROVER_KINDS})
-    if status != "failed" or not kinds:
+    evidence = [k for k in kinds if k not in NON_EVIDENCE_KINDS]
+    if status != "failed" or not evidence:
+        # Name the kinds when there were any: `failed` + `resolution` reads
+        # nothing like `encode-error`, and the reader has to know which.
+        observed = ", ".join(kinds) or status
         return ScreenResult(
             task_id, "inconclusive",
             f"stripping the pack left the file un-provable for a NON-proof "
-            f"reason ({status}); the screen observed nothing about "
+            f"reason ({observed}); the screen observed nothing about "
             f"provability", status)
     return ScreenResult(
         task_id, "load-bearing",
-        f"without the pack the prover reports {', '.join(kinds)}",
-        status, kinds)
+        f"without the pack the prover reports {', '.join(evidence)}",
+        status, evidence)
 
 
 def render_screen_report(results: list[ScreenResult]) -> str:
