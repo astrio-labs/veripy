@@ -421,6 +421,15 @@ class Server:
         finally:
             self._provers.release()
         diagnostics, view = proof_view(payload)
+        # The check and the SEND are one step. Releasing the lock in between
+        # left a window an edit could land in: the sequence said current, the
+        # edit then bumped it, and the verdict went out anyway — describing
+        # text the user had already changed. The cache would drop it a moment
+        # later on the digest check, but a reply cannot be taken back.
+        #
+        # `_send` takes `_write` inside `_state`, which is the order every
+        # other path uses (`_publish` reads state, then notifies), so nesting
+        # them here cannot invert against anything.
         with self._state:
             if self._latest.get(uri) != seq:
                 # Overtaken while the prover ran. The verdict is real but it
@@ -435,16 +444,17 @@ class Server:
                     "status": payload.get("status"),
                 }
                 stale = False
+                self._reply(msg_id, {
+                    "status": payload.get("status"),
+                    "toolchain": payload.get("toolchain"),
+                    "functions": [{"name": n, "proof": p}
+                                  for n, p in view.items()],
+                    "diagnostics": diagnostics,
+                    "error": payload.get("error"),
+                })
         if stale:
             self._content_modified(msg_id, uri)
             return
-        self._reply(msg_id, {
-            "status": payload.get("status"),
-            "toolchain": payload.get("toolchain"),
-            "functions": [{"name": n, "proof": p} for n, p in view.items()],
-            "diagnostics": diagnostics,
-            "error": payload.get("error"),
-        })
         self._publish(uri)
 
     # -- dispatch -------------------------------------------------------------

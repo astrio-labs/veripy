@@ -658,3 +658,46 @@ def test_the_server_refuses_rather_than_queueing_unboundedly(monkeypatch):
     release.set()
     for w in server._workers:
         w.join(timeout=5)
+
+
+def test_an_edit_cannot_land_between_the_check_and_the_reply(monkeypatch):
+    # Superseding on `didChange` closed the case where the edit precedes the
+    # worker's final check. It left a window AFTER it: check says current,
+    # lock released, edit arrives, verdict goes out anyway. The cache drops
+    # it a moment later on the digest check, but a reply cannot be taken
+    # back. The check and the send have to be one step.
+    import threading
+
+    order = []
+    uri = "file:///m.py"
+    monkeypatch.setattr("lemmapy.lsp.prove",
+                        lambda text, filename, time_limit=20:
+                        _proof_payload("ok", ["bump"]))
+    server = Server(io.BytesIO(), io.BytesIO())
+    server.documents[uri] = GOOD
+    original_reply = Server._reply
+
+    def hooked_reply(self, msg_id, result):
+        # An edit arriving exactly in the window, from the read loop's side.
+        edit = threading.Thread(target=lambda: (
+            self.handle({"jsonrpc": "2.0", "method": "textDocument/didChange",
+                         "params": {"textDocument": {"uri": uri},
+                                    "contentChanges": [{"text": GOOD + "\n#e\n"}]}}),
+            order.append("edit")))
+        edit.start()
+        edits.append(edit)
+        edit.join(timeout=0.5)  # must NOT get through: the reply holds _state
+        original_reply(self, msg_id, result)
+        order.append("reply")
+
+    edits: list = []
+    monkeypatch.setattr(Server, "_reply", hooked_reply)
+    server.handle({"jsonrpc": "2.0", "id": 1, "method": "lemmapy/verify",
+                   "params": {"textDocument": {"uri": uri}}})
+    for w in server._workers:
+        w.join(timeout=5)
+    for e in edits:  # the edit lands once the worker releases the lock
+        e.join(timeout=5)
+    assert order == ["reply", "edit"], (
+        "an edit completed between the sequence check and the reply, so the "
+        "client was sent a verdict for text it had already changed")
