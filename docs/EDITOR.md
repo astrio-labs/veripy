@@ -67,11 +67,26 @@ Runs the real prover over the current buffer.
   legal LSP.
 - `timeLimit` is clamped to 1–300 seconds. A client typo cannot park a
   prover for the session.
+- **The newest request for a document wins.** A request still in flight
+  when a later one arrives for the same document is *superseded*: it is
+  answered with `-32801 ContentModified` and never writes the proof cache.
+  Answered, because a client blocked on an id nobody replies to waits
+  forever; superseded, because it was decided by completion order what the
+  cache holds — a stale timeout could replace a newer success, and a
+  result for text the user has since changed is cached and then discarded
+  as stale, taking the current verdict with it. A client that gets
+  `-32801` should use the reply to the newer request, not re-ask.
+- **One prover at a time.** Requests queue; nothing upstream throttles
+  them, and a save hook or a held-down keybinding would otherwise mean one
+  Dafny process per event. A burst on one document collapses to a single
+  run, since everything but the newest is superseded at the head of the
+  queue, before a process is started.
 - The buffer does not need to be saved. It is staged to a temp directory
   under its own stem, together with the on-disk `<stem>.proofs.dfy` if one
   exists — without that, every `#@ proof` clause would come back as
   `unknown lemma`, a rejection manufactured by the staging rather than a
-  fact about the code.
+  fact about the code. A sidecar that exists but cannot be copied is a
+  `tool-error` naming it, never that manufactured rejection.
 - `exit` waits (bounded) for an in-flight proof, so its reply is delivered
   rather than dropped.
 

@@ -2,6 +2,7 @@
 
 import io
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -28,17 +29,21 @@ def _frame(payload: dict) -> bytes:
     return f"Content-Length: {len(body)}\r\n\r\n".encode() + body
 
 
-def _run(messages: list[dict]) -> list[dict]:
-    stdin = io.BytesIO(b"".join(_frame(m) for m in messages))
-    stdout = io.BytesIO()
-    Server(stdin, stdout).serve()
-    out, replies = stdout.getvalue(), []
+def _decode(out: bytes) -> list[dict]:
+    replies = []
     while out:
         header, _, rest = out.partition(b"\r\n\r\n")
         length = int(header.split(b":")[1])
         replies.append(json.loads(rest[:length]))
         out = rest[length:]
     return replies
+
+
+def _run(messages: list[dict]) -> list[dict]:
+    stdin = io.BytesIO(b"".join(_frame(m) for m in messages))
+    stdout = io.BytesIO()
+    Server(stdin, stdout).serve()
+    return _decode(stdout.getvalue())
 
 
 def test_analyze_good_and_bad():
@@ -304,6 +309,83 @@ def test_shutdown_waits_for_an_in_flight_proof(monkeypatch):
     assert [r for r in replies if r.get("id") == 9]
 
 
+def test_completion_order_does_not_decide_the_proof_cache(monkeypatch):
+    # Two verify requests for one document with the OLDER worker finishing
+    # LAST -- the interleaving the pre-prover check cannot catch, because
+    # the older prover was already running when the newer request arrived.
+    # The cache is decided by REQUEST order: a superseded worker writes
+    # nothing. Otherwise its result (pinned to text the user has replaced)
+    # lands, is then discarded as stale, and the newer verdict and its
+    # diagnostics are gone.
+    uri = "file:///m.py"
+    newer = GOOD + "\n# an edit\n"
+    stdout = io.BytesIO()
+    server = Server(io.BytesIO(), stdout)
+    server._provers = threading.Semaphore(2)  # overlap them; the cap would
+    server.documents[uri] = GOOD              # otherwise serialise the two
+
+    def fake_prove(text, filename, time_limit=20):
+        if text != GOOD:
+            return _proof_payload("ok", ["bump"])
+        # Mid-proof, the user edits and re-verifies -- and that request
+        # finishes before this one does.
+        server.documents[uri] = newer
+        server._prove_and_reply(2, uri, newer, "/m.py", 20,
+                                server._claim(uri))
+        return _proof_payload("tool-error", ["bump"],
+                              error="dafny not found on PATH")
+
+    monkeypatch.setattr("lemmapy.lsp.prove", fake_prove)
+    server._prove_and_reply(1, uri, GOOD, "/m.py", 20, server._claim(uri))
+
+    assert server.proofs[uri]["digest"] == digest(newer)
+    assert server.proofs[uri]["status"] == "ok"
+    assert server._proof_for(uri)["functions"] == {"bump": "verified"}
+    # The superseded request is still ANSWERED -- with ContentModified, not
+    # with a verdict about a buffer that no longer exists.
+    replies = _decode(stdout.getvalue())
+    superseded = [r for r in replies if r.get("id") == 1][0]
+    assert superseded["error"]["code"] == -32801
+    assert "superseded" in superseded["error"]["message"]
+
+
+def test_a_burst_on_one_document_does_not_start_a_prover_each(monkeypatch):
+    # A save hook or a held-down keybinding fires verify far faster than
+    # Dafny answers. Requests queue behind the running proof and all but the
+    # newest leave without starting a process of their own.
+    uri = "file:///m.py"
+    release = threading.Event()
+    started = []
+
+    def fake_prove(text, filename, time_limit=20):
+        started.append(text)
+        release.wait(10)
+        return _proof_payload("ok", ["bump"])
+
+    monkeypatch.setattr("lemmapy.lsp.prove", fake_prove)
+    stdout = io.BytesIO()
+    server = Server(io.BytesIO(), stdout)
+    server.handle({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                   "params": {"textDocument": {"uri": uri, "text": GOOD}}})
+    for i in range(1, 6):
+        server.handle({"jsonrpc": "2.0", "id": i, "method": "lemmapy/verify",
+                       "params": {"textDocument": {"uri": uri}}})
+    release.set()
+    for worker in server._workers:
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+
+    # At most two: the one already committed when the burst arrived, plus
+    # the newest request. Never one per keystroke.
+    assert len(started) <= 2
+    replies = _decode(stdout.getvalue())
+    assert {r["id"] for r in replies if "id" in r} == {1, 2, 3, 4, 5}
+    superseded = [r for r in replies
+                  if r.get("error", {}).get("code") == -32801]
+    assert len(superseded) == 4
+    assert server.proofs[uri]["status"] == "ok"  # the newest one answered
+
+
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_prove_stages_the_on_disk_sidecar(tmp_path):
     # A buffer whose `#@ proof` clauses name sidecar lemmas must come back
@@ -326,6 +408,32 @@ def test_prove_without_the_sidecar_is_a_conformance_rejection(tmp_path):
     payload = prove(src.read_text(), str(src), time_limit=60)
     assert payload["status"] == "encode-error"
     assert "unknown lemma" in payload["failures"][0]["message"]
+
+
+def test_an_uncopyable_sidecar_is_a_tool_error_not_a_rejection(tmp_path,
+                                                               monkeypatch):
+    # A sidecar that exists but cannot be read (permissions, a dead symlink,
+    # a vanishing network mount) is an ENVIRONMENT failure. Verifying anyway
+    # would encode against an empty lemma set and hand back `unknown lemma`
+    # -- staging manufacturing a conformance rejection against source that
+    # is perfectly fine.
+    task = REPO / "benchmark" / "tasks" / "gcd"
+    text = (task / "task.py").read_text()
+    src = tmp_path / "gcd.py"
+    src.write_text(text)
+    (tmp_path / "gcd.proofs.dfy").write_text((task / "task.proofs.dfy").read_text())
+
+    def denied(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("lemmapy.lsp.shutil.copyfile", denied)
+    payload = prove(text, str(src), time_limit=5)
+    assert payload["status"] == "tool-error"
+    assert "unreadable proof sidecar" in payload["error"]
+    assert payload["failures"] == []  # nothing is claimed about the code
+    diags, view = proof_view(payload)
+    assert view == {}                 # no function is given a proof status
+    assert diags[0]["severity"] == 3  # information, not an error in the source
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")

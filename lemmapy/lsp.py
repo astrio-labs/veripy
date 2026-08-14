@@ -19,6 +19,11 @@ re-anchored: a proof diagnostic reported against a line the user has since
 edited is worse than no diagnostic, and `functionStatus` says `unknown`
 rather than repeating a verdict the code no longer supports.
 
+For the same reason the newest request for a document always wins: an
+older `lemmapy/verify` still in flight is superseded — answered with
+ContentModified, never allowed to write the cache — however long it takes
+to come back.
+
 The type gate (basedpyright) remains a batch tool.
 """
 
@@ -46,6 +51,18 @@ from .frontend.parse import ModuleSpecs
 # happened to fire. Bounded either way: `exit` must not be hostage to a
 # slow prover.
 _SHUTDOWN_JOIN_S = 60.0
+
+# How many Dafny processes the slow lane may have running at once. Nothing
+# upstream throttles: a save hook or a held-down keybinding can fire
+# `lemmapy/verify` far faster than the prover answers, and each request used
+# to mean another external process. One at a time, with the rest queued
+# behind it (and superseded requests dropped at the gate, see
+# `_prove_and_reply`), makes the editor's load on the machine a constant.
+_MAX_PROVERS = 1
+
+# LSP's ContentModified. Not an error in the user's code and not a verdict:
+# the request was overtaken by a newer one for the same document.
+_CONTENT_MODIFIED = -32801
 
 
 def _diagnostic(line: int, message: str, severity: int = 1) -> dict[str, Any]:
@@ -134,9 +151,11 @@ def prove(text: str, filename: str, time_limit: int = 20) -> dict[str, Any]:
     the staging rather than a fact about the user's code.
 
     Never raises: `verify_structured` turns every expected failure — no
-    prover on PATH included — into a payload.
+    prover on PATH included — into a payload, and the one failure that
+    happens before it is reached (a sidecar that cannot be copied) is
+    turned into one here.
     """
-    from .agentio import verify_structured
+    from .agentio import new_payload, verify_structured
 
     stem = Path(filename).stem or "buffer"
     work = Path(tempfile.mkdtemp(prefix="lsp-prove-"))
@@ -148,8 +167,20 @@ def prove(text: str, filename: str, time_limit: int = 20) -> dict[str, Any]:
         try:
             if sidecar.is_file():
                 shutil.copyfile(sidecar, staged.with_name(f"{stem}.proofs.dfy"))
-        except OSError:
-            pass  # unreadable sidecar: verify_structured reports it as such
+        except OSError as exc:
+            # A sidecar that is there but cannot be copied is an ENVIRONMENT
+            # failure, and it must be said as one. Carrying on would verify
+            # the buffer against an empty lemma set, so every valid `#@
+            # proof` clause would come back `unknown lemma` — the staging
+            # manufacturing a conformance rejection against the user's
+            # source, which is the exact thing staging the sidecar exists to
+            # prevent. `verify_structured` cannot catch this for us: it only
+            # ever sees the staging directory, where the sidecar is simply
+            # absent.
+            payload = new_payload(filename)
+            payload["status"] = "tool-error"
+            payload["error"] = f"unreadable proof sidecar {sidecar}: {exc}"
+            return payload
         payload = verify_structured(staged, work / "out", time_limit=time_limit)
         # Re-point provenance at the user's world. The staging directory is
         # about to be deleted, so reporting paths inside it would hand a
@@ -224,6 +255,18 @@ class Server:
         self.proofs: dict[str, dict[str, Any]] = {}
         self._write = threading.Lock()  # workers and the read loop both send
         self._workers: list[threading.Thread] = []
+        # Proofs finish out of order: a worker started EARLIER can finish
+        # LATER (a longer buffer, a timeout, a queue). `_latest[uri]` is the
+        # sequence number of the newest `lemmapy/verify` for that document,
+        # so the cache is decided by REQUEST order and a superseded worker
+        # writes nothing. Completion order would let a stale timeout or
+        # tool-error replace a newer success, and — because a result for
+        # different text is then discarded as stale — silently erase the
+        # current buffer's verdict and its diagnostics.
+        self._state = threading.Lock()  # guards proofs, _latest, _seq
+        self._seq = 0
+        self._latest: dict[str, int] = {}
+        self._provers = threading.Semaphore(_MAX_PROVERS)
         self.running = True
 
     # -- wire format ----------------------------------------------------------
@@ -269,13 +312,37 @@ class Server:
         an editor that never re-verifies cannot keep showing a verdict for
         code the user has since rewritten.
         """
-        cached = self.proofs.get(uri)
-        if cached is None:
-            return None
-        if cached["digest"] != digest(self.documents.get(uri, "")):
-            self.proofs.pop(uri, None)
-            return None
-        return cached
+        current = digest(self.documents.get(uri, ""))
+        with self._state:
+            cached = self.proofs.get(uri)
+            if cached is None:
+                return None
+            if cached["digest"] != current:
+                self.proofs.pop(uri, None)
+                return None
+            return cached
+
+    def _claim(self, uri: str) -> int:
+        """Register a new proof request for `uri` and supersede its
+        predecessors. Sequence numbers are global and never reused, so a
+        worker for a document that was closed and reopened cannot be
+        mistaken for a current one."""
+        with self._state:
+            self._seq += 1
+            self._latest[uri] = self._seq
+            return self._seq
+
+    def _superseded(self, uri: str, seq: int) -> bool:
+        with self._state:
+            return self._latest.get(uri) != seq
+
+    def _content_modified(self, msg_id: Any, uri: str) -> None:
+        # Answered, not dropped: a client blocked on an id nobody ever
+        # replies to waits forever.
+        self._send({"jsonrpc": "2.0", "id": msg_id,
+                    "error": {"code": _CONTENT_MODIFIED,
+                              "message": "superseded by a newer "
+                                         f"lemmapy/verify for {uri}"}})
 
     def _publish(self, uri: str) -> None:
         text = self.documents.get(uri, "")
@@ -288,16 +355,35 @@ class Server:
                      {"uri": uri, "diagnostics": diagnostics})
 
     def _prove_and_reply(self, msg_id: Any, uri: str, text: str,
-                         filename: str, time_limit: int) -> None:
+                         filename: str, time_limit: int, seq: int) -> None:
         """Worker body: prove the SNAPSHOT taken when the request arrived."""
-        payload = prove(text, filename, time_limit=time_limit)
+        with self._provers:
+            # Re-checked here, holding a prover slot: a burst on one
+            # document queues up behind the running proof and then collapses
+            # — everything but the newest request leaves without ever
+            # starting Dafny.
+            if self._superseded(uri, seq):
+                self._content_modified(msg_id, uri)
+                return
+            payload = prove(text, filename, time_limit=time_limit)
         diagnostics, view = proof_view(payload)
-        self.proofs[uri] = {  # one atomic rebind; no partial state is visible
-            "digest": digest(text),
-            "diagnostics": diagnostics,
-            "functions": view,
-            "status": payload.get("status"),
-        }
+        with self._state:
+            if self._latest.get(uri) != seq:
+                # Overtaken while the prover ran. The verdict is real but it
+                # describes a snapshot the client has moved past, so it is
+                # neither cached nor reported as this document's status.
+                stale = True
+            else:
+                self.proofs[uri] = {  # one atomic rebind; no partial state
+                    "digest": digest(text),
+                    "diagnostics": diagnostics,
+                    "functions": view,
+                    "status": payload.get("status"),
+                }
+                stale = False
+        if stale:
+            self._content_modified(msg_id, uri)
+            return
         self._reply(msg_id, {
             "status": payload.get("status"),
             "toolchain": payload.get("toolchain"),
@@ -339,7 +425,11 @@ class Server:
         elif method == "textDocument/didClose":
             uri = params["textDocument"]["uri"]
             self.documents.pop(uri, None)
-            self.proofs.pop(uri, None)
+            with self._state:
+                self.proofs.pop(uri, None)
+                # Also supersedes anything still in flight for it: a proof
+                # that lands after the close must not resurrect the entry.
+                self._latest.pop(uri, None)
         elif method == "lemmapy/functionStatus":
             uri = params["textDocument"]["uri"]
             text = self.documents.get(uri, "")
@@ -372,9 +462,10 @@ class Server:
             # prover runs; the result is pinned to what was actually proved.
             text = self.documents[uri]
             filename = unquote(urlparse(uri).path) or uri
+            seq = self._claim(uri)
             worker = threading.Thread(
                 target=self._prove_and_reply,
-                args=(msg_id, uri, text, filename, limit), daemon=True)
+                args=(msg_id, uri, text, filename, limit, seq), daemon=True)
             self._workers = [w for w in self._workers if w.is_alive()]
             self._workers.append(worker)
             worker.start()
