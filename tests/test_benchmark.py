@@ -79,6 +79,39 @@ def test_errored_mutant_analysis_blocks_the_rung(tmp_path, monkeypatch):
     assert score.height == 2  # gate + hunt only
 
 
+def test_analysis_error_reason_is_reported(tmp_path, monkeypatch):
+    # "1 analysis error(s)" with no reason is unactionable: a real
+    # intermittent failure on main could not be diagnosed because the
+    # mutant hunt's reason was discarded. The rung must name it.
+    from lemmapy.benchmark import runner as runner_mod
+
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(
+        "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    )
+    (task_dir / "meta.json").write_text('{"id": "t"}')
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "clean", ""  # R1 on the original
+        if calls["n"] == 2:
+            return runner_mod.ERROR, "crosshair exited 137"
+        return "counterexample", ""
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=4)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == runner_mod.ERROR
+    assert "crosshair exited 137" in mutants.detail
+    # ...and the offending mutant is named alongside its reason.
+    assert "line " in mutants.detail.split("errors:")[1]
+
+
 def test_mixed_survivor_and_error_panel_reports_error(tmp_path, monkeypatch):
     # Survivors + errored analyses: the incomplete panel outranks the
     # ordinary failure, and both facts appear in the detail.
