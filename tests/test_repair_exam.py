@@ -1,5 +1,6 @@
 """Proof-repair exams: strip proof additions, score restoration."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,29 @@ ROSTER = ["below_zero", "gcd", "is_prime", "modp", "rolling_max",
 def test_exam_roster_is_the_sidecar_bearing_tasks():
     tasks = exam_tasks(REPO / "benchmark" / "tasks")
     assert [t.name for t in tasks] == ROSTER
+
+
+def test_roster_matches_the_docs():
+    # Growing the roster without touching docs/BENCHMARK.md leaves a
+    # published, present-tense account of the exam that undercounts it —
+    # a reader sizes the measurement off a roster that no longer exists.
+    # The prose is checked against the enforced list, not proofread.
+    doc = (REPO / "docs" / "BENCHMARK.md").read_text()
+    start = doc.index("Roster today (")
+    para = doc[start:doc.index("\n\n", start)]
+
+    stated = int(re.match(r"Roster today \((\d+) tasks", para).group(1))
+    assert stated == len(ROSTER), (
+        f"docs/BENCHMARK.md says {stated} roster tasks; the exam runs "
+        f"{len(ROSTER)}")
+
+    corpus = {p.name for p in (REPO / "benchmark" / "tasks").iterdir()
+              if p.is_dir()}
+    named = {t for t in re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", para)
+             if t in corpus}
+    assert named == set(ROSTER), (
+        f"docs/BENCHMARK.md enumerates {sorted(named)}; the exam runs "
+        f"{ROSTER}")
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")

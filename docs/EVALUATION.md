@@ -166,6 +166,12 @@ the loop works end-to-end on real proofs, not a rate. Narrowing it needs
 roster growth and repeated trials (the matrix arms above), not a better
 sentence about six tasks.
 
+The roster has since grown to seven — `sum_to_n`, whose `GaussStep` pack
+is load-bearing. Run 3 predates it, so it is in neither denominator above
+and the numbers stay as measured; the next run is n=7. (The live roster is
+enumerated in [BENCHMARK.md](BENCHMARK.md#the-assurance-ladder); these run sections
+are dated records, not a statement of the roster today.)
+
 Note the prompt-budget fix was already in effect for this run (prior
 proposals digested, the duplicate sidecar copy removed), so it reduced
 prompt growth without eliminating the 600 s wall on the hardest task —
