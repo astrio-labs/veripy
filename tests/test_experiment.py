@@ -1,6 +1,7 @@
 """The experiment harness: arms, JSONL ledger, matrix driver, resume."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -317,6 +318,42 @@ def test_resume_reports_success_when_the_matrix_passed(tmp_path, monkeypatch):
             "--engines", f"file:{empty}", "--arms", "full", "--trials", "1"]
     assert main(argv) == 0
     assert main(argv) == 0  # resumed, still passing
+
+
+def test_stale_task_rows_do_not_fail_the_current_matrix(tmp_path, capsys):
+    """A ledger outlives the corpus; a dropped task must not fail today's run.
+
+    Ledgers are append-only, so a task later renamed or removed keeps its
+    historical rows forever. Scoping the status query by "every task in the
+    ledger" would let one of those rows fail a matrix that no longer
+    contains the task at all.
+    """
+    corpus = _mini_corpus(tmp_path, names=("alpha", "retired"))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    argv = ["experiment", "--tasks", str(corpus), "-o", str(tmp_path / "o"),
+            "--engines", f"file:{empty}", "--arms", "full", "--trials", "1"]
+
+    # Both tasks fail (engine exhausted), so both are recorded unsuccessful.
+    assert main(argv) == 1
+    capsys.readouterr()
+
+    # `retired` leaves the corpus; its failing row stays in the ledger.
+    shutil.rmtree(corpus / "retired")
+
+    # Replace alpha's cell with a success, simulating a fixed re-run.
+    ledger = tmp_path / "o" / "ledger.jsonl"
+    rows = [json.loads(l) for l in ledger.read_text().splitlines()]
+    for row in rows:
+        if row.get("task") == "alpha":
+            row["restored"] = True
+    ledger.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    # The current matrix is {alpha}, which passes. `retired`'s stale
+    # failure must not be counted.
+    assert main(argv) == 0
+    out = capsys.readouterr().out
+    assert "ok (restored/valid)" in out
 
 
 def test_matrix_rows_scopes_to_the_requested_cells(tmp_path, monkeypatch):

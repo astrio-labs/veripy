@@ -788,6 +788,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
     if args.command == "experiment":
         from .benchmark.experiment import (
+            exam_roster,
             matrix_rows,
             run_experiment,
             summarize_ledger,
@@ -823,9 +824,14 @@ def main(argv: list[str] | None = None) -> int:
         # completed cells are skipped and never re-emitted, so judging by
         # `written` would report success while the ledger still holds
         # failed trials from an earlier run.
-        only = set(args.only_tasks) if args.only_tasks else None
+        # Scope to the roster this run actually covered. A ledger is
+        # append-only and outlives corpus changes, so a task since renamed
+        # or removed keeps its old rows — and an unsuccessful one would
+        # fail a matrix that no longer contains it.
+        covered = set(args.only_tasks) if args.only_tasks \
+            else set(exam_roster(args.tasks, args.exam))
         matrix = matrix_rows(ledger, exam=args.exam, engines=args.engines,
-                             arms=arms, trials=args.trials, tasks=only)
+                             arms=arms, trials=args.trials, tasks=covered)
         resumed = len(matrix) - len(written)
         print(f"\n{len(written)} cell-task row(s) appended -> {ledger}"
               + (f" ({resumed} resumed from earlier runs)" if resumed > 0 else "")

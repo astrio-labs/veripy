@@ -230,12 +230,9 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
             raise ValueError(
                 f"unknown arm {arm!r} for exam {exam!r} "
                 f"(use one of {', '.join(allowed)})")
-    if exam == "proof-repair":
-        roster = [d.name for d in exam_tasks(tasks_root)]
-        roster_desc = "sidecar-bearing roster"
-    else:
-        roster = [d.name for d in spec_exam_tasks(tasks_root)]
-        roster_desc = "roster"
+    roster = exam_roster(tasks_root, exam)
+    roster_desc = ("sidecar-bearing roster" if exam == "proof-repair"
+                   else "roster")
     if only_tasks is not None:
         unknown = only_tasks - set(roster)
         if unknown:
@@ -312,6 +309,16 @@ def _rows(ledger: Path) -> list[dict[str, Any]]:
     return list(latest.values())
 
 
+def exam_roster(tasks_root: Path, exam: str) -> list[str]:
+    """Task ids an exam runs over today. The single source of truth for
+    both the matrix driver and the status query — a ledger outlives the
+    corpus, so 'which tasks count' must be answered from the corpus, never
+    from what happens to be recorded."""
+    if exam == "proof-repair":
+        return [d.name for d in exam_tasks(tasks_root)]
+    return [d.name for d in spec_exam_tasks(tasks_root)]
+
+
 def matrix_rows(ledger: Path, *, exam: str, engines: list[str],
                 arms: list[str], trials: int,
                 tasks: set[str] | None = None) -> list[dict[str, Any]]:
@@ -322,6 +329,13 @@ def matrix_rows(ledger: Path, *, exam: str, engines: list[str],
     rows so that resume stays idempotent — which means a resumed run whose
     failures were all recorded earlier would otherwise look like a clean
     pass to CI.
+
+    `tasks` scopes the query to the roster the run actually covered. Pass
+    it whenever the ledger may outlive a corpus change: a ledger is
+    append-only, so a task later renamed or dropped keeps its historical
+    rows forever, and an unsuccessful one would fail a matrix that no
+    longer contains that task. `None` means "every task in the ledger" and
+    is only safe for a ledger known to match the current corpus.
     """
     if not ledger.exists():
         return []
