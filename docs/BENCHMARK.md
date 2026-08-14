@@ -82,6 +82,21 @@ Two properties fall out of this design that no static benchmark has:
      the adjudication would silently miss and the engine would be charged
      for a mutant the golden run was forgiven.
 
+   **The timeout-bias check.** A refutation gap between the arms is a
+   *strength* gap only if both arms concluded on the same mutants. A hunt
+   that exhausts its wall is inconclusive, and engine-written specs can be
+   systematically more expensive to hunt than golden ones — more
+   quantifiers, wider domains — without being any weaker. Counting those
+   as "not refuted" would report hunt COST as spec strength.
+
+   So every row records inconclusive hunts per arm. A row whose arms
+   disagree is marked `!` and named in a `TIMEOUT BIAS` line saying the gap
+   must not be quoted as a strength difference; when the arms agree, the
+   report says `timeout-bias check: PASSED` explicitly, so a reader never
+   has to assume the check was done. The check is symmetric — golden timing
+   out more disqualifies the comparison just as loudly, since that
+   direction flatters the engine.
+
    The anti-gaming property is the design's whole point, and it is
    measured, not asserted. An adversarial arm replaces every task's
    specification with `#@ ensures True` (keeping only the golden

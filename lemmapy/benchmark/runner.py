@@ -62,6 +62,14 @@ class TaskScore:
     adjudicated_timeouts: int = 0  # wall exhaustions ruled divergent in meta.json
 
     @property
+    def timeout_count(self) -> int:
+        """Mutants whose hunt exhausted its wall — inconclusive, whether or
+        not a human later ruled the divergence. Comparing two arms' kill
+        rates is only meaningful when this matches: otherwise the gap mixes
+        spec strength with hunt cost."""
+        return len(self.timeouts) + self.adjudicated_timeouts
+
+    @property
     def height(self) -> int:
         h = 0
         for rung in self.rungs:

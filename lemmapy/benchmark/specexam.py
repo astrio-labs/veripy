@@ -315,16 +315,33 @@ class SpecExamScore:
     mutants_total: int = 0
     mutants_killed: int = 0
     mutants_crashed: int = 0
+    # Hunts that exhausted their wall: NEITHER refuted nor survived. They
+    # are inconclusive, and counting them as "not refuted" silently
+    # penalizes whichever arm is more expensive to hunt — which is a
+    # property of the specification's shape, not its strength.
+    mutants_timeout: int = 0
     survivors: list[str] = field(default_factory=list)
     golden_height: int = 0
     golden_mutants_total: int = 0
     golden_mutants_killed: int = 0
     golden_mutants_crashed: int = 0
+    golden_mutants_timeout: int = 0
     clause_counts: dict[str, int] = field(default_factory=dict)
     retry_reasons: list[str] = field(default_factory=list)
     rules_version: str = SPEC_RULES_VERSION
     wall_ms: int = 0
     usage: list[dict[str, Any] | None] = field(default_factory=list)
+
+    @property
+    def comparable(self) -> bool:
+        """Whether this row's engine-vs-golden kill rates may be compared.
+
+        If the two arms did not conclude on the same number of mutants,
+        the difference in refutation counts mixes spec STRENGTH with hunt
+        COST. Reporting it as a strength gap would be a timeout bias, so
+        the row is marked and excluded from the aggregate instead.
+        """
+        return self.mutants_timeout == self.golden_mutants_timeout
 
     @property
     def scored_total(self) -> int:
@@ -445,6 +462,8 @@ def _golden_baseline(task_dir: Path, workdir: Path, cache_dir: Path,
         score.mutants_total = cached["mutants_total"]
         score.mutants_killed = cached["mutants_killed"]
         score.mutants_crashed = cached.get("mutants_crashed", 0)
+        score.timeouts = cached.get("timeouts", [])
+        score.adjudicated_timeouts = cached.get("adjudicated_timeouts", 0)
         score.survivors = cached["survivors"]
         score._cached_height = cached["height"]  # type: ignore[attr-defined]
         return score
@@ -455,6 +474,8 @@ def _golden_baseline(task_dir: Path, workdir: Path, cache_dir: Path,
         "height": score.height, "mutants_total": score.mutants_total,
         "mutants_killed": score.mutants_killed,
         "mutants_crashed": score.mutants_crashed,
+        "timeouts": score.timeouts,
+        "adjudicated_timeouts": score.adjudicated_timeouts,
         "survivors": score.survivors,
     }, indent=1))
     return score
@@ -523,6 +544,7 @@ def run_spec_exam(tasks_root: Path, workdir: Path,
                 golden_mutants_total=golden.mutants_total,
                 golden_mutants_killed=golden.mutants_killed,
                 golden_mutants_crashed=golden.mutants_crashed,
+                golden_mutants_timeout=getattr(golden, "timeout_count", 0),
                 retry_reasons=retry_reasons, wall_ms=wall_ms, usage=usage))
             continue
 
@@ -536,11 +558,13 @@ def run_spec_exam(tasks_root: Path, workdir: Path,
             mutants_total=scored.mutants_total,
             mutants_killed=scored.mutants_killed,
             mutants_crashed=scored.mutants_crashed,
+            mutants_timeout=getattr(scored, "timeout_count", 0),
             survivors=scored.survivors,
             golden_height=_height_of(golden),
             golden_mutants_total=golden.mutants_total,
             golden_mutants_killed=golden.mutants_killed,
             golden_mutants_crashed=golden.mutants_crashed,
+            golden_mutants_timeout=getattr(golden, "timeout_count", 0),
             clause_counts=_clause_counts(proposal),
             retry_reasons=retry_reasons, wall_ms=wall_ms, usage=usage))
     return scores
@@ -555,6 +579,10 @@ def render_spec_exam_report(scores: list[SpecExamScore]) -> str:
     for s in scores:
         # The denominator is golden's panel on EVERY row, valid or not.
         refuted = f"{s.mutants_killed}/{s.scored_total}" if s.scored_total else "-"
+        if not s.comparable:
+            # The arms did not conclude on the same mutants; the gap on
+            # this row mixes strength with hunt cost.
+            refuted += "!"
         golden_kill = (f"{s.golden_mutants_killed}/{s.golden_mutants_total}"
                        if s.golden_mutants_total else "-")
         if not s.valid:
@@ -573,6 +601,9 @@ def render_spec_exam_report(scores: list[SpecExamScore]) -> str:
     crashed = sum(s.mutants_crashed for s in scores)
     g_killed = sum(s.golden_mutants_killed for s in scores)
     g_total = sum(s.golden_mutants_total for s in scores)
+    incomparable = [s for s in scores if not s.comparable]
+    engine_to = sum(s.mutants_timeout for s in scores)
+    golden_to = sum(s.golden_mutants_timeout for s in scores)
     lines.append("-" * len(header))
     lines.append(f"valid: {len(valid)}/{len(scores)}")
     lines.append(
@@ -586,6 +617,27 @@ def render_spec_exam_report(scores: list[SpecExamScore]) -> str:
             f"{crashed} mutant(s) crashed under the engine's specs — caught by "
             f"the interpreter, not discriminated by the specification, so "
             f"never credited")
+    # The timeout-bias check. A refutation gap is only a STRENGTH gap if
+    # both arms concluded on the same mutants; a hunt that exhausts its
+    # wall is inconclusive, and engine specs can be systematically more
+    # expensive to hunt than golden ones (more quantifiers, wider domains)
+    # without being weaker. Report the check even when it passes, so a
+    # reader never has to assume it was done.
+    if engine_to or golden_to:
+        lines.append(
+            f"inconclusive hunts: engine {engine_to}, golden {golden_to}")
+    if incomparable:
+        lines.append(
+            f"TIMEOUT BIAS: {len(incomparable)} row(s) marked `!` did not "
+            f"conclude on the same mutants in both arms "
+            f"({', '.join(s.task_id for s in incomparable[:4])}) — their "
+            f"refutation gap mixes spec strength with hunt cost and must "
+            f"not be quoted as a strength difference. Re-run those tasks "
+            f"with a larger --hunt-timeout before comparing.")
+    else:
+        lines.append(
+            "timeout-bias check: PASSED — both arms concluded on the same "
+            "mutants in every row, so the refutation gap is a strength gap")
     lines.append(
         "heights are out of the golden's EXAM-CONDITIONS height (no sidecar, "
         "`#@ proof` stripped); a spec needing no lemmas can exceed it, so "
