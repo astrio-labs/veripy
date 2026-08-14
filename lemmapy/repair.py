@@ -461,7 +461,18 @@ def _repairable(payload: dict[str, Any]) -> bool:
     """A proof edit can help with failed proofs and sidecar-validation
     rejections — not with spec errors or source-conformance rejections."""
     if payload["status"] == "failed":
-        return True
+        # ...and not with a failure the producer EXPLICITLY could not
+        # attribute. The published contract (docs/AGENT-INTERFACE.md) says
+        # a null `region` is diagnostic output for a human, not a repair
+        # target; iterating anyway spends the whole budget on engine calls
+        # no proof edit can address.
+        #
+        # Absence of the key is NOT that declaration — other producers
+        # (exam harnesses, ablation fixtures) omit `region` without
+        # claiming the failure is unattributable. Only an explicit null
+        # blocks, and only when EVERY failure carries one.
+        return any("region" not in f or f["region"] is not None
+                   for f in payload["failures"])
     if payload["status"] == "encode-error":
         return any("proof sidecar" in (f.get("message") or "")
                    or "proof clause" in (f.get("message") or "")
@@ -517,9 +528,12 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
             return RepairOutcome(True, attempt, "verified", text, history,
                                  attempts)
         if not _repairable(payload):
-            return RepairOutcome(False, attempt,
-                                 f"not repairable by proof edits: "
-                                 f"{payload['status']}", None, history,
+            reason = f"not repairable by proof edits: {payload['status']}"
+            if payload["status"] == "failed":
+                reason = ("not repairable by proof edits: the prover failed "
+                          "but no failure could be attributed to source or "
+                          "sidecar (see the raw message)")
+            return RepairOutcome(False, attempt, reason, None, history,
                                  attempts)
         if attempt == max_iterations:
             break
