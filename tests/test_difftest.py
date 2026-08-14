@@ -115,3 +115,49 @@ def test_harness_detects_divergence(tmp_path):
     m = diff.mismatch
     assert m.python_result == m.args[0] + 2
     assert m.dafny_result == m.args[0] + 1
+
+# --- M1 exit criterion: the harness must CATCH a seeded encoder bug ---------------
+#
+# The M1 exit criteria require that the differential harness "has caught at
+# least one seeded encoder bug". A statically-caught bug does not discharge
+# that: it demonstrates the encoder's own checks, not the harness. This test
+# injects a real miscompilation into the preamble and asserts the harness
+# finds it — so the criterion is backed by an artifact CI re-runs, and if the
+# harness ever stops seeing this bug class the test says so.
+
+SEEDED_MOD = (
+    "#@ requires b != 0\n"
+    "def pymod(a: int, b: int) -> int:\n"
+    "    return a % b\n"
+)
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_difftest_catches_a_seeded_encoder_bug(tmp_path, monkeypatch):
+    src = tmp_path / "seed.py"
+    src.write_text(SEEDED_MOD)
+
+    # Baseline: the real preamble models Python's floor-based `%` exactly.
+    clean = difftest_file(src, tmp_path / "clean", examples=200)
+    assert clean.ok, clean.error or [
+        (f.name, f.mismatch, f.error) for f in clean.functions]
+
+    # Seed the bug: collapse PyMod to Dafny's raw (Euclidean) `%`, dropping
+    # the negative-divisor correction. Python: 7 % -3 == -2; Euclidean: 1.
+    import lemmapy.backends.dafny.encoder as enc
+
+    floor_correction = "if b < 0 && a % b != 0 then a % b + b else a % b"
+    assert floor_correction in enc.PREAMBLE, "preamble PyMod shape changed"
+    monkeypatch.setattr(
+        enc, "PREAMBLE", enc.PREAMBLE.replace(floor_correction, "a % b"))
+
+    seeded = difftest_file(src, tmp_path / "seeded", examples=200)
+    assert not seeded.ok, "the harness did not see a seeded PyMod miscompilation"
+    diff = next(f for f in seeded.functions if f.name == "pymod")
+    assert diff.mismatch is not None, diff.error
+    # The counterexample must be a negative divisor — the exact case the
+    # dropped correction governs, not an unrelated flake.
+    a, b = diff.mismatch.args
+    assert b < 0, diff.mismatch
+    assert diff.mismatch.python_result == a % b
+    assert diff.mismatch.python_result != diff.mismatch.dafny_result
