@@ -82,8 +82,10 @@ UNCLASSIFIED_KINDS: dict[str, str] = {
     "unknown": "The producer could not classify this failure; the raw "
                "message is always attached. Origin is undetermined — use "
                "`status` (a `failed` run means the prover ran) and `region` "
-               "(`source` vs `sidecar`) to decide whether proof repair "
-               "applies. Do not assume it is harness-only.",
+               "to decide whether proof repair applies. A NULL `region` "
+               "means even that could not be attributed: treat it as "
+               "diagnostic output for a human, not as a repair target. Do "
+               "not assume it is harness-only.",
 }
 
 FAILURE_KINDS: dict[str, str] = {**PROVER_KINDS, **FRONTEND_KINDS,

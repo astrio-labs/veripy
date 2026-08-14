@@ -252,8 +252,13 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
         # A failed run must never carry an EMPTY failure list — an engine
         # (or a person) needs something actionable. Belt-and-braces: with
         # --allow-warnings in the driver this path should be unreachable.
+        # `region` is NULL, not "source": nothing here attributes this
+        # failure to the source rather than the sidecar, and the contract
+        # tells hosts to route `unknown` by region — so a fabricated
+        # attribution would send a repair agent after the wrong file, or
+        # after a repair that cannot apply at all.
         payload["failures"].append({
-            "kind": "unknown", "function": None, "region": "source",
+            "kind": "unknown", "function": None, "region": None,
             "py_line": None, "dafny_line": None,
             "message": (result.summary or result.raw[:400]
                         or "verifier failed without diagnostics"),

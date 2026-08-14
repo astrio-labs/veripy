@@ -134,3 +134,29 @@ def test_doc_lists_exactly_the_published_kinds():
         "in doc only": sorted(documented - set(FAILURE_KINDS)),
     }
     assert f"taxonomy version {TAXONOMY_VERSION}" in doc
+
+
+def test_unattributable_failure_reports_null_region(tmp_path, monkeypatch):
+    # A failed prover run with no parseable diagnostics still owes the
+    # caller a failure record — but it must not FABRICATE where the failure
+    # lives. The contract routes `unknown` by `region`, so a hardcoded
+    # "source" would send a repair agent after the wrong file.
+    import lemmapy.agentio as agentio_mod
+    from lemmapy.backends.dafny.driver import VerifyResult
+
+    monkeypatch.setattr(
+        agentio_mod, "verify_dafny_file",
+        lambda *a, **k: VerifyResult(ok=False, diagnostics=[],
+                                     summary="finished with 0 verified, 1 error",
+                                     raw="opaque prover output"))
+    src = tmp_path / "m.py"
+    src.write_text("#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n")
+    payload = agentio_mod.verify_structured(src, tmp_path / "out")
+
+    assert payload["status"] == "failed"
+    assert len(payload["failures"]) == 1, "a failed run must not be empty"
+    failure = payload["failures"][0]
+    assert failure["kind"] == "unknown"
+    assert failure["region"] is None, "region must not be fabricated"
+    assert failure["py_line"] is None and failure["function"] is None
+    assert failure["message"]  # the raw prover output is always attached

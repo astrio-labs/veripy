@@ -69,6 +69,13 @@ generated `.dfy` path when `keep_artifacts=True`, and `null` otherwise —
 never a path that has already been cleaned up. Nothing downstream reads
 it; it is diagnostic only.
 
+**Nullable attribution.** `region` is `"source"`, `"sidecar"`, or `null`.
+`null` means the producer could not attribute the failure at all (a prover
+run that failed without parseable diagnostics) — it is never a default or
+a guess. Since `unknown` is routed by `region`, a fabricated attribution
+would send a repair agent after the wrong file; treat a null region as
+diagnostic output for a human.
+
 **Coordinates.** `py_line` locates the failure in your source;
 `dafny_line` locates it in the generated stub. A failure in the appended
 proof sidecar carries `region: "sidecar"` and no `py_line`/`function` —
@@ -133,7 +140,7 @@ group.
 
 | kind | what it means, and what to do |
 | --- | --- |
-| `unknown` | The producer could not classify this failure; the raw message is always attached. Origin is undetermined — use `status` (a `failed` run means the prover ran) and `region` (`source` vs `sidecar`) to decide whether proof repair applies. Do not assume it is harness-only. |
+| `unknown` | The producer could not classify this failure; the raw message is always attached. Origin is undetermined — use `status` (a `failed` run means the prover ran) and `region` to decide whether proof repair applies. A NULL `region` means even that could not be attributed: treat it as diagnostic output for a human, not as a repair target. Do not assume it is harness-only. |
 
 ## Stability contract
 
