@@ -504,6 +504,65 @@ def test_source_recheck_under_the_lock(tmp_path):
     assert "source changed" in reason and not sidecar.exists()
 
 
+def test_unattributable_failure_is_not_a_repair_target(tmp_path, monkeypatch):
+    # docs/AGENT-INTERFACE.md says a null `region` is diagnostic output for
+    # a human, not a repair target — so OUR OWN loop must honour that.
+    # Before this, any `failed` payload started iterating, spending the
+    # whole budget on engine calls no proof edit could address.
+    import lemmapy.repair as repair_mod
+
+    def fake_verify(path, outdir, **kw):
+        return {"schema": "lemmapy-failures/1", "file": str(path),
+                "status": "failed", "functions": ["f"],
+                "failures": [{"kind": "unknown", "function": None,
+                              "region": None, "py_line": None,
+                              "dafny_line": None,
+                              "message": "opaque prover output"}],
+                "sidecar": {"text": "", "exists": False, "lemmas": []},
+                "toolchain": {}}
+
+    monkeypatch.setattr(repair_mod, "verify_structured", fake_verify)
+    calls = {"n": 0}
+
+    def counting_engine(request):
+        calls["n"] += 1
+        return GOOD
+
+    src = tmp_path / "m.py"
+    src.write_text(NEEDS_LEMMA)
+    outcome = repair_file(src, tmp_path / "out", counting_engine,
+                          max_iterations=4)
+    assert not outcome.verified
+    assert "no failure could be attributed" in outcome.reason
+    assert calls["n"] == 0, "the engine must not be called at all"
+
+    # Absence of the key is NOT a declaration of unattributability: other
+    # producers omit `region` entirely, and those payloads must still
+    # repair (an over-strict check broke the ablation experiment).
+    def no_region_verify(path, outdir, **kw):
+        p = fake_verify(path, outdir, **kw)
+        p["failures"] = [{"kind": "invariant", "message": "loop detail"}]
+        return p
+
+    monkeypatch.setattr(repair_mod, "verify_structured", no_region_verify)
+    calls["n"] = 0
+    repair_file(src, tmp_path / "out_absent", counting_engine, max_iterations=1)
+    assert calls["n"] == 1
+
+    # A payload with ANY attributable failure still repairs.
+    def mixed_verify(path, outdir, **kw):
+        p = fake_verify(path, outdir, **kw)
+        p["failures"].append({"kind": "postcondition", "function": "f",
+                              "region": "source", "py_line": 3,
+                              "dafny_line": 9, "message": "nope"})
+        return p
+
+    monkeypatch.setattr(repair_mod, "verify_structured", mixed_verify)
+    calls["n"] = 0
+    repair_file(src, tmp_path / "out2", counting_engine, max_iterations=1)
+    assert calls["n"] == 1
+
+
 def test_unrepairable_source_stops_immediately(tmp_path):
     src = tmp_path / "m.py"
     src.write_text(

@@ -21,6 +21,7 @@ from typing import Any
 from .backends.dafny.driver import dafny_version, verify_dafny_file
 from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from .backends.dafny.preamble import PREAMBLE_VERSION
+from .failures import TAXONOMY_VERSION
 from .frontend.extract import parse_source
 
 SCHEMA = "lemmapy-failures/1"
@@ -38,6 +39,31 @@ def _attribute(specs: Any, py_line: int | None) -> str | None:
         else:
             break
     return best
+
+
+def new_payload(file: str, keep_artifacts: bool = False) -> dict[str, Any]:
+    """The documented payload skeleton. EVERY producer must build on
+    this — the contract promises `toolchain` on every outcome, and a
+    hand-built payload elsewhere (the CLI's gate-error path) silently
+    broke that promise until this existed."""
+    return {
+        "schema": SCHEMA,
+        "file": file,
+        # Provenance rides every payload: a host must be able to tell
+        # whether two verdicts meant the same thing. `dafny_version` stays
+        # None until the prover is actually reached.
+        "toolchain": {
+            "preamble_version": PREAMBLE_VERSION,
+            "dafny_version": None,
+            "taxonomy_version": TAXONOMY_VERSION,
+        },
+        "status": None,
+        "functions": [],
+        "failures": [],
+        "sidecar": None,
+        "stub": None,
+        "artifacts_kept": keep_artifacts,
+    }
 
 
 def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
@@ -75,27 +101,7 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     the CLI prints its path for a human), so `payload["stub"]` is None when
     they are not kept, rather than a path that no longer exists.
     """
-    payload: dict[str, Any] = {
-        "schema": SCHEMA,
-        "file": str(path),
-        # Provenance travels with the MACHINE payload, not only the human
-        # report: a host embedding this backend must be able to tell whether
-        # two "ok" verdicts meant the same thing. Present on every outcome,
-        # including tool errors.
-        # `dafny_version` is filled in only when the prover is actually
-        # reached: an unreadable source or a conformance rejection never ran
-        # it, and should not wait on a `dafny --version` subprocess to say so.
-        "toolchain": {
-            "preamble_version": PREAMBLE_VERSION,
-            "dafny_version": None,
-        },
-        "status": None,
-        "functions": [],
-        "failures": [],
-        "sidecar": None,
-        "stub": None,
-        "artifacts_kept": keep_artifacts,
-    }
+    payload = new_payload(str(path), keep_artifacts)
     workdir: Path | None = None
     try:
         outdir.mkdir(parents=True, exist_ok=True)
@@ -246,8 +252,13 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
         # A failed run must never carry an EMPTY failure list — an engine
         # (or a person) needs something actionable. Belt-and-braces: with
         # --allow-warnings in the driver this path should be unreachable.
+        # `region` is NULL, not "source": nothing here attributes this
+        # failure to the source rather than the sidecar, and the contract
+        # tells hosts to route `unknown` by region — so a fabricated
+        # attribution would send a repair agent after the wrong file, or
+        # after a repair that cannot apply at all.
         payload["failures"].append({
-            "kind": "unknown", "function": None, "region": "source",
+            "kind": "unknown", "function": None, "region": None,
             "py_line": None, "dafny_line": None,
             "message": (result.summary or result.raw[:400]
                         or "verifier failed without diagnostics"),
