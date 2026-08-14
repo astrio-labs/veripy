@@ -249,6 +249,7 @@ def cmd_hunt(paths: list[Path], outdir: Path, per_condition_timeout: int) -> int
 def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = True,
                report: Path | None = None) -> int:
     """Encode to Dafny and verify: the M1 pipeline (clean-bucket fragment)."""
+    from .backends.dafny.driver import dafny_version
     from .report import build_report, function_report, render_report_text
 
     outdir.mkdir(parents=True, exist_ok=True)
@@ -256,7 +257,6 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
     trouble = 0
     fn_reports: list = []
     sidecar_lemmas: dict[str, list[str]] = {}
-    dafny_version: str | None = None
     if types:
         # The A7 first pass applies to verification too: an untyped or
         # ill-typed file must not reach the encoder.
@@ -307,7 +307,6 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             trouble += 1
             fn_reports += [function_report(fn, str(path), "error") for fn in specs.functions]
             continue
-        dafny_version = dafny_version or result.summary or "ran"
         if result.ok:
             print(f"{path}: VERIFIED ({', '.join(encoded.methods)}) -> {stub}")
             fn_reports += [function_report(fn, str(path), "verified") for fn in specs.functions]
@@ -345,7 +344,7 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
                     status_str = "failed" if mine else "verified"
                 fn_reports.append(function_report(fn, str(path), status_str, fails))
     if report is not None:
-        payload = build_report(fn_reports, sidecar_lemmas, dafny_version)
+        payload = build_report(fn_reports, sidecar_lemmas, dafny_version())
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text(json.dumps(payload, indent=1))
         print(f"\n{render_report_text(payload)}")
