@@ -39,6 +39,15 @@ def test_every_classifier_kind_is_a_published_prover_kind():
     produced = {kind for _, kind in _OBLIGATION_KINDS}
     assert produced <= set(PROVER_KINDS), produced - set(PROVER_KINDS)
     assert classify_obligation("something nobody has seen") == "unknown"
+    # Sidecar resolution errors are their own kind: the proof was never
+    # attempted, so "strengthen the proof" is the wrong instruction. All 15
+    # unclassified records in the first n=6 live run were of this shape.
+    for msg in ("unresolved identifier: PyMaxSeq",
+                "wrong number of arguments (got 1, but function 'PyMax' "
+                "expects 2: (a: int, b: int))",
+                "incorrect argument type for function parameter 'a' "
+                "(expected int, found seq<int>)"):
+        assert classify_obligation(msg) == "resolution", msg
     assert is_known("unknown")
 
 

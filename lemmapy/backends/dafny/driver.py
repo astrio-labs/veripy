@@ -29,6 +29,13 @@ _OBLIGATION_KINDS: tuple[tuple[str, str], ...] = (
     ("decreases", "termination"),
     ("timed out", "timeout"),
     ("out of resource", "timeout"),
+    # Resolution/type errors in the (engine- or hand-written) sidecar: the
+    # proof was never attempted, so they are not obligations. Checked
+    # before the obligation patterns because their text can mention one.
+    ("unresolved identifier", "resolution"),
+    ("wrong number of arguments", "resolution"),
+    ("incorrect argument type", "resolution"),
+    ("duplicate name", "resolution"),
     ("index out of range", "bounds"),
     ("divisor is always non-zero", "division"),
 )

@@ -99,6 +99,7 @@ sidecar.
 | `division` | A divisor was not shown nonzero (Python's ZeroDivisionError condition). |
 | `invariant` | A loop invariant failed on entry or was not maintained. |
 | `postcondition` | An `#@ ensures` clause was not proved on some return path. Strengthen invariants or supply lemmas. |
+| `resolution` | The proof sidecar does not typecheck — an unresolved name, a wrong argument count, or a wrong argument type. The proof was never attempted, so strengthening it is the wrong move: fix the declaration against the preamble signatures. This is the most common failure a repair engine actually hits (15 of 15 unclassified records in the first n=6 live run were of this kind). |
 | `termination` | A `decreases` obligation failed; the prover cannot show the loop or recursion terminates. |
 | `timeout` | The prover ran out of time or resources on this obligation. NOT a disproof: the property may still hold. |
 

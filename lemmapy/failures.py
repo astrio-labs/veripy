@@ -44,6 +44,13 @@ PROVER_KINDS: dict[str, str] = {
                 "ZeroDivisionError condition).",
     "timeout": "The prover ran out of time or resources on this obligation. "
                "NOT a disproof: the property may still hold.",
+    "resolution": "The proof sidecar does not typecheck — an unresolved "
+                  "name, a wrong argument count, or a wrong argument type. "
+                  "The proof was never attempted, so strengthening it is "
+                  "the wrong move: fix the declaration against the preamble "
+                  "signatures. This is the most common failure a repair "
+                  "engine actually hits (15 of 15 unclassified records in "
+                  "the first n=6 live run were of this kind).",
 }
 
 # The FRONT END refused the input. Not repairable by proof additions —
