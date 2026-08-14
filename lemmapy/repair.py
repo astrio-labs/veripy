@@ -34,6 +34,15 @@ from .backends.dafny.encoder import EncodeError, validate_sidecar_text
 
 Engine = Callable[[dict[str, Any]], str]
 
+# How long a single engine call may take. The first n=6 live exam lost
+# `rolling_max` to this wall — not to a proof failure — so the run reported
+# 4/6 with one task UNMEASURED. Prompt bounding (digested history, no
+# duplicated sidecar) reduced growth but did not remove the ceiling: on the
+# hardest task the engine's own thinking time binds. Configurable so a
+# measurement can distinguish "could not prove it" from "did not answer in
+# time", which are different claims.
+DEFAULT_ENGINE_WALL_S = 600
+
 RULES = """\
 You are repairing a Dafny proof for a verified-Python toolchain.
 You may change ONLY the proof sidecar (<stem>.proofs.dfy). Reply with the
@@ -236,8 +245,10 @@ class _ClaudeEngine:
     output was not parseable JSON) — a side channel that keeps the
     `Engine = Callable[[dict], str]` contract intact."""
 
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None,
+                 wall_s: int = DEFAULT_ENGINE_WALL_S):
         self.model = model
+        self.wall_s = wall_s
         self.usage_log: list[dict[str, Any] | None] = []
 
     def __call__(self, request: dict[str, Any]) -> str:
@@ -248,7 +259,8 @@ class _ClaudeEngine:
             proc = subprocess.run(
                 _claude_cmd(exe, _render_prompt(request), model=self.model,
                             json_output=True),
-                capture_output=True, text=True, timeout=600, cwd=sandbox,
+                capture_output=True, text=True, timeout=self.wall_s,
+                cwd=sandbox,
             )
         if proc.returncode != 0:
             raise RuntimeError(f"claude engine failed: {proc.stderr[:400]}")
@@ -278,8 +290,11 @@ class _ApiEngine:
     tighter sandbox than the CLI path (nothing to deny). stdlib-only on
     purpose: no new dependency for the harness."""
 
-    def __init__(self, provider: str, model: str):
+    def __init__(self, provider: str, model: str,
+                 wall_s: int = DEFAULT_ENGINE_WALL_S):
         import os
+
+        self.wall_s = wall_s
 
         if provider not in _API_PROVIDERS:
             known = ", ".join(sorted(_API_PROVIDERS))
@@ -310,7 +325,7 @@ class _ApiEngine:
             f"{self.base}/chat/completions", data=body,
             headers={"Authorization": f"Bearer {key}",
                      "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        with urllib.request.urlopen(req, timeout=self.wall_s) as resp:
             obj = json.loads(resp.read().decode())
         choices = obj.get("choices") or []
         if not choices:
@@ -343,23 +358,23 @@ class _FileEngine:
         return candidate.read_text()
 
 
-def make_engine(spec: str) -> Engine:
+def make_engine(spec: str, wall_s: int = DEFAULT_ENGINE_WALL_S) -> Engine:
     if spec == "claude":
-        return _ClaudeEngine()
+        return _ClaudeEngine(wall_s=wall_s)
     if spec.startswith("claude:"):
         model = spec[len("claude:"):]
         # argv hygiene: an empty or dash-leading "model" would be read as a
         # flag by the CLI, silently reshaping the pinned command.
         if not model or model.startswith("-"):
             raise ValueError(f"unknown engine {spec!r}: bad model {model!r}")
-        return _ClaudeEngine(model)
+        return _ClaudeEngine(model, wall_s=wall_s)
     if spec.startswith("api:"):
         rest = spec[len("api:"):]
         provider, sep, model = rest.partition("/")
         if not sep or not provider or not model:
             raise ValueError(
                 f"unknown engine {spec!r} (use 'api:<provider>/<model>')")
-        return _ApiEngine(provider, model)
+        return _ApiEngine(provider, model, wall_s=wall_s)
     if spec.startswith("file:"):
         return _FileEngine(Path(spec[5:]))
     raise ValueError(f"unknown engine {spec!r} (use 'claude', "

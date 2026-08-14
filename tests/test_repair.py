@@ -94,6 +94,40 @@ def test_claude_engine_runs_in_empty_sandbox(monkeypatch):
     assert Path(seen["cwd"]).resolve() != Path.cwd().resolve()
 
 
+def test_engine_wall_is_configurable_and_used(monkeypatch):
+    # The first n=6 exam lost `rolling_max` to the engine's own 600s wall,
+    # so the run reported one task UNMEASURED rather than unproved. The
+    # wall must be a knob, and it must actually reach the subprocess —
+    # otherwise a rerun cannot tell "could not prove it" from "did not
+    # answer in time".
+    import lemmapy.repair as repair_mod
+    from lemmapy.repair import DEFAULT_ENGINE_WALL_S, _ClaudeEngine
+
+    assert make_engine("claude").wall_s == DEFAULT_ENGINE_WALL_S
+    assert make_engine("claude", 1800).wall_s == 1800
+    assert make_engine("claude:opus", 900).wall_s == 900
+    assert make_engine("api:openrouter/x/y", 120).wall_s == 120
+
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+
+        class Proc:
+            returncode = 0
+            stdout = "lemma L()\n{\n}\n"
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(repair_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(repair_mod.shutil, "which", lambda name: "/fake/claude")
+    engine = _ClaudeEngine(wall_s=1234)
+    engine({"rules": "r", "attempt": 0, "source": "s", "failures": {},
+            "sidecar": "", "history": []})
+    assert seen["timeout"] == 1234
+
+
 def test_make_engine_specs():
     assert callable(make_engine("claude"))
     assert callable(make_engine("file:/tmp/x"))
