@@ -5,6 +5,37 @@
 > embedding it as a proof backend. The human CLI output is not a contract;
 > this is.
 
+## Embedding LemmaPy
+
+`lemmapy.api` is the surface a host program calls. One import path, and
+everything outside it is internal:
+
+```python
+from lemmapy import api
+
+if api.conformance(path)["conformant"]:          # cheap gate, no prover
+    payload = api.verify(path, workdir)          # the structured outcome
+    if payload["status"] == "failed":
+        api.repair(path, workdir, engine="claude")   # sidecar edits only
+```
+
+Three properties, each pinned by a test in `tests/test_api.py`:
+
+1. **It never prints.** Diagnostics are returned, not written to stdout.
+2. **It never exits.** No `sys.exit` reaches the host process.
+3. **Expected failures are values.** A file outside the fragment, an
+   unreadable path, a bad engine spec — all return a payload with a
+   status. Exceptions are reserved for programmer error.
+
+`api.guard(path)` returns generated boundary-guard *source* rather than
+writing a file, because where generated code lands is the host's decision.
+`api.toolchain_info()` returns the versions and the failure vocabulary a
+host should compare across runs.
+
+Note the root package deliberately does **not** re-export these:
+`lemmapy.repair` is already a submodule, so a root-level `repair` function
+would resolve to the function or the module depending on import order.
+
 ## Getting a structured outcome
 
 ```bash
