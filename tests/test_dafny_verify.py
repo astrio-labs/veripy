@@ -140,3 +140,29 @@ def test_sidecar_line_is_the_files_own_line(tmp_path, capsys):
     assert all(6 <= n <= len(lines) for n in reported), (reported, out)
     assert any("Deep" in lines[n - 1] or "x != x" in lines[n - 1] or
                lines[n - 1].strip() in ("{", "}") for n in reported), out
+
+
+def test_a_sidecar_failure_gains_no_related_python_line(tmp_path, capsys):
+    # Dafny's "Related location" was folded in through the same nearest-above
+    # line map, so a related location inside the SIDECAR resolved to whichever
+    # Python statement happened to be encoded last -- pointing the reader at a
+    # `return` that has nothing to do with the lemma. The primary location was
+    # fixed first; this is the same fabrication one layer down, in the message.
+    src = tmp_path / "f.py"
+    src.write_text(BAD_PACK_SRC)
+    (tmp_path / "f.proofs.dfy").write_text(BAD_PACK)
+    cmd_verify([src], tmp_path / "out", time_limit=30, types=False)
+    out = capsys.readouterr().out
+    assert "f.proofs.dfy:" in out
+    assert "related: source line" not in out
+
+
+def test_a_source_failure_keeps_its_related_clause(tmp_path, capsys):
+    # The control: the fold exists so a postcondition failure points at the
+    # `ensures` clause and not only at the return path. Bounding the map must
+    # not cost that.
+    src = tmp_path / "g.py"
+    src.write_text("#@ ensures result == x + 1\ndef g(x: int) -> int:\n    return x\n")
+    cmd_verify([src], tmp_path / "out", time_limit=30, types=False)
+    out = capsys.readouterr().out
+    assert "g.py:3" in out and "related: source line 1" in out

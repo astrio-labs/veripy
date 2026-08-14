@@ -342,7 +342,9 @@ def run_task(
         return score
     stub = workdir / f"{task_id}.dfy"
     stub.write_text(encoded.dafny_source + sidecar.text)
-    result = verify_dafny_file(stub, encoded.line_map, time_limit=dafny_time_limit)
+    result = verify_dafny_file(stub, encoded.line_map,
+                               time_limit=dafny_time_limit,
+                               stub_extent=encoded.dafny_source.count("\n") + 1)
     if result.error is not None:
         score.rungs.append(Rung("prove", ERROR, result.error))
         return score

@@ -313,7 +313,10 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
         stub_dir.mkdir(parents=True, exist_ok=True)
         stub = stub_dir / f"{path.stem}.dfy"
         atomic_write_text(stub, stub_text)
-        result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
+        stub_extent = encoded.dafny_source.count("\n") + 1
+        result = verify_dafny_file(stub, encoded.line_map,
+                                   time_limit=time_limit,
+                                   stub_extent=stub_extent)
         if result.error is not None:
             print(f"{path}: dafny trouble: {result.error}", file=sys.stderr)
             trouble += 1
@@ -326,7 +329,6 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             failed += 1
             print(f"{path}: VERIFICATION FAILED -> {stub}")
             errs = []
-            stub_extent = encoded.dafny_source.count("\n") + 1
             for d in result.diagnostics:
                 if d.severity == "error":
                     # A failure in the appended sidecar region gets a

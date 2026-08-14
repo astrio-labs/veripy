@@ -1246,3 +1246,19 @@ def test_sidecar_locate_maps_stub_lines_to_the_files_own_lines(tmp_path):
     assert sidecar.locate(1, extent) is None
     # A file with no sidecar can never claim a line.
     assert ProofSidecar.empty().locate(extent + 5, extent) is None
+
+
+def test_map_line_refuses_to_answer_past_the_generated_region():
+    from lemmapy.backends.dafny.driver import _map_line
+
+    line_map = {10: 3, 20: 7}
+    # Inside the generated region: exact hit, then nearest-above (statements
+    # span more lines than they are keyed at).
+    assert _map_line(line_map, 20, 30) == 7
+    assert _map_line(line_map, 25, 30) == 7
+    # Past it, the nearest-above fallback would answer 7 -- the last Python
+    # line encoded, which has nothing to do with a lemma in the sidecar.
+    assert _map_line(line_map, 31, 30) is None
+    assert _map_line(line_map, 99, 30) is None
+    # Unbounded callers keep the old behaviour.
+    assert _map_line(line_map, 99) == 7
