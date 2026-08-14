@@ -370,6 +370,13 @@ def run_benchmark(tasks_root: Path, workdir: Path, **kwargs) -> list[TaskScore]:
     return scores
 
 
+# Below this, a per-task refutation RATE carries too little information to
+# compare against another task's: 1/1 is one bit. Such panels still count
+# in the corpus total (where they pool), but the per-task cell is marked so
+# nobody reads "100%" off a single mutant.
+LOW_RESOLUTION_PANEL = 3
+
+
 def render_report(scores: list[TaskScore]) -> str:
     names = ["gate", "hunt", "mutants", "encode", "prove", "fidelity"]
     lines = []
@@ -388,9 +395,12 @@ def render_report(scores: list[TaskScore]) -> str:
                 # Ratio only for completed panels; an errored panel's kill
                 # count is a lower bound, not a mutation score. A panel
                 # containing human-asserted kills is starred so the table
-                # never passes adjudication off as measurement.
+                # never passes adjudication off as measurement, and a panel
+                # too small for its rate to be comparable is marked "?" so
+                # nobody reads 1/1 as though it meant what 8/8 does.
                 star = "*" if s.adjudicated_timeouts or s.adjudicated else ""
-                ratio = f"{s.mutants_killed}/{s.mutants_total}{star}"
+                thin = "?" if s.mutants_total < LOW_RESOLUTION_PANEL else ""
+                ratio = f"{s.mutants_killed}/{s.mutants_total}{star}{thin}"
                 cells.append(f"{ratio:<8}")
             else:
                 cells.append(f"{mark[r.status]:<8}")
@@ -409,6 +419,16 @@ def render_report(scores: list[TaskScore]) -> str:
         + (f"; {crashed} crashed (caught by the interpreter, not the spec — "
            f"never credited)" if crashed else "")
     )
+    panels = sorted(s.mutants_total for s in scores if s.mutants_total)
+    if panels:
+        import statistics
+
+        thin = sum(1 for n in panels if n < LOW_RESOLUTION_PANEL)
+        lines.append(
+            f"panel resolution: median {statistics.median(panels):.0f} "
+            f"mutants/task, min {min(panels)}, max {max(panels)}"
+            + (f"; {thin} task(s) marked ? — panel too small for a per-task "
+               f"rate to be comparable" if thin else ""))
     if asserted or excluded:
         # The headline must not launder human judgement as measurement: say
         # exactly how much of it the panel rests on.

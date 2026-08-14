@@ -620,3 +620,34 @@ def test_bump_climbs_the_full_ladder(tmp_path):
     assert score.height == 6, [(r.name, r.status, r.detail) for r in score.rungs]
     assert score.mutants_total >= 1
     assert score.mutants_killed == score.mutants_total
+
+
+def test_thin_panels_are_marked_not_presented_as_comparable():
+    """A rate over one mutant is one bit; it must not read like 8/8.
+
+    Small panels are a real limit of mutation-based scoring on short
+    functions. They still pool into the corpus total, but the per-task cell
+    is marked so a reader does not compare `1/1` with `8/8` as equals.
+    """
+    from lemmapy.benchmark.runner import (
+        LOW_RESOLUTION_PANEL,
+        PASS,
+        Rung,
+        TaskScore,
+        render_report,
+    )
+
+    def scored(task_id, killed, total):
+        s = TaskScore(task_id=task_id)
+        s.rungs = [Rung(n, PASS) for n in
+                   ["gate", "hunt", "mutants", "encode", "prove", "fidelity"]]
+        s.mutants_killed, s.mutants_total = killed, total
+        return s
+
+    thin, thick = scored("thin", 1, 1), scored("thick", 8, 8)
+    report = render_report([thin, thick])
+    assert "1/1?" in report, "a one-mutant panel must be marked"
+    assert "8/8?" not in report and "8/8" in report
+    assert "panel resolution" in report
+    assert f"median" in report
+    assert LOW_RESOLUTION_PANEL == 3
