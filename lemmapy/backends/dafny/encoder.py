@@ -7,8 +7,9 @@ rejection):
 - statements: assignment (incl. parallel tuple), if/elif/else, while,
   `for i in range(...)` (lowered to while with an auto bounds invariant),
   return
-- expressions: arithmetic with PyFloorDiv/PyMod, comparisons (chained),
-  and/or/not, len/min/max/abs, indexing, conditional expressions
+- expressions: arithmetic with PyFloorDiv/PyMod (INT operands only, except
+  `+` which also concatenates two lists or two strs), comparisons
+  (chained), and/or/not, len/min/max/abs, indexing, conditional expressions
 - specs: requires/ensures/invariant/decreases; forall/exists over range or
   membership domains; `result`; `old(param)` lowers to the parameter (our
   fragment's parameters are immutable — guards copy in, ownership forbids
@@ -31,6 +32,10 @@ Soundness rules enforced here (each closes a reviewed miscompilation class):
   Dafny's block scoping matches Python's function scoping; Dafny's definite
   assignment then guards use-before-assign.
 - `x += y` only on ints: Python's list `+=` mutates aliases in place.
+- Binary arithmetic operands are type-checked HERE, not left to Dafny:
+  `s * 2`, `s % x`, `True + True` and `a - b` on strs all encoded to
+  ill-typed Dafny and surfaced as a resolution error about `seq<char>`,
+  which breaks the rule that this encoder is the conformance authority.
 - One definition per function name per module: CPython runs the LAST def,
   the verifier would prove the first.
 - `#@ invariant`/`#@ decreases` must sit at the top of the loop body,
@@ -372,6 +377,18 @@ def _dafny_type(ann: ast.expr | None, where: ast.AST) -> str:
                        f"Optional[T] / T | None")
 
 
+def _py_type_name(tdesc: str | None) -> str:
+    """Dafny type descriptor -> the Python type the user wrote. Rejections
+    must talk about the program, not about `seq<char>`."""
+    if tdesc is None:
+        return "an undetermined type"
+    if tdesc in ("string", "char"):
+        return "str"
+    if tdesc.startswith("seq<"):
+        return f"list[{_py_type_name(tdesc[4:-1])}]"
+    return tdesc
+
+
 def _opt_inner(tdesc: str | None) -> str | None:
     """PyOpt<T> -> T, else None."""
     if tdesc is not None and tdesc.startswith("PyOpt<") and tdesc.endswith(">"):
@@ -664,6 +681,12 @@ class _MethodEncoder:
                 joiner = " && " if isinstance(op, ast.And) else " || "
                 return "(" + joiner.join(f"({self.expr(v)})" for v in values) + ")"
             case ast.BinOp(left=left, op=op, right=right):
+                if type(op) not in self._ARITH_SYMBOL:
+                    raise _err(node, f"operator {type(op).__name__} is outside the slice-1 encoder")
+                # Operand types BEFORE emission: everything below assumes
+                # them, and Dafny's own complaint arrives too late and in
+                # the wrong vocabulary.
+                self._check_arith(node, op, left, right)
                 l, r = self._deopt(left), self._deopt(right)
                 match op:
                     case ast.Add():
@@ -676,15 +699,11 @@ class _MethodEncoder:
                         return f"PyFloorDiv({l}, {r})"
                     case ast.Mod():
                         return f"PyMod({l}, {r})"
-                    case ast.Pow():
+                    case _:  # Pow
                         # Python int ** negative-int yields float -- outside
                         # the int fragment; PyPow's requires (e >= 0) is
                         # exactly that domain condition, replayed as a VC.
-                        if self._eff_type(left) != "int" or self._eff_type(right) != "int":
-                            raise _err(node, "`**` on non-int operands is outside the fragment")
                         return f"PyPow({l}, {r})"
-                    case _:
-                        raise _err(node, f"operator {type(op).__name__} is outside the slice-1 encoder")
             case ast.Compare(left=left, ops=ops, comparators=comps):
                 return self._compare(node, left, ops, comps)
             case ast.Call():
@@ -796,6 +815,71 @@ class _MethodEncoder:
             else:
                 out.append(ch)
         return '"' + "".join(out) + '"'
+
+    # Python spelling for the operators the fragment models, so a rejection
+    # talks about the user's program rather than about `seq<char>`.
+    _ARITH_SYMBOL = {
+        ast.Add: "+", ast.Sub: "-", ast.Mult: "*",
+        ast.FloorDiv: "//", ast.Mod: "%", ast.Pow: "**",
+    }
+
+    def _check_arith(self, node: ast.expr, op: ast.operator,
+                     left: ast.expr, right: ast.expr) -> None:
+        """Binary arithmetic is int-only, except `+` on two sequences.
+
+        `check` is supposed to report exactly what `verify` would reject —
+        the encoder dry-run IS the conformance authority (M1). It was not:
+        `s * 2`, `a - b` on strs, `s % x` and `True + True` all passed
+        `check` and then failed inside Dafny with a message about
+        `seq<char>` at a line the reader has to map back by hand. An agent
+        consuming the structured payload would get `resolution`, whose
+        documented guidance ("the sidecar did not typecheck") points at the
+        wrong file entirely.
+
+        Fails closed, matching what `**` already did: an operand whose type
+        the inferencer cannot determine is rejected rather than emitted and
+        hoped for.
+        """
+        sym = self._ARITH_SYMBOL[type(op)]
+        lt, rt = self._eff_type(left), self._eff_type(right)
+        if lt == "int" and rt == "int":
+            return
+        if isinstance(op, ast.Add) and lt is not None and lt == rt \
+                and self._is_seqish(lt):
+            return  # concatenation: same meaning in both languages
+
+        # Python DOES define these; they are simply not modeled yet. Say so,
+        # rather than implying the program is wrong.
+        if isinstance(op, ast.Mult) and (
+                (self._is_seqish(lt) and rt == "int")
+                or (lt == "int" and self._is_seqish(rt))):  # `3 * xs` too
+            raise _err(node, (
+                "sequence repetition (`s * n`) is outside the slice-1 "
+                "encoder — build the value with a loop, or write the "
+                "repeated literal"))
+        if isinstance(op, ast.Mod) and lt == "string":
+            raise _err(node, (
+                "printf-style string formatting (`s % x`) is outside the "
+                "slice-1 encoder — the fragment models `%` as integer "
+                "modulo only"))
+        if "bool" in (lt, rt):
+            raise _err(node, (
+                f"`{sym}` on a bool operand relies on Python's bool-to-int "
+                f"coercion (`True + True == 2`), which is outside the "
+                f"slice-1 encoder — write an explicit conditional"))
+        if lt is None or rt is None:
+            raise _err(node, (
+                f"cannot determine the operand types of `{sym}`; the "
+                f"fragment needs int operands (or two lists, or two strs, "
+                f"for `+`)"))
+        # Everything Python itself defines has been handled above, so what
+        # is left is a TypeError in CPython. Say THAT: "outside the slice-1
+        # encoder" would imply the fragment might grow to admit it.
+        raise _err(node, (
+            f"Python has no `{sym}` between {_py_type_name(lt)} and "
+            f"{_py_type_name(rt)} (it raises TypeError) — in the fragment "
+            f"arithmetic is int-only, and `+` additionally concatenates two "
+            f"lists or two strs"))
 
     def _eff_type(self, node: ast.expr) -> str | None:
         """Inferred type with PyOpt<T> flattened to T (deopt semantics)."""
