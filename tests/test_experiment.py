@@ -37,6 +37,26 @@ def _mini_corpus(tmp_path, names=("mini",)):
     return corpus
 
 
+def test_wilson_interval_is_defensible_at_small_n():
+    from lemmapy.benchmark.experiment import wilson_interval
+
+    # The whole reason not to use the normal approximation: 5/5 must not
+    # claim certainty from five observations.
+    lo, hi = wilson_interval(5, 5)
+    assert hi == 1.0
+    assert 0.4 < lo < 0.6, f"5/5 lower bound implausible: {lo}"
+    # 0/5 is the mirror image, and stays inside [0, 1].
+    lo, hi = wilson_interval(0, 5)
+    assert lo == 0.0 and 0.4 < hi < 0.6
+    # Symmetric around a half, and tightening with n.
+    lo_small, hi_small = wilson_interval(5, 10)
+    lo_big, hi_big = wilson_interval(50, 100)
+    assert abs((lo_small + hi_small) / 2 - 0.5) < 1e-9
+    assert (hi_big - lo_big) < (hi_small - lo_small)
+    # No trials is total ignorance, not a crash or a false 0%.
+    assert wilson_interval(0, 0) == (0.0, 1.0)
+
+
 def test_redaction_strips_failure_detail_preserves_contract():
     # Build through build_request so this test trips if the request schema
     # drifts. Structured detail must vanish; loop state must survive.

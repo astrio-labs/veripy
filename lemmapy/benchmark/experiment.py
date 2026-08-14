@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -90,6 +91,15 @@ def _slug(spec: str) -> str:
     if spec.startswith("file:"):
         return "file-" + hashlib.sha256(spec.encode()).hexdigest()[:8]
     return re.sub(r"[^A-Za-z0-9._-]+", "-", spec)
+
+
+def _display(spec: str, width: int = 24) -> str:
+    """Table-safe engine label. A `file:<dir>` replay spec carries a long
+    absolute path that would wreck the columns; keep the tail, which is the
+    part that identifies the replay set. Ledger rows keep the full spec."""
+    if len(spec) <= width:
+        return spec
+    return "…" + spec[-(width - 1):]
 
 
 def _git_rev(cwd: Path) -> str | None:
@@ -326,7 +336,7 @@ def summarize_ledger(ledger: Path) -> str:
         out_tok = sum(r["usage_total"]["output_tokens"] or 0 for r in cell)
         kill = _rate(cell, "mutants_killed", "mutants_total")
         golden = _rate(cell, "golden_mutants_killed", "golden_mutants_total")
-        lines.append(f"{exam:<13} {task:<16} {engine:<26} {arm:<9} "
+        lines.append(f"{exam:<13} {task:<16} {_display(engine):<26} {arm:<9} "
                      f"{f'{k}/{n}':<7} {mean_iters:<6} {rej:<6} {kill:<7} "
                      f"{golden:<8} {out_tok or '-':<8}")
         for row in cell:
@@ -335,9 +345,30 @@ def summarize_ledger(ledger: Path) -> str:
                     rule = a["rejection"].get("rule") or "other"
                     rules[rule] = rules.get(rule, 0) + 1
     lines.append("-" * len(header))
+    # Per (engine, arm) aggregate over all tasks and trials — the row a
+    # results table is built from, with a Wilson 95% interval because k/n
+    # at these trial counts is not a defensible point estimate on its own.
+    cells: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        cells.setdefault((row["exam"], row["engine"], row["arm"]), []).append(row)
+    lines.append(f"{'exam':<13} {'engine':<26} {'arm':<9} {'ok':<8} "
+                 f"{'rate':<7} {'95% CI':<11} {'kill%':<7} {'cost$':<8}")
+    for key in sorted(cells):
+        exam, engine, arm = key
+        cell = cells[key]
+        n = len(cell)
+        k = sum(1 for r in cell if r["restored"])
+        cost = sum(r["usage_total"]["cost_usd"] or 0 for r in cell)
+        lines.append(
+            f"{exam:<13} {_display(engine):<26} {arm:<9} {f'{k}/{n}':<8} "
+            f"{f'{100 * k / n:.0f}%':<7} {_ci(k, n):<11} "
+            f"{_rate(cell, 'mutants_killed', 'mutants_total'):<7} "
+            f"{f'{cost:.2f}' if cost else '-':<8}")
+    lines.append("-" * len(header))
     total = len(rows)
     restored = sum(1 for r in rows if r["restored"])
-    lines.append(f"trials: {total}   ok (restored/valid): {restored}/{total}")
+    lines.append(f"trials: {total}   ok (restored/valid): {restored}/{total} "
+                 f"{_ci(restored, total)}")
     spec_rows = [r for r in rows if r["exam"] == "spec-writing"]
     if spec_rows:
         lines.append(
@@ -349,6 +380,30 @@ def summarize_ledger(ledger: Path) -> str:
         breakdown = ", ".join(f"{r}: {c}" for r, c in sorted(rules.items()))
         lines.append(f"whitelist rejections by rule: {breakdown}")
     return "\n".join(lines)
+
+
+def wilson_interval(successes: int, trials: int,
+                    z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval (95% by default) for a binomial proportion.
+
+    The normal approximation is indefensible at these trial counts — with
+    5/5 it reports [1.0, 1.0], claiming certainty from five observations.
+    Wilson stays inside [0, 1] and keeps a sane width at the boundaries,
+    which is what a reviewer will expect next to any small-n rate.
+    """
+    if trials <= 0:
+        return (0.0, 1.0)
+    p = successes / trials
+    denom = 1 + z * z / trials
+    center = (p + z * z / (2 * trials)) / denom
+    margin = z * math.sqrt(p * (1 - p) / trials
+                           + z * z / (4 * trials * trials)) / denom
+    return (max(0.0, center - margin), min(1.0, center + margin))
+
+
+def _ci(successes: int, trials: int) -> str:
+    lo, hi = wilson_interval(successes, trials)
+    return f"[{100 * lo:.0f},{100 * hi:.0f}]"
 
 
 def _rate(rows: list[dict[str, Any]], killed_key: str, total_key: str) -> str:
