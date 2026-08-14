@@ -186,6 +186,15 @@ def run_task(
             if hits != 1:
                 stale.append(
                     f"{key} entry {entry!r} matches {hits} mutants (expected 1)")
+    # A mutant ruled BOTH equivalent (unkillable, exclude from the
+    # denominator) and a timeout kill (diverges, count as killed) carries
+    # contradictory human judgements. Each entry validates fine on its
+    # own, and the equivalence filter would silently win — so name the
+    # contradiction instead of resolving it by evaluation order.
+    for entry in sorted(equivalents & timeout_adjudicated):
+        stale.append(
+            f"{entry!r} is ruled BOTH equivalent_mutants and timeout_kills "
+            f"— contradictory")
     if stale:
         score.mutants_total = len(mutants)
         score.rungs.append(Rung(

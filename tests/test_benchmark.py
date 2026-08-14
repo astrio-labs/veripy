@@ -247,6 +247,40 @@ def test_stale_or_ambiguous_adjudication_errors_the_rung(tmp_path, monkeypatch):
     assert score.height == 2  # gate + hunt only; the panel never scored
 
 
+def test_contradictory_adjudications_error_the_rung(tmp_path, monkeypatch):
+    # A mutant ruled BOTH equivalent (exclude from the denominator) and a
+    # timeout kill (count as killed) is a contradiction. Each entry passes
+    # validation alone, and the equivalence filter would silently win,
+    # dropping the mutant and overstating spec strength.
+    import json as json_mod
+
+    from lemmapy.benchmark import runner as runner_mod
+
+    src = "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    first = generate_mutations(src, max_mutants=4)[0][0]
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(src)
+    (task_dir / "meta.json").write_text(json_mod.dumps(
+        {"id": "t", "equivalent_mutants": [first], "timeout_kills": [first]}))
+
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        calls["n"] += 1
+        return ("clean", "") if calls["n"] == 1 else ("counterexample", "")
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=4)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == runner_mod.ERROR
+    assert "contradictory" in mutants.detail
+    assert score.adjudicated == 0  # nothing was excluded on a contradiction
+    assert score.height == 2
+
+
 def test_adjudication_outside_the_capped_panel_is_not_stale(tmp_path, monkeypatch):
     # --quick truncates the panel. A ruling about a mutant the truncated
     # run never hunts is OUT OF SCOPE, not stale — validating against the
