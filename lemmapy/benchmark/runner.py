@@ -247,8 +247,14 @@ def run_task(
             # terminating analysis would be indistinguishable. A human
             # adjudicates divergence in meta.json ("timeout_kills"); until
             # then the timeout fails the rung, like a survivor.
+            #
+            # An adjudicated divergence is a real behaviour change and does
+            # not fail the rung — but it is NOT credited as spec strength,
+            # for exactly the reason crashes are not: the wall catches a
+            # diverging mutant whatever the specification says, so
+            # `#@ ensures True` "kills" it just as well and the mutant
+            # carries no information about the spec.
             if description in timeout_adjudicated:
-                score.mutants_killed += 1
                 score.adjudicated_timeouts += 1
             else:
                 score.timeouts.append(description)
@@ -262,8 +268,8 @@ def run_task(
             # misconfigured one.
             error_reasons.append(f"{description} ({why})")
     analysis_errors = (score.mutants_total - score.mutants_killed
-                       - score.mutants_crashed - len(score.survivors)
-                       - len(score.timeouts))
+                       - score.mutants_crashed - score.adjudicated_timeouts
+                       - len(score.survivors) - len(score.timeouts))
     if score.mutants_total == 0 and score.adjudicated:
         # The panel existed but adjudication emptied it: nothing was
         # measured, so this must not read as a skipped-because-absent rung
@@ -282,6 +288,7 @@ def run_task(
         detail = (f"{score.mutants_killed}/{score.mutants_total} refuted; "
                   f"{score.mutants_crashed} crashed; "
                   f"{len(score.survivors)} survivor(s); "
+                  f"{score.adjudicated_timeouts} diverged; "
                   f"{len(score.timeouts)} unadjudicated timeout(s); "
                   f"{analysis_errors} analysis error(s)")
         if score.survivors:
@@ -296,6 +303,8 @@ def run_task(
         parts = [f"{score.mutants_killed}/{score.mutants_total} refuted"]
         if score.mutants_crashed:
             parts.append(f"{score.mutants_crashed} crashed")
+        if score.adjudicated_timeouts:
+            parts.append(f"{score.adjudicated_timeouts} diverged")
         if score.survivors:
             parts.append(f"survivors: {'; '.join(score.survivors[:3])}")
         if score.timeouts:
@@ -304,12 +313,18 @@ def run_task(
                 f"-- adjudicate divergence via meta.json \"timeout_kills\"")
         score.rungs.append(Rung("mutants", FAIL, "; ".join(parts)))
     else:
-        adj = (f" ({score.adjudicated_timeouts} adjudicated timeout kill(s))"
-               if score.adjudicated_timeouts else "")
+        extra = []
+        if score.mutants_crashed:
+            extra.append(f"{score.mutants_crashed} crashed")
+        if score.adjudicated_timeouts:
+            # Named "diverged", not "killed": adjudication established a
+            # behaviour change, not that the SPEC discriminated it.
+            extra.append(f"{score.adjudicated_timeouts} diverged "
+                         f"(adjudicated, not credited)")
         score.rungs.append(Rung(
             "mutants", PASS,
-            f"{score.mutants_killed}/{score.mutants_total} refuted{adj}"
-            + (f"; {score.mutants_crashed} crashed" if score.mutants_crashed else "")))
+            f"{score.mutants_killed}/{score.mutants_total} refuted"
+            + ("; " + "; ".join(extra) if extra else "")))
 
     # R3: encode
     try:
@@ -408,14 +423,16 @@ def render_report(scores: list[TaskScore]) -> str:
         + (f" ({100 * killed / total:.0f}%)" if total else "")
         + (f"; {crashed} crashed (caught by the interpreter, not the spec — "
            f"never credited)" if crashed else "")
+        + (f"; {asserted} diverged (adjudicated nontermination — caught by "
+           f"the wall, not the spec, so never credited)" if asserted else "")
     )
     if asserted or excluded:
         # The headline must not launder human judgement as measurement: say
         # exactly how much of it the panel rests on.
         notes = []
         if asserted:
-            notes.append(f"{asserted} kill(s) human-adjudicated (timeout), "
-                         f"not refuted by the hunter")
+            notes.append(f"{asserted} mutant(s) human-adjudicated as "
+                         f"divergent; counted separately, NOT as spec strength")
         if excluded:
             notes.append(f"{excluded} mutant(s) excluded as adjudicated equivalent")
         lines.append("* " + "; ".join(notes))
@@ -431,6 +448,7 @@ def scores_to_json(scores: list[TaskScore]) -> dict:
                 "rungs": [{"name": r.name, "status": r.status, "detail": r.detail} for r in s.rungs],
                 "mutants": {"total": s.mutants_total, "killed": s.mutants_killed,
                             "crashed": s.mutants_crashed, "crashers": s.crashers,
+                            "diverged": s.adjudicated_timeouts,
                             "timeouts": s.timeouts,
                             "adjudicated_timeouts": s.adjudicated_timeouts,
                             "survivors": s.survivors, "adjudicated_equivalent": s.adjudicated},
