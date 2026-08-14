@@ -366,32 +366,107 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
     return 1 if failed else 0
 
 
-def cmd_difftest(paths: list[Path], outdir: Path, examples: int) -> int:
+def _difftest_targets(paths: list[Path]) -> list[Path]:
+    """Expand directories to the `.py` files under them.
+
+    A nightly sweep is pointed at a corpus, not at a hand-written file
+    list — a list goes stale silently the moment a task is added, which is
+    the failure mode this whole command exists to prevent.
+    """
+    targets: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            targets.extend(sorted(p for p in path.rglob("*.py")
+                                  if not p.name.startswith(".")))
+        else:
+            targets.append(path)
+    # A file reachable twice (listed AND inside a listed directory) would
+    # otherwise be compared twice and counted twice.
+    seen: set[Path] = set()
+    unique = []
+    for path in targets:
+        key = path.resolve()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def cmd_difftest(paths: list[Path], outdir: Path, examples: int,
+                 report: Path | None = None, min_functions: int = 1) -> int:
     """Translation validation (§6): original Python vs Dafny-compiled model."""
     from .difftest.harness import difftest_file
 
     diverged = 0
     trouble = 0
-    for path in paths:
+    compared = 0
+    skipped: list[str] = []
+    files: list[dict] = []
+    targets = _difftest_targets(paths)
+    for path in targets:
         result = difftest_file(path, outdir, examples=examples)
+        entry: dict = {"path": str(path), "error": result.error, "functions": []}
+        files.append(entry)
         if result.error:
             print(f"{path}: difftest trouble: {result.error}", file=sys.stderr)
             trouble += 1
             continue
+        if not result.functions:
+            # NOT silent: a file with nothing to compare used to print
+            # nothing and leave the exit code at 0, so a sweep that had
+            # quietly stopped covering anything looked exactly like a
+            # sweep that passed.
+            skipped.append(str(path))
+            print(f"{path}: no spec'd functions — nothing to compare")
+            continue
         for fn in result.functions:
+            record = {"name": fn.name, "examples": fn.examples,
+                      "ok": fn.ok, "error": fn.error, "mismatch": None}
+            entry["functions"].append(record)
             if fn.ok:
+                compared += 1
                 print(f"{path}::{fn.name}: OK ({fn.examples} examples)")
             elif fn.mismatch is not None:
                 diverged += 1
+                compared += 1
                 m = fn.mismatch
+                # reprs, not the values: this record is the REPRODUCER, and
+                # it has to survive JSON for objects that may not.
+                record["mismatch"] = {"args": repr(m.args),
+                                      "python": repr(m.python_result),
+                                      "dafny": repr(m.dafny_result)}
                 print(f"{path}::{fn.name}: DIVERGENCE (encoder bug)")
                 print(f"  args={m.args!r}")
                 print(f"  python={m.python_result!r}  dafny-model={m.dafny_result!r}")
             else:
                 trouble += 1
                 print(f"{path}::{fn.name}: trouble: {fn.error}", file=sys.stderr)
+
+    print(f"\n{compared} function(s) compared at {examples} examples across "
+          f"{len(targets)} file(s); {len(skipped)} with nothing to compare, "
+          f"{diverged} diverged, {trouble} trouble")
+    if report is not None:
+        payload = {
+            "schema": "lemmapy-difftest/1",
+            "examples": examples,
+            "files": files,
+            "totals": {"files": len(targets), "compared": compared,
+                       "skipped": len(skipped), "diverged": diverged,
+                       "trouble": trouble},
+        }
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps(payload, indent=1))
+        print(f"report -> {report}")
     if diverged:
         return 1
+    if compared < min_functions:
+        # The vacuity guard. A sweep that compared less than it was told to
+        # expect has not passed — it has stopped testing, and green is the
+        # most dangerous thing it could report.
+        print(f"difftest compared {compared} function(s), expected at least "
+              f"{min_functions} — the sweep is not covering what it should",
+              file=sys.stderr)
+        return 2
     return 2 if trouble else 0
 
 
@@ -565,6 +640,13 @@ def main(argv: list[str] | None = None) -> int:
     p_difftest.add_argument("files", nargs="+", type=Path)
     p_difftest.add_argument("-o", "--outdir", type=Path, default=Path("build/difftest"))
     p_difftest.add_argument("-n", "--examples", type=int, default=100)
+    p_difftest.add_argument("--report", type=Path,
+                            help="write a machine-readable divergence report "
+                                 "(JSON) — what a nightly sweep uploads")
+    p_difftest.add_argument("--min-functions", type=int, default=1,
+                            help="fail unless at least N functions were "
+                                 "actually compared (default 1: a sweep that "
+                                 "compared nothing has not passed)")
 
     p_benchmark = sub.add_parser(
         "benchmark",
@@ -745,7 +827,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_repair(args.file, args.outdir, args.engine,
                           args.max_iterations, args.time_limit, args.apply)
     if args.command == "difftest":
-        return cmd_difftest(args.files, args.outdir, args.examples)
+        return cmd_difftest(args.files, args.outdir, args.examples,
+                            report=args.report,
+                            min_functions=args.min_functions)
     if args.command == "benchmark":
         if args.exam == "proof-repair":
             from .benchmark.exam import render_exam_report, run_repair_exam
