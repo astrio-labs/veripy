@@ -59,21 +59,41 @@ def build_request(source: str, payload: dict[str, Any],
         "failures": payload,
         "sidecar": (payload.get("sidecar") or {}).get("text", ""),
         "history": history,
+        "reply_with": "Reply with the complete new sidecar content only.",
     }
 
 
+# Section title per request key, in render order. A section appears only if
+# its key is present, so ONE renderer serves every exam's request schema —
+# an engine must never need to know which exam it is sitting.
+_PROMPT_SECTIONS: tuple[tuple[str, str, bool], ...] = (
+    ("source", "## Python source (frozen)", False),
+    ("failures", "## Verification outcome (structured)", True),
+    ("sidecar", "## Current sidecar", False),
+    ("errors", "## Your previous answer was rejected as malformed "
+               "(mechanical validity only — no verification was attempted)",
+     True),
+)
+
+
 def _render_prompt(request: dict[str, Any]) -> str:
-    parts = [
-        request["rules"],
-        "\n## Python source (frozen)\n" + request["source"],
-        "\n## Verification outcome (structured)\n"
-        + json.dumps(request["failures"], indent=1),
-        "\n## Current sidecar\n" + (request["sidecar"] or "(none)"),
-    ]
-    if request["history"]:
+    parts = [request["rules"]]
+    for key, title, as_json in _PROMPT_SECTIONS:
+        if key not in request:
+            continue
+        value = request[key]
+        if as_json:
+            if not value:
+                continue
+            body = json.dumps(value, indent=1)
+        else:
+            body = value or "(none)"
+        parts.append(f"\n{title}\n{body}")
+    if request.get("history"):
         parts.append("\n## Prior attempts (most recent last)\n"
                      + json.dumps(request["history"][-3:], indent=1))
-    parts.append("\nReply with the complete new sidecar content only.")
+    parts.append("\n" + request.get(
+        "reply_with", "Reply with the complete new sidecar content only."))
     return "\n".join(parts)
 
 

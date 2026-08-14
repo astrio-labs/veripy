@@ -28,8 +28,13 @@ from typing import Any
 
 from ..repair import Engine, make_engine
 from .exam import ExamScore, exam_tasks, run_repair_exam
+from .specexam import SpecExamScore, run_spec_exam, spec_exam_tasks
 
 ARMS = ("full", "one-shot", "ablated")
+EXAMS = ("proof-repair", "spec-writing")
+# The spec-writing exam has no loop to ablate and no budget to vary: its
+# arms would all be the same run.
+SPEC_ARMS = ("one-shot",)
 TRIAL_SCHEMA = "lemmapy-exam-trial/1"
 RUN_SCHEMA = "lemmapy-exam-run/1"
 
@@ -158,6 +163,31 @@ def _score_row(score: ExamScore, *, run_id: str, exam: str, engine: str,
     }
 
 
+def _spec_row(score: SpecExamScore, *, run_id: str, engine: str, arm: str,
+              trial: int, time_limit: int) -> dict[str, Any]:
+    """A spec-writing row. `restored` carries EXAM VALIDITY so the summary's
+    k/n column stays meaningful across exams; spec strength lives in the
+    mutants fields, which is what the paper reports."""
+    return {
+        "schema": TRIAL_SCHEMA, "run_id": run_id, "exam": "spec-writing",
+        "task": score.task_id, "engine": engine, "arm": arm, "trial": trial,
+        "restored": score.valid, "iterations": score.attempts,
+        "reason": score.reason, "attempts": [],
+        "proposals": score.attempts, "rejections": len(score.retry_reasons),
+        "golden_lemmas": 0,
+        "height": score.height, "golden_height": score.golden_height,
+        "mutants_total": score.mutants_total,
+        "mutants_killed": score.mutants_killed,
+        "golden_mutants_total": score.golden_mutants_total,
+        "golden_mutants_killed": score.golden_mutants_killed,
+        "survivors": score.survivors, "clause_counts": score.clause_counts,
+        "retry_reasons": score.retry_reasons,
+        "usage": score.usage, "usage_total": _usage_total(score.usage),
+        "wall_ms": score.wall_ms, "max_iterations": 1,
+        "time_limit": time_limit, "ts": _now(),
+    }
+
+
 def _append(ledger: Path, row: dict[str, Any]) -> None:
     with open(ledger, "a") as fh:
         fh.write(json.dumps(row) + "\n")
@@ -168,35 +198,47 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
                    arms: list[str], trials: int, ledger: Path,
                    max_iterations: int = 4, time_limit: int = 60,
                    only_tasks: set[str] | None = None,
-                   resume: bool = True,
+                   resume: bool = True, exam: str = "proof-repair",
+                   retries: int = 2, ladder: dict[str, Any] | None = None,
                    progress=None) -> list[dict[str, Any]]:
-    """Run the proof-repair exam over the full matrix, appending one row
-    per (task, engine, arm, trial) to the ledger. Returns the rows written
-    by THIS invocation (resumed cells are skipped, not re-emitted)."""
+    """Run an exam over the full matrix, appending one row per
+    (task, engine, arm, trial) to the ledger. Returns the rows written by
+    THIS invocation (resumed cells are skipped, not re-emitted)."""
     # Fail fast on config errors before any engine spends tokens.
+    if exam not in EXAMS:
+        raise ValueError(f"unknown exam {exam!r} (use one of {', '.join(EXAMS)})")
     for spec in engines:
         make_engine(spec)
+    allowed = ARMS if exam == "proof-repair" else SPEC_ARMS
     for arm in arms:
-        if arm not in ARMS:
-            raise ValueError(f"unknown arm {arm!r} (use one of {', '.join(ARMS)})")
-    roster = [d.name for d in exam_tasks(tasks_root)]
+        if arm not in allowed:
+            raise ValueError(
+                f"unknown arm {arm!r} for exam {exam!r} "
+                f"(use one of {', '.join(allowed)})")
+    if exam == "proof-repair":
+        roster = [d.name for d in exam_tasks(tasks_root)]
+        roster_desc = "sidecar-bearing roster"
+    else:
+        roster = [d.name for d in spec_exam_tasks(tasks_root)]
+        roster_desc = "roster"
     if only_tasks is not None:
         unknown = only_tasks - set(roster)
         if unknown:
             raise ValueError(
-                f"unknown task(s) {sorted(unknown)}; sidecar-bearing roster: "
-                f"{roster}")
+                f"unknown task(s) {sorted(unknown)}; {roster_desc}: {roster}")
         roster = [t for t in roster if t in only_tasks]
     if not roster:
-        raise ValueError(f"no sidecar-bearing exam tasks under {tasks_root}")
+        raise ValueError(f"no {exam} exam tasks under {tasks_root}")
 
     ledger.parent.mkdir(parents=True, exist_ok=True)
     run_id = f"run-{_now()}-{hashlib.sha256(repr((engines, arms, trials)).encode()).hexdigest()[:6]}"
+    ladder_kwargs = dict(ladder or {})
     _append(ledger, {
-        "schema": RUN_SCHEMA, "run_id": run_id, "ts": _now(),
+        "schema": RUN_SCHEMA, "run_id": run_id, "ts": _now(), "exam": exam,
         "git_rev": _git_rev(tasks_root), "claude_version": _claude_version(),
         "engines": engines, "arms": arms, "trials": trials,
         "max_iterations": max_iterations, "time_limit": time_limit,
+        "retries": retries, "ladder": ladder_kwargs,
         "tasks_root": str(tasks_root), "roster": roster,
     })
 
@@ -207,22 +249,33 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
             factory, arm_iters = _arm_config(spec, arm, max_iterations)
             for trial in range(trials):
                 pending = {t for t in roster
-                           if ("proof-repair", t, spec, arm, trial) not in done}
+                           if (exam, t, spec, arm, trial) not in done}
                 if not pending:
                     continue
                 if progress is not None:
-                    progress(f"[{spec} / {arm} / trial {trial}] "
+                    progress(f"[{exam} / {spec} / {arm} / trial {trial}] "
                              f"{len(pending)} task(s)")
                 cell_dir = workdir / _slug(spec) / arm / f"trial{trial}"
-                scores = run_repair_exam(
-                    tasks_root, cell_dir, factory,
-                    max_iterations=arm_iters, time_limit=time_limit,
-                    only=pending)
-                for score in scores:
-                    row = _score_row(
-                        score, run_id=run_id, exam="proof-repair",
-                        engine=spec, arm=arm, trial=trial,
-                        max_iterations=arm_iters, time_limit=time_limit)
+                if exam == "proof-repair":
+                    rows = [
+                        _score_row(score, run_id=run_id, exam=exam,
+                                   engine=spec, arm=arm, trial=trial,
+                                   max_iterations=arm_iters,
+                                   time_limit=time_limit)
+                        for score in run_repair_exam(
+                            tasks_root, cell_dir, factory,
+                            max_iterations=arm_iters, time_limit=time_limit,
+                            only=pending)
+                    ]
+                else:
+                    rows = [
+                        _spec_row(score, run_id=run_id, engine=spec, arm=arm,
+                                  trial=trial, time_limit=time_limit)
+                        for score in run_spec_exam(
+                            tasks_root, cell_dir, factory, retries=retries,
+                            only=pending, **ladder_kwargs)
+                    ]
+                for row in rows:
                     _append(ledger, row)
                     written.append(row)
     return written
@@ -256,7 +309,8 @@ def summarize_ledger(ledger: Path) -> str:
             (row["exam"], row["task"], row["engine"], row["arm"]), []
         ).append(row)
     header = (f"{'exam':<13} {'task':<16} {'engine':<26} {'arm':<9} "
-              f"{'restored':<9} {'iters':<6} {'rej%':<6} {'out-tok':<8}")
+              f"{'ok':<7} {'iters':<6} {'rej%':<6} {'kill%':<7} "
+              f"{'golden%':<8} {'out-tok':<8}")
     lines = [header, "-" * len(header)]
     rules: dict[str, int] = {}
     for key in sorted(groups):
@@ -270,9 +324,11 @@ def summarize_ledger(ledger: Path) -> str:
         rejections = sum(r["rejections"] for r in cell)
         rej = f"{100 * rejections / proposals:.0f}" if proposals else "-"
         out_tok = sum(r["usage_total"]["output_tokens"] or 0 for r in cell)
+        kill = _rate(cell, "mutants_killed", "mutants_total")
+        golden = _rate(cell, "golden_mutants_killed", "golden_mutants_total")
         lines.append(f"{exam:<13} {task:<16} {engine:<26} {arm:<9} "
-                     f"{f'{k}/{n}':<9} {mean_iters:<6} {rej:<6} "
-                     f"{out_tok or '-':<8}")
+                     f"{f'{k}/{n}':<7} {mean_iters:<6} {rej:<6} {kill:<7} "
+                     f"{golden:<8} {out_tok or '-':<8}")
         for row in cell:
             for a in row["attempts"]:
                 if a.get("rejection"):
@@ -281,11 +337,29 @@ def summarize_ledger(ledger: Path) -> str:
     lines.append("-" * len(header))
     total = len(rows)
     restored = sum(1 for r in rows if r["restored"])
-    lines.append(f"trials: {total}   restored: {restored}/{total}")
+    lines.append(f"trials: {total}   ok (restored/valid): {restored}/{total}")
+    spec_rows = [r for r in rows if r["exam"] == "spec-writing"]
+    if spec_rows:
+        lines.append(
+            f"spec strength: engine {_rate(spec_rows, 'mutants_killed', 'mutants_total')}"
+            f" vs golden "
+            f"{_rate(spec_rows, 'golden_mutants_killed', 'golden_mutants_total')}"
+            f"   (valid trials only; an invalid answer contributes no panel)")
     if rules:
         breakdown = ", ".join(f"{r}: {c}" for r, c in sorted(rules.items()))
         lines.append(f"whitelist rejections by rule: {breakdown}")
     return "\n".join(lines)
+
+
+def _rate(rows: list[dict[str, Any]], killed_key: str, total_key: str) -> str:
+    """Pooled percentage over rows that HAVE a panel. Rows without one (a
+    proof-repair row, or an invalid spec answer) are excluded rather than
+    counted as zero — 'no panel run' is not 'killed nothing'."""
+    total = sum(r.get(total_key) or 0 for r in rows)
+    if not total:
+        return "-"
+    killed = sum(r.get(killed_key) or 0 for r in rows)
+    return f"{100 * killed / total:.0f}%"
 
 
 def ledger_to_json(ledger: Path) -> dict[str, Any]:

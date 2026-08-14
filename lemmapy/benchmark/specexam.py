@@ -268,23 +268,8 @@ def build_spec_request(source: str, task_id: str, attempt: int,
         "source": source,
         "errors": errors,
         "history": history,
+        "reply_with": "Reply with the complete annotated file only.",
     }
-
-
-def render_spec_prompt(request: dict[str, Any]) -> str:
-    parts = [
-        request["rules"],
-        "\n## Implementation (frozen — insert `#@` lines only)\n"
-        + request["source"],
-    ]
-    if request["errors"]:
-        parts.append(
-            "\n## Your previous answer was rejected as malformed\n"
-            + json.dumps(request["errors"], indent=1)
-            + "\n(These are mechanical validity errors only — no verification "
-              "was attempted.)")
-    parts.append("\nReply with the complete annotated file only.")
-    return "\n".join(parts)
 
 
 @dataclass

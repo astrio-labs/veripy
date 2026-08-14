@@ -189,7 +189,7 @@ def test_unknown_task_filter_and_missing_roster_rejected(tmp_path):
                        1, ledger, only_tasks={"nonesuch"})
     bare = tmp_path / "bare"
     bare.mkdir()
-    with pytest.raises(ValueError, match="no sidecar-bearing"):
+    with pytest.raises(ValueError, match="no proof-repair exam tasks"):
         run_experiment(bare, tmp_path / "cells", ["file:/tmp/x"], ["full"],
                        1, ledger)
     with pytest.raises(ValueError, match="unknown arm"):
@@ -197,6 +197,14 @@ def test_unknown_task_filter_and_missing_roster_rejected(tmp_path):
                        1, ledger)
     with pytest.raises(ValueError, match="unknown engine"):
         run_experiment(corpus, tmp_path / "cells", ["gpt"], ["full"], 1, ledger)
+    with pytest.raises(ValueError, match="unknown exam"):
+        run_experiment(corpus, tmp_path / "cells", ["file:/tmp/x"], ["full"],
+                       1, ledger, exam="vibes")
+    # The loop arms are meaningless for a one-shot exam and are refused
+    # rather than silently collapsed.
+    with pytest.raises(ValueError, match="unknown arm .* for exam"):
+        run_experiment(corpus, tmp_path / "cells", ["file:/tmp/x"],
+                       ["ablated"], 1, ledger, exam="spec-writing")
     assert not ledger.exists()  # config errors precede any ledger write
 
 
@@ -240,7 +248,7 @@ def test_summarize_groups_and_rejection_breakdown(tmp_path, monkeypatch):
                    1, ledger)
     table = summarize_ledger(ledger)
     assert "0/1" in table
-    assert "restored: 0/1" in table
+    assert "ok (restored/valid): 0/1" in table
     assert "bodiless: 1" in table and "forbidden-token: 1" in table
     assert "100" in table  # 2 rejections / 2 proposals
     rows = [json.loads(l) for l in ledger.read_text().splitlines()
@@ -261,16 +269,90 @@ def test_cli_experiment_exit_codes_and_summary(tmp_path, capsys):
                    "--trials", "1"])
     out = capsys.readouterr().out
     assert status == 1
-    assert "restored: 0/1" in out
+    assert "ok (restored/valid): 0/1" in out
     assert (tmp_path / "o" / "ledger.jsonl").exists()
     # Summarize-only mode re-reads the ledger without running cells.
     status = main(["experiment", "--summarize",
                    str(tmp_path / "o" / "ledger.jsonl")])
     assert status == 0
-    assert "restored: 0/1" in capsys.readouterr().out
+    assert "ok (restored/valid): 0/1" in capsys.readouterr().out
     # A missing ledger is a config error.
     assert main(["experiment", "--summarize",
                  str(tmp_path / "nonesuch.jsonl")]) == 2
+
+
+def test_spec_writing_matrix_records_strength(tmp_path, monkeypatch):
+    import lemmapy.benchmark.experiment as exp_mod
+    from lemmapy.benchmark.specexam import SpecExamScore
+
+    seen = []
+
+    def fake_spec_exam(tasks_root, workdir, factory, retries=2, only=None,
+                       **ladder):
+        seen.append({"retries": retries, "ladder": ladder,
+                     "only": set(only or [])})
+        factory()
+        return [SpecExamScore(
+            task_id=t, valid=True, attempts=1, reason="scored", height=3,
+            mutants_total=4, mutants_killed=1, survivors=["line 4: `<` -> `<=`"],
+            golden_height=6, golden_mutants_total=4, golden_mutants_killed=4,
+            clause_counts={"ensures": 1}, wall_ms=5,
+            usage=[{"input_tokens": 9, "output_tokens": 3, "cost_usd": 0.02}],
+        ) for t in sorted(only or [])]
+
+    monkeypatch.setattr(exp_mod, "run_spec_exam", fake_spec_exam)
+    corpus = _mini_corpus(tmp_path, names=("alpha", "beta"))
+    ledger = tmp_path / "ledger.jsonl"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    written = run_experiment(corpus, tmp_path / "cells", [f"file:{empty}"],
+                             ["one-shot"], 1, ledger, exam="spec-writing",
+                             retries=1, ladder={"mutant_cap": 4})
+    assert len(written) == 2
+    assert seen[0]["retries"] == 1 and seen[0]["ladder"] == {"mutant_cap": 4}
+    assert all(r["exam"] == "spec-writing" for r in written)
+    assert all(r["restored"] for r in written)  # `restored` == exam validity
+    assert written[0]["mutants_killed"] == 1
+    table = summarize_ledger(ledger)
+    # Engine strength and golden strength are reported side by side.
+    assert "25%" in table and "100%" in table
+    assert "spec strength: engine 25% vs golden 100%" in table
+    # Resume keys are exam-scoped: the same task/engine/arm/trial in the
+    # OTHER exam must not be treated as already done.
+    assert ("spec-writing", "alpha", f"file:{empty}", "one-shot", 0) \
+        in completed_cells(ledger)
+    assert ("proof-repair", "alpha", f"file:{empty}", "one-shot", 0) \
+        not in completed_cells(ledger)
+
+
+def test_invalid_spec_answer_is_not_counted_as_zero_kills(tmp_path, monkeypatch):
+    # "No panel run" must never be pooled as "killed nothing" — that would
+    # understate every engine that occasionally returns a malformed answer.
+    import lemmapy.benchmark.experiment as exp_mod
+    from lemmapy.benchmark.specexam import SpecExamScore
+
+    def fake_spec_exam(tasks_root, workdir, factory, retries=2, only=None,
+                       **ladder):
+        factory()
+        return [SpecExamScore(
+            task_id=t, valid=(t == "alpha"), attempts=1,
+            reason="scored" if t == "alpha" else "freeze: changed",
+            height=3 if t == "alpha" else 0,
+            mutants_total=4 if t == "alpha" else 0,
+            mutants_killed=4 if t == "alpha" else 0,
+            golden_height=6, golden_mutants_total=4, golden_mutants_killed=4,
+        ) for t in sorted(only or [])]
+
+    monkeypatch.setattr(exp_mod, "run_spec_exam", fake_spec_exam)
+    corpus = _mini_corpus(tmp_path, names=("alpha", "beta"))
+    ledger = tmp_path / "ledger.jsonl"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    run_experiment(corpus, tmp_path / "cells", [f"file:{empty}"], ["one-shot"],
+                   1, ledger, exam="spec-writing")
+    table = summarize_ledger(ledger)
+    assert "spec strength: engine 100%" in table  # not 50%
+    assert "ok (restored/valid): 1/2" in table    # validity reported separately
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")

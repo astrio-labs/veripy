@@ -598,8 +598,15 @@ def main(argv: list[str] | None = None) -> int:
     p_experiment.add_argument("--engines", nargs="+", default=["claude"],
                               help="engine specs: claude | claude:<model> | "
                                    "api:<provider>/<model> | file:<dir>")
+    p_experiment.add_argument("--exam", choices=["proof-repair", "spec-writing"],
+                              default="proof-repair")
     p_experiment.add_argument("--arms", nargs="+", default=["full", "one-shot"],
-                              help="full | one-shot | ablated")
+                              help="full | one-shot | ablated "
+                                   "(spec-writing supports one-shot only)")
+    p_experiment.add_argument("--retries", type=int, default=2,
+                              help="with --exam spec-writing: retries for a "
+                                   "mechanically invalid answer")
+    p_experiment.add_argument("--mutant-cap", type=int, default=8)
     p_experiment.add_argument("--trials", type=int, default=3)
     p_experiment.add_argument("--ledger", type=Path, default=None,
                               help="JSONL ledger path (default: <outdir>/ledger.jsonl)")
@@ -789,13 +796,21 @@ def main(argv: list[str] | None = None) -> int:
             print(summarize_ledger(args.summarize))
             return 0
         ledger = args.ledger or (args.outdir / "ledger.jsonl")
+        arms = args.arms
+        if args.exam == "spec-writing" and arms == ["full", "one-shot"]:
+            arms = ["one-shot"]  # the default is proof-repair's; don't error
         try:
             written = run_experiment(
-                args.tasks, args.outdir / "cells", args.engines, args.arms,
+                args.tasks, args.outdir / "cells", args.engines, arms,
                 args.trials, ledger, max_iterations=args.max_iterations,
                 time_limit=args.time_limit,
                 only_tasks=set(args.only_tasks) if args.only_tasks else None,
-                resume=not args.no_resume, progress=print)
+                resume=not args.no_resume, exam=args.exam,
+                retries=args.retries,
+                ladder=dict(mutant_cap=args.mutant_cap, hunt_timeout=5,
+                            dafny_time_limit=args.time_limit,
+                            difftest_examples=60),
+                progress=print)
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2

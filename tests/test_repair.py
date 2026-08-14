@@ -246,6 +246,36 @@ def test_request_carries_rules_and_history():
     assert req["attempt"] == 2
 
 
+def test_render_prompt_serves_every_exam_schema():
+    # ONE renderer must serve every exam: engines are shared, and a request
+    # shape the renderer cannot handle raises inside the engine, scoring the
+    # whole cell as an engine error. (This is exactly how the spec-writing
+    # exam first failed: KeyError 'failures' on every task.)
+    from lemmapy.benchmark.specexam import build_spec_request
+    from lemmapy.repair import _render_prompt
+
+    repair_req = build_request(
+        "SRC", {"status": "failed", "failures": [{"kind": "postcondition"}],
+                "sidecar": {"text": "lemma L() {}"}}, 0, [])
+    text = _render_prompt(repair_req)
+    assert "SRC" in text and "postcondition" in text
+    assert text.rstrip().endswith("sidecar content only.")
+
+    spec_req = build_spec_request(
+        "SRC", "mini", 1,
+        [{"kind": "freeze", "line": 3, "message": "changed"}],
+        [{"attempt": 0, "errors": ["freeze"]}])
+    text = _render_prompt(spec_req)
+    assert "SRC" in text and "freeze" in text
+    assert "Verification outcome" not in text  # no such section here
+    assert "Current sidecar" not in text
+    assert text.rstrip().endswith("annotated file only.")
+
+    # An empty feedback list renders no feedback section at all.
+    first = _render_prompt(build_spec_request("SRC", "mini", 0, [], []))
+    assert "rejected as malformed" not in first
+
+
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_loop_recovers_from_rejected_proposal_then_verifies(tmp_path):
     src = tmp_path / "m.py"
