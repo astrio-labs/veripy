@@ -1,6 +1,7 @@
 """The proof-repair loop, driven by the scripted file engine — verifies the
 loop mechanics (feedback, validation, apply) without an LLM."""
 
+import argparse
 import json
 from pathlib import Path
 
@@ -126,6 +127,34 @@ def test_engine_wall_is_configurable_and_used(monkeypatch):
     engine({"rules": "r", "attempt": 0, "source": "s", "failures": {},
             "sidecar": "", "history": []})
     assert seen["timeout"] == 1234
+
+
+def test_non_positive_engine_wall_is_rejected_not_silently_defaulted(capsys, tmp_path):
+    # Both non-positive walls used to pass validation and then fail quietly in
+    # different ways: a negative one reached `subprocess.run(timeout=)` and
+    # raised TimeoutExpired before the engine saw the prompt (recorded as "did
+    # not answer"), and `0` was eaten by `args.engine_wall or DEFAULT` and
+    # silently became 600s. An exam that reports its wall must have run under
+    # the wall it reports, so both are refused at the door.
+    from lemmapy.cli import _wall
+
+    for bad in (0, -5):
+        with pytest.raises(ValueError, match="positive number of seconds"):
+            make_engine("claude", bad)
+
+    src = tmp_path / "t.py"
+    src.write_text("def f(x: int) -> int:\n    return x\n")
+    for bad in ("0", "-5"):
+        with pytest.raises(SystemExit) as exc:
+            main(["repair", "--engine-wall", bad, str(src)])
+        assert exc.value.code == 2
+        assert "positive number of seconds" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as exc:
+            main(["benchmark", "--exam", "proof-repair", "--engine-wall", bad])
+        assert exc.value.code == 2
+
+    # ...and a wall that is legal is never replaced by the default.
+    assert _wall(argparse.Namespace(engine_wall=1)) == 1
 
 
 def test_make_engine_specs():

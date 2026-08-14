@@ -359,6 +359,14 @@ class _FileEngine:
 
 
 def make_engine(spec: str, wall_s: int = DEFAULT_ENGINE_WALL_S) -> Engine:
+    # A non-positive wall is never what the caller meant, and it does not
+    # fail loudly on its own: `subprocess.run(timeout=-5)` raises
+    # TimeoutExpired before the engine is even given the prompt, which an
+    # exam records as "did not answer" — a harness failure wearing the
+    # costume of a measurement.
+    if wall_s <= 0:
+        raise ValueError(
+            f"engine wall must be a positive number of seconds, got {wall_s}")
     if spec == "claude":
         return _ClaudeEngine(wall_s=wall_s)
     if spec.startswith("claude:"):
