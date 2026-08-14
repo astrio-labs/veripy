@@ -94,3 +94,15 @@ def test_negative_indexing_verifies_python_exactly(tmp_path, capsys):
     status = cmd_verify([src], tmp_path / "out", time_limit=30, types=False)
     assert status == 0
     assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_isqrt_maximality_verifies_without_proof_additions(tmp_path, capsys):
+    # The counterpoint to gcd: the SAME maximality shape ("no k in range
+    # beats the answer"), but squaring's monotonicity on non-negatives is
+    # within Z3's reach where divisibility was not — so this one needs no
+    # sidecar. Worth pinning: if it ever starts needing one, the fragment's
+    # nonlinear reach has regressed.
+    status = cmd_verify([EXAMPLES / "isqrt.py"], tmp_path, time_limit=60,
+                        types=False)
+    assert status == 0
+    assert "isqrt" in capsys.readouterr().out
