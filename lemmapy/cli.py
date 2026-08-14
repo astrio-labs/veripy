@@ -56,7 +56,17 @@ def _report(path: Path) -> int:
     errors = 0
     print(f"{path}")
     if not specs.functions and not specs.orphans:
+        # "(no #@ specs found)" was the whole message, which tells a
+        # newcomer nothing: not whether this file is even a candidate, and
+        # not what to write. Name the functions the fragment would accept
+        # — that is the actionable half, and it is already computable.
         print("  (no #@ specs found)")
+        candidates = _fragment_candidates(path)
+        if candidates:
+            names = ", ".join(candidates)
+            print(f"  in-fragment and ready to annotate: {names}")
+            print(f"  add `#@ ensures <property of result>` directly above "
+                  f"`def {candidates[0]}` — see docs/SPEC-GRAMMAR.md")
         return 0
     for fn in specs.functions:
         tag = " [verified]" if fn.verified else ""
@@ -76,6 +86,56 @@ def _report(path: Path) -> int:
         errors += 1
         print(f"  line {c.line}: ERROR: {c.error}")
     return errors
+
+
+def _fragment_candidates(path: Path) -> list[str]:
+    """Module-level functions the fragment would accept if they carried
+    specs. Annotating one is the newcomer's next action, so `check` should
+    say which ones qualify rather than leaving them to guess."""
+    import ast as _ast
+
+    from .backends.dafny.encoder import EncodeError, encode_module
+    from .frontend.parse import Clause, FunctionSpec, ModuleSpecs
+
+    try:
+        source = path.read_text()
+        tree = _ast.parse(source)
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+        return []
+    ready: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, _ast.FunctionDef):
+            continue
+        if node.decorator_list:
+            # X-DECOR: the fragment excludes decorated functions ("function
+            # surgery" — the decorator replaces the function object, so the
+            # body Dafny verifies is not what runs). The encoder probe below
+            # cannot see this: it encodes the body and never looks at the
+            # decorator list, so it would happily report a candidate. Two
+            # things would then go wrong at once — the user is sent to
+            # annotate a function outside the fragment, and the placement
+            # advice is wrong for it besides, since a contract block must sit
+            # above the FIRST DECORATOR, not above the `def`.
+            continue
+        # A trivial `ensures True` is enough to ask the encoder "would you
+        # take this body?" without inventing a property for the user.
+        probe = FunctionSpec(
+            name=node.name, lineno=node.lineno, anchor_lineno=node.lineno,
+            params=tuple(a.arg for a in node.args.args),
+            clauses=[Clause(kind="ensures", raw="True", line=node.lineno,
+                            desugared="True")])
+        try:
+            encode_module(source, ModuleSpecs(functions=[probe], orphans=[]),
+                          module_name=path.name)
+        except EncodeError:
+            continue  # outside the fragment: not a candidate, correctly
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        # Deliberately NOT a bare `except`: this is advisory output, but
+        # swallowing every exception would turn a genuine encoder bug into
+        # a silently shorter list, which is the hardest kind to notice.
+        ready.append(node.name)
+    return ready
 
 
 def _fragment_check(path: Path) -> int:
