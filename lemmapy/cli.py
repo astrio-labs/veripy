@@ -18,6 +18,34 @@ from .backends.dafny.driver import verify_dafny_file
 from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from .backends.runtime.emit import emit_checked
 
+def _engine_wall(value: str) -> int:
+    """argparse type for --engine-wall: a positive number of seconds.
+
+    A non-positive wall can only be a mistake, and each kind used to fail
+    quietly in its own way: a negative one reached `subprocess.run(timeout=)`
+    and raised TimeoutExpired before the engine ran at all (an UNMEASURED
+    task that reads like an engine that did not answer), and `0` was eaten by
+    boolean defaulting and silently became 600s. Rejecting here means the
+    wall an exam reports is the wall it ran under."""
+    try:
+        seconds = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer")
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            f"must be a positive number of seconds, got {seconds}")
+    return seconds
+
+
+def _wall(args) -> int:
+    """The engine wall for this invocation (unset -> the default)."""
+    from .repair import DEFAULT_ENGINE_WALL_S
+
+    wall = getattr(args, "engine_wall", None)
+    # `is None`, not `or`: an explicit value must never be defaulted away.
+    return DEFAULT_ENGINE_WALL_S if wall is None else wall
+
+
 _NOT_ENFORCED = ("invariant", "decreases", "proof")
 
 
@@ -464,11 +492,12 @@ def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False) -> i
 
 
 def cmd_repair(path: Path, outdir: Path, engine_spec: str, max_iterations: int,
-               time_limit: int, apply: bool) -> int:
-    from .repair import make_engine, repair_file
+               time_limit: int, apply: bool, engine_wall: int | None = None) -> int:
+    from .repair import DEFAULT_ENGINE_WALL_S, make_engine, repair_file
 
+    wall = DEFAULT_ENGINE_WALL_S if engine_wall is None else engine_wall
     try:
-        engine = make_engine(engine_spec)
+        engine = make_engine(engine_spec, wall)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -582,6 +611,11 @@ def main(argv: list[str] | None = None) -> int:
              "the ones the engine writes (mutant kill rate vs golden)",
     )
     p_benchmark.add_argument(
+        "--engine-wall", type=_engine_wall, default=None,
+        help="seconds a single engine call may take (default 600); raise it "
+             "to tell 'could not prove it' apart from 'did not answer'",
+    )
+    p_benchmark.add_argument(
         "--engine", default="claude",
         help="engine for --exam (claude | claude:<model> | "
              "api:<provider>/<model> | file:<dir>)",
@@ -641,6 +675,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_repair.add_argument("file", type=Path)
     p_repair.add_argument("-o", "--outdir", type=Path, default=Path("build/repair"))
+    p_repair.add_argument("--engine-wall", type=_engine_wall, default=None,
+                          help="seconds a single engine call may take "
+                               "(default 600)")
     p_repair.add_argument("--engine", default="claude",
                           help="'claude' (headless CLI) or 'file:<dir>' "
                                "(scripted attempts, for tests/replays)")
@@ -743,7 +780,8 @@ def main(argv: list[str] | None = None) -> int:
         return lsp_main()
     if args.command == "repair":
         return cmd_repair(args.file, args.outdir, args.engine,
-                          args.max_iterations, args.time_limit, args.apply)
+                          args.max_iterations, args.time_limit, args.apply,
+                          engine_wall=args.engine_wall)
     if args.command == "difftest":
         return cmd_difftest(args.files, args.outdir, args.examples)
     if args.command == "benchmark":
@@ -752,13 +790,13 @@ def main(argv: list[str] | None = None) -> int:
             from .repair import make_engine
 
             try:
-                make_engine(args.engine)  # validate the spec up front
+                make_engine(args.engine, _wall(args))  # validate the spec up front
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
             try:
                 scores = run_repair_exam(args.tasks, args.outdir / "exam",
-                                         lambda: make_engine(args.engine),
+                                         lambda: make_engine(args.engine, _wall(args)),
                                          max_iterations=args.max_iterations,
                                          time_limit=args.time_limit)
             except ValueError as exc:
@@ -775,7 +813,7 @@ def main(argv: list[str] | None = None) -> int:
             from .repair import make_engine
 
             try:
-                make_engine(args.engine)  # validate the spec up front
+                make_engine(args.engine, _wall(args))  # validate the spec up front
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
@@ -787,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
                               difftest_examples=20)
             try:
                 scores = run_spec_exam(args.tasks, args.outdir / "spec-exam",
-                                       lambda: make_engine(args.engine),
+                                       lambda: make_engine(args.engine, _wall(args)),
                                        retries=args.retries, **ladder)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
