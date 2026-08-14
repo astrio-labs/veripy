@@ -77,6 +77,37 @@ _PROMPT_SECTIONS: tuple[tuple[str, str, bool], ...] = (
 )
 
 
+def _kind_guidance(request: dict[str, Any]) -> str:
+    """What to DO about the kinds actually present in this outcome.
+
+    Taken verbatim from the published taxonomy rather than written here, so
+    the engine reads the same guidance a host does and the two cannot
+    drift. Motivated by measurement: in the first n=6 live run, 15 of 15
+    unclassified records were sidecar RESOLUTION errors — the most common
+    failure the loop hits — and the generic rules text told the engine to
+    reason about proofs when the sidecar had not even typechecked.
+    """
+    from .failures import FAILURE_KINDS
+
+    failures = request.get("failures")
+    records: list[dict[str, Any]] = []
+    if isinstance(failures, dict):
+        records = [r for r in failures.get("failures", [])
+                   if isinstance(r, dict)]
+    elif isinstance(failures, list):
+        records = [r for r in failures if isinstance(r, dict)]
+    kinds: list[str] = []
+    for record in records:
+        kind = record.get("kind")
+        if kind in FAILURE_KINDS and kind not in kinds:
+            kinds.append(kind)
+    if not kinds:
+        return ""
+    lines = [f"- `{k}`: {FAILURE_KINDS[k]}" for k in kinds]
+    return ("\n## What these failures mean (from the published taxonomy)\n"
+            + "\n".join(lines))
+
+
 def _render_prompt(request: dict[str, Any]) -> str:
     parts = [request["rules"]]
     for key, title, as_json in _PROMPT_SECTIONS:
@@ -111,6 +142,9 @@ def _render_prompt(request: dict[str, Any]) -> str:
         suffix = f"; {'; '.join(notes)}" if notes else ""
         parts.append(f"\n## Prior attempts (most recent last{suffix})\n"
                      + _history_json(entries))
+    guidance = _kind_guidance(request)
+    if guidance:
+        parts.append(guidance)
     parts.append("\n" + request.get(
         "reply_with", "Reply with the complete new sidecar content only."))
     return "\n".join(parts)

@@ -311,6 +311,43 @@ def test_prompt_states_omissions_and_stays_bounded():
     assert prompt.count("assert true;") == big.count("assert true;")
 
 
+def test_prompt_explains_the_kinds_actually_present():
+    # The taxonomy already says what to DO about each kind; the engine
+    # should read the same words a host does, rather than a second copy
+    # that can drift. Measurement motivated this: 15 of 15 unclassified
+    # records in the first n=6 run were sidecar resolution errors, and the
+    # generic rules told the engine to reason about proofs when the sidecar
+    # had not typechecked.
+    from lemmapy.failures import FAILURE_KINDS
+    from lemmapy.repair import _render_prompt, build_request
+
+    payload = {"status": "failed", "sidecar": {"text": "lemma L() {}"},
+               "failures": [
+                   {"kind": "resolution", "message": "unresolved identifier"},
+                   {"kind": "postcondition", "message": "could not be proved"}]}
+    prompt = _render_prompt(build_request("SRC", payload, 1, []))
+
+    assert "What these failures mean" in prompt
+    # Verbatim from the taxonomy — not a paraphrase maintained separately.
+    assert FAILURE_KINDS["resolution"] in prompt
+    assert FAILURE_KINDS["postcondition"] in prompt
+    # Only the kinds PRESENT: an unrelated kind must not be explained, or
+    # the section becomes a wall of text the engine learns to skip.
+    assert FAILURE_KINDS["termination"] not in prompt
+
+    # No failures -> no section at all.
+    empty = _render_prompt(build_request(
+        "SRC", {"status": "failed", "sidecar": {"text": ""}, "failures": []},
+        0, []))
+    assert "What these failures mean" not in empty
+
+    # An unknown label must not crash the renderer or invent guidance.
+    weird = _render_prompt(build_request(
+        "SRC", {"status": "failed", "sidecar": {"text": ""},
+                "failures": [{"kind": "not-a-kind", "message": "?"}]}, 0, []))
+    assert "What these failures mean" not in weird
+
+
 def test_strip_fences():
     fenced = "```dafny\nlemma L()\n{\n}\n```"
     assert _strip_fences(fenced) == "lemma L()\n{\n}\n"
