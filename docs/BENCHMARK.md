@@ -45,7 +45,8 @@ Two properties fall out of this design that no static benchmark has:
    stay in the frozen source) and scores restoration through the repair
    loop — the same whitelist and prover as the golden proof, so R4 must be
    re-earned, never asserted. Roster today: `gcd` (8-lemma divisibility
-   pack); executable proof-hint asserts are admitted source and stay.
+   pack) and `modp` (6-lemma mod/pow pack); executable proof-hint asserts
+   are admitted source and stay.
 
 ## Backend policy (and the "ultimate benchmark" question)
 
@@ -69,7 +70,8 @@ the corpus can be published as a spec suite others port to their tools.
 benchmark/tasks/<id>/
   task.py           # annotated Python — the single source of truth
   task.proofs.dfy   # optional ghost lemma sidecar (whitelist-validated)
-  meta.json         # {id, origin, license}
+  meta.json         # {id, origin, license} + adjudications:
+                    #   equivalent_mutants[], timeout_kills[]
 ```
 
 Seed corpus: 14 tasks (11 adapted from HumanEval, MIT; 3 project-original),
@@ -100,8 +102,9 @@ rolling_max            pass  pass  5/5      pass    pass   pass      6/6
 sum_squares            pass  pass  6/6      pass    pass   pass      6/6
 triples_sum_to_zero    pass  pass  8/8      pass    pass   pass      6/6
 
-tasks: 14   full-ladder: 14   spec strength: 56/56 killed (+1 adjudicated;
-modp's panel includes 1 timeout kill — the diverging `+` -> `-` loop mutant)
+tasks: 14   full-ladder: 14   spec strength: 56/56 killed (+1 equivalent
+adjudicated; modp's panel includes 1 adjudicated timeout kill — the
+diverging `+` -> `-` loop mutant)
 ```
 
 The benchmark's first run also exercised its adjudication path: the raw run
@@ -112,13 +115,22 @@ result). It is recorded in the task's `meta.json` under
 `equivalent_mutants` and excluded from the panel, visibly counted in the
 report. Survivors are guilty until adjudicated, never silently dropped.
 
-A mutant whose hunt exhausts its wall (the common cause: a diverging loop,
-e.g. `i += 1` → `i -= 1` in `modp`) counts as **killed by timeout** —
-standard mutation-testing practice, doubly justified here because R4
-proves termination, so divergence is a behavior change by construction.
-Timeout kills are labeled distinctly in the rung detail (`k/N killed
-(m by timeout)`) so panels stay auditable; a launch failure remains an
-analysis ERROR that blocks the rung.
+A mutant whose hunt exhausts its wall is **inconclusive, not a kill**. It
+is tempting to score it as killed — the common cause is a diverging loop
+(e.g. `i += 1` → `i -= 1` in `modp`), and R4 proves termination — but R4
+proves the *original* terminates, not the mutant, and a slow-but-
+terminating analysis is indistinguishable from a diverging one at the
+wall. Counting the timeout would let a merely-slow mutant publish a false
+kill, a false full-ladder height, and a false aggregate score.
+
+So timeouts follow the same discipline as survivors: **guilty until
+adjudicated.** An unadjudicated timeout FAILS the rung, naming the mutant
+and pointing at the remedy; a human who has confirmed the divergence
+records it in the task's `meta.json` under `timeout_kills`, after which it
+counts as a kill and is labeled distinctly in the rung detail (`k/N killed
+(m adjudicated timeout kill(s))`). Mutants also run under a tighter wall
+than the original so one diverging mutant cannot stall a panel, and a
+launch failure remains an analysis ERROR that blocks the rung.
 
 ## Scoring and reproducibility
 

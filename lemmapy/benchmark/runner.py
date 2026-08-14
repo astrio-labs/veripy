@@ -55,6 +55,8 @@ class TaskScore:
     mutants_killed: int = 0
     survivors: list[str] = field(default_factory=list)
     adjudicated: int = 0  # mutants ruled equivalent in meta.json, excluded
+    timeouts: list[str] = field(default_factory=list)  # inconclusive, unadjudicated
+    adjudicated_timeouts: int = 0  # wall exhaustions ruled divergent in meta.json
 
     @property
     def height(self) -> int:
@@ -155,16 +157,17 @@ def run_task(
     # R2: mutant panel (spec strength)
     meta_path = task_dir / "meta.json"
     equivalents: set[str] = set()
+    timeout_adjudicated: set[str] = set()
     if meta_path.exists():
         meta = json.loads(meta_path.read_text())
         # Adjudicated equivalent mutants: same output on every input, so no
         # spec can kill them — excluded from the panel, counted visibly.
         equivalents = set(meta.get("equivalent_mutants", []))
+        timeout_adjudicated = set(meta.get("timeout_kills", []))
     mutants = generate_mutations(source, max_mutants=mutant_cap)
     score.adjudicated = sum(1 for d, _ in mutants if d in equivalents)
     mutants = [(d, m) for d, m in mutants if d not in equivalents]
     score.mutants_total = len(mutants)
-    timeout_kills = 0
     for i, (description, mutated) in enumerate(mutants):
         # Mutants get a tighter wall than the original: a diverging mutant
         # would otherwise stall the panel for the full default wall.
@@ -173,16 +176,21 @@ def run_task(
         if verdict == "counterexample":
             score.mutants_killed += 1
         elif verdict == "timeout":
-            # Standard mutation-testing practice: budget exhaustion is a
-            # kill (the mutant observably diverged from the spec'd,
-            # termination-proven behavior) — labeled distinctly below so
-            # panels stay auditable.
-            score.mutants_killed += 1
-            timeout_kills += 1
+            # A wall exhaustion is INCONCLUSIVE on its own: R4 proves the
+            # original terminates, not the mutant, and a slow-but-
+            # terminating analysis would be indistinguishable. A human
+            # adjudicates divergence in meta.json ("timeout_kills"); until
+            # then the timeout fails the rung, like a survivor.
+            if description in timeout_adjudicated:
+                score.mutants_killed += 1
+                score.adjudicated_timeouts += 1
+            else:
+                score.timeouts.append(description)
         elif verdict == "clean":
             score.survivors.append(description)
         # errors excluded from both counts
-    analysis_errors = score.mutants_total - score.mutants_killed - len(score.survivors)
+    analysis_errors = (score.mutants_total - score.mutants_killed
+                       - len(score.survivors) - len(score.timeouts))
     if score.mutants_total == 0:
         score.rungs.append(Rung("mutants", SKIP, "no mutation sites"))
     elif analysis_errors:
@@ -196,17 +204,21 @@ def run_task(
             f"{analysis_errors} analysis error(s)"
             + (f"; survivors: {'; '.join(score.survivors[:3])}" if score.survivors else ""),
         ))
-    elif score.survivors:
-        score.rungs.append(Rung(
-            "mutants", FAIL,
-            f"{score.mutants_killed}/{score.mutants_total} killed; "
-            f"survivors: {'; '.join(score.survivors[:3])}",
-        ))
+    elif score.survivors or score.timeouts:
+        parts = [f"{score.mutants_killed}/{score.mutants_total} killed"]
+        if score.survivors:
+            parts.append(f"survivors: {'; '.join(score.survivors[:3])}")
+        if score.timeouts:
+            parts.append(
+                f"unadjudicated timeout(s): {'; '.join(score.timeouts[:3])} "
+                f"-- adjudicate divergence via meta.json \"timeout_kills\"")
+        score.rungs.append(Rung("mutants", FAIL, "; ".join(parts)))
     else:
-        by_timeout = f" ({timeout_kills} by timeout)" if timeout_kills else ""
+        adj = (f" ({score.adjudicated_timeouts} adjudicated timeout kill(s))"
+               if score.adjudicated_timeouts else "")
         score.rungs.append(Rung(
             "mutants", PASS,
-            f"{score.mutants_killed}/{score.mutants_total} killed{by_timeout}"))
+            f"{score.mutants_killed}/{score.mutants_total} killed{adj}"))
 
     # R3: encode
     try:
@@ -308,6 +320,8 @@ def scores_to_json(scores: list[TaskScore]) -> dict:
                 "height": s.height,
                 "rungs": [{"name": r.name, "status": r.status, "detail": r.detail} for r in s.rungs],
                 "mutants": {"total": s.mutants_total, "killed": s.mutants_killed,
+                            "timeouts": s.timeouts,
+                            "adjudicated_timeouts": s.adjudicated_timeouts,
                             "survivors": s.survivors, "adjudicated_equivalent": s.adjudicated},
             }
             for s in scores
