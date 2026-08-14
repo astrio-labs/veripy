@@ -54,6 +54,52 @@ Two properties fall out of this design that no static benchmark has:
    present. The divisibility family is deliberately NOT promoted into the
    preamble while the exam depends on those lemmas being absent.
 
+   **The spec-writing exam is live too**: `lemmapy benchmark --exam
+   spec-writing` strips every `#@` line, hands the engine the bare
+   implementation, and scores the specification it writes back on the same
+   deterministic panel as the golden — engine kill rate beside golden kill
+   rate. Its correctness rests on four properties, each pinned by tests:
+
+   - **Source freeze.** Dropping full-line `#@` comments from the answer
+     must reproduce the stripped input *exactly*. Text equality is
+     authoritative, not AST equality: an inserted blank line is
+     AST-invisible, and an engine free to edit the implementation can
+     always weaken the task to fit a trivial spec.
+   - **No verification feedback.** Retries fire only for mechanical
+     invalidity (unparseable, freeze violation, malformed clause, no
+     postcondition at all). Feeding prover outcomes back would silently
+     turn this into the proof-repair exam.
+   - **Fair baseline.** The golden is scored under identical exam
+     conditions — its own `#@ proof` clauses stripped and no sidecar
+     staged — so the engine is never compared against a run that had
+     lemmas available. (`#@ proof` clauses are rejected in this exam;
+     there is no sidecar channel for them to name.)
+   - **Panel alignment.** Mutations sort by `(line, col, replacement)` and
+     inserting `#@` lines is a monotone renumbering, so ordering survives
+     and the `max_mutants` truncation selects the same faults; line-numbered
+     `equivalent_mutants` are translated through the same map. Untranslated,
+     the adjudication would silently miss and the engine would be charged
+     for a mutant the golden run was forgiven.
+
+   The anti-gaming property is the design's whole point, and it is
+   measured, not asserted. Two worthless specifications — a tautological
+   postcondition (`#@ ensures result == result`) and a vacuous precondition
+   (`#@ requires x > 0 and x < 0`, satisfied by no input) — were run
+   through the full ladder:
+
+   ```
+   task     gate  hunt  mutants  encode  prove  fidelity  height
+   triv     pass  pass  0/3      pass    pass   pass      2/6
+   vac      pass  pass  0/3      pass    pass   FAIL      2/6
+   ```
+
+   Both clear the type gate, the runtime-contract hunt, the encoder, and
+   the SMT prover — *every automated check the toolchain has* — and only
+   the mutant panel reports them as worthless, naming in its survivor list
+   each bug they cannot see. That is the case for measuring spec strength
+   separately: passing a verifier says nothing about whether the property
+   proved was worth proving.
+
 ## Backend policy (and the "ultimate benchmark" question)
 
 Rungs R3–R5 are **backend-parameterized** — today they run against Dafny;

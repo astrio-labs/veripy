@@ -325,8 +325,9 @@ def _fake_run_task(height, total, killed, survivors=()):
 
 
 def test_weak_spec_scores_low_kill_rate(tmp_path, monkeypatch):
-    # The anti-gaming property in one test: `ensures True` climbs the whole
-    # ladder and still reports zero spec strength.
+    # The anti-gaming property in one test: a worthless spec satisfies every
+    # other checker (gate, hunt, encode, prove, fidelity — verified live in
+    # docs/BENCHMARK.md) and only the panel reports it as empty.
     import lemmapy.benchmark.specexam as spec_mod
 
     calls = []
