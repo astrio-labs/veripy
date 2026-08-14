@@ -91,7 +91,7 @@ STRIP_ALL = "all"
 STRIP_PROOF = "proof"
 
 _SPEC_RE = re.compile(r"#@")
-_EQUIV_LINE_RE = re.compile(r"^line (\d+): ")
+_EQUIV_LINE_RE = re.compile(r"^line (\d+)( col \d+)?: ")
 
 
 class SpecExamError(Exception):
@@ -280,7 +280,10 @@ def translate_equivalents(meta: dict[str, Any],
             # un-excluded survivor rather than a silent exclusion.
             translated.append(description)
             continue
-        translated.append(_EQUIV_LINE_RE.sub(f"line {new}: ", description, count=1))
+        # Columns are unchanged by inserting whole lines, so only the line
+        # number is rewritten; the rest of the identity is preserved.
+        translated.append(_EQUIV_LINE_RE.sub(
+            lambda m: f"line {new}{m.group(2) or ''}: ", description, count=1))
     out = dict(meta)
     out["equivalent_mutants"] = translated
     return out

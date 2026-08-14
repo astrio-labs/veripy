@@ -1,6 +1,7 @@
 """The spec-writing exam: strip specs, freeze the source, score spec strength."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -183,11 +184,11 @@ def test_panel_alignment_under_spec_insertion(task_id):
     stripped_panel = generate_mutations(stripped, max_mutants=8)
     assert len(golden_panel) == len(stripped_panel)
     for (g_desc, _), (s_desc, _) in zip(golden_panel, stripped_panel):
-        s_line = int(s_desc.split(":")[0].removeprefix("line "))
-        expected = g_desc.replace(
-            f"line {line_map[s_line]}: ", f"line {s_line}: ", 1)
-        assert s_desc == expected, (
-            f"panel diverged: golden {g_desc!r} vs stripped {s_desc!r}")
+        s_line = int(re.match(r"line (\d+)", s_desc).group(1))
+        expected = re.sub(r"^line \d+", f"line {line_map[s_line]}", s_desc)
+        assert g_desc == expected, (
+            f"panel diverged: golden {g_desc!r} vs stripped {s_desc!r} "
+            f"(only the line number may differ)")
 
 
 def test_translate_equivalents_uses_the_line_map():
@@ -247,9 +248,32 @@ def test_equivalents_translate_into_every_variant_panel(task_id, variant_name):
 
 
 def test_translate_equivalents_uses_the_map_it_is_given():
-    meta = {"id": "t", "equivalent_mutants": ["line 17: `>` -> `>=`"]}
+    meta = {"id": "t", "equivalent_mutants": ["line 17 col 16: `>` -> `>=`"]}
+    # The line moves; the column is unaffected by inserting whole lines and
+    # must survive, since it is part of the mutant's identity.
     assert translate_equivalents(meta, {17: 21})["equivalent_mutants"] \
-        == ["line 21: `>` -> `>=`"]
+        == ["line 21 col 16: `>` -> `>=`"]
+
+
+def test_adjudication_must_resolve_to_exactly_one_mutant(tmp_path):
+    """A stale or ambiguous adjudication is a corpus defect, not a no-op.
+
+    Matching zero silently charges the task for a mutant it was forgiven;
+    matching several silently retires faults nobody adjudicated. Either way
+    the panel is quietly wrong, which is the failure mode that already cost
+    this project one headline number.
+    """
+    from lemmapy.benchmark.runner import ERROR, run_task
+
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "task.py").write_text(MINI)
+    (d / "meta.json").write_text(json.dumps(
+        {"id": "t", "equivalent_mutants": ["line 99: `<` -> `<=`"]}))
+    score = run_task(d, tmp_path / "w", mutant_cap=4, hunt_timeout=2)
+    panel = next(r for r in score.rungs if r.name == "mutants")
+    assert panel.status == ERROR
+    assert "does not resolve 1:1" in panel.detail
 
 
 # --- validity and retries --------------------------------------------------

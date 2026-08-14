@@ -1,1 +1,8 @@
-{"id": "max_element", "origin": "HumanEval/35", "license": "MIT", "equivalent_mutants": ["line 17: `>` -> `>=`"]}
+{
+ "id": "max_element",
+ "origin": "HumanEval/35",
+ "license": "MIT",
+ "equivalent_mutants": [
+  "line 17 col 16: `>` -> `>=`"
+ ]
+}

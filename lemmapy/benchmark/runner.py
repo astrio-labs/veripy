@@ -174,6 +174,21 @@ def run_task(
         # spec can kill them — excluded from the panel, counted visibly.
         equivalents = set(meta.get("equivalent_mutants", []))
     mutants = generate_mutations(source, max_mutants=mutant_cap)
+    # An adjudication that does not resolve to exactly one panel member is a
+    # corpus defect: matching zero means the exclusion silently does nothing
+    # (the task is charged for a mutant it was forgiven), and matching more
+    # than one silently retires faults nobody adjudicated. Fail loudly.
+    panel_descriptions = [d for d, _ in mutants]
+    unresolved = [
+        f"{e!r} matches {panel_descriptions.count(e)} panel mutant(s)"
+        for e in sorted(equivalents) if panel_descriptions.count(e) != 1
+    ]
+    if unresolved:
+        score.rungs.append(Rung(
+            "mutants", ERROR,
+            "equivalent_mutants does not resolve 1:1 against the panel: "
+            + "; ".join(unresolved)))
+        return score
     score.adjudicated = sum(1 for d, _ in mutants if d in equivalents)
     mutants = [(d, m) for d, m in mutants if d not in equivalents]
     score.mutants_total = len(mutants)
