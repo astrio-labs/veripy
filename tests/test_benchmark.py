@@ -282,8 +282,23 @@ def test_adjudicated_timeout_passes_the_rung_without_being_credited(
     mutants = next(r for r in score.rungs if r.name == "mutants")
     assert mutants.status == "pass"
     assert "diverged" in mutants.detail and "not credited" in mutants.detail
-    assert score.adjudicated_timeouts == 1
+    assert score.adjudicated_timeouts == [first_desc]
     assert score.mutants_killed == score.mutants_total - 1
+    # Adjudicated or not, the wall was exhausted: both channels are the
+    # arm's inconclusive hunts, and the spec exam compares them by NAME
+    # across arms, so a ruled timeout may not drop out of the record.
+    assert score.timeout_mutants == [first_desc]
+
+
+def test_timeout_mutants_names_both_channels():
+    from lemmapy.benchmark.runner import TaskScore
+
+    score = TaskScore(task_id="t")
+    assert score.timeout_mutants == []
+    score.timeouts = ["line 1 col 2: `+` -> `-`"]
+    score.adjudicated_timeouts = ["line 4 col 9: `<` -> `<=`"]
+    assert score.timeout_mutants == ["line 1 col 2: `+` -> `-`",
+                                     "line 4 col 9: `<` -> `<=`"]
 
 
 def test_mutant_descriptions_are_unique_within_a_panel():
@@ -498,7 +513,7 @@ def test_report_marks_and_footnotes_adjudicated_panels():
 
     s = TaskScore(task_id="t")
     s.mutants_total, s.mutants_killed = 3, 3
-    s.adjudicated_timeouts = 1
+    s.adjudicated_timeouts = ["line 3 col 7: `<` -> `<=`"]
     s.adjudicated = 2
     s.rungs.extend([Rung(n, PASS, "") for n in
                     ("gate", "hunt", "mutants", "encode", "prove", "fidelity")])
@@ -722,10 +737,10 @@ def test_adjudicated_timeout_is_not_credited_as_spec_strength(tmp_path,
 
     rung = next(r for r in score.rungs if r.name == "mutants")
     assert rung.status == PASS, f"adjudicated divergence must not fail: {rung.detail}"
-    assert score.adjudicated_timeouts == 1
+    assert score.adjudicated_timeouts == [panel[0]]
     # The refuted count excludes it, and the buckets still add up.
     assert score.mutants_killed == score.mutants_total - 1
     assert (score.mutants_killed + score.mutants_crashed
-            + score.adjudicated_timeouts + len(score.survivors)
+            + len(score.adjudicated_timeouts) + len(score.survivors)
             + len(score.timeouts)) == score.mutants_total
     assert "diverged" in rung.detail and "not credited" in rung.detail

@@ -9,7 +9,9 @@ import pytest
 from lemmapy.backends.dafny.driver import find_dafny
 from lemmapy.benchmark.mutate import generate_mutations
 from lemmapy.benchmark.specexam import (
+    STRIP_PROOF,
     SpecExamError,
+    SpecExamScore,
     check_frozen,
     golden_to_variant_map,
     render_spec_exam_report,
@@ -203,29 +205,46 @@ def test_translate_equivalents_uses_the_line_map():
         == ["line 17: `>` -> `>=`"]
 
 
-EQUIV_TASKS = [
-    t for t in TASK_IDS
-    if json.loads((TASKS / t / "meta.json").read_text()).get("equivalent_mutants")
-]
+def _tasks_adjudicating(key):
+    return [t for t in TASK_IDS
+            if json.loads((TASKS / t / "meta.json").read_text()).get(key)]
+
+
+EQUIV_TASKS = _tasks_adjudicating("equivalent_mutants")
+# Both meta.json channels name mutants the same way and both are
+# line-numbered against the golden file, so both must be translated.
+ADJUDICATED = [(t, k) for k in ("equivalent_mutants", "timeout_kills")
+               for t in _tasks_adjudicating(k)]
 
 
 def test_corpus_still_has_an_adjudication_case():
     assert EQUIV_TASKS, (
         "no task carries equivalent_mutants — the translation path would be "
         "untested; keep at least one adjudicated mutant in the corpus")
+    assert _tasks_adjudicating("timeout_kills"), (
+        "no task carries timeout_kills — the same translation path would be "
+        "untested for the timeout channel; keep at least one")
 
 
-@pytest.mark.parametrize("task_id", EQUIV_TASKS)
-@pytest.mark.parametrize("variant_name", ["golden", "reannotated", "stripped"])
-def test_equivalents_translate_into_every_variant_panel(task_id, variant_name):
-    """The exclusion must LAND, not merely be rewritten.
+@pytest.mark.parametrize("task_id,key", ADJUDICATED)
+@pytest.mark.parametrize("variant_name",
+                         ["golden", "exam", "reannotated", "stripped"])
+def test_adjudications_translate_into_every_variant_panel(task_id, key,
+                                                          variant_name):
+    """The ruling must LAND, not merely be rewritten.
 
-    `equivalent_mutants` are adjudicated against the golden file, but the
-    exam scores differently-numbered variants. An untranslated (or
-    half-translated) description silently fails to exclude, and the engine
-    is charged for a mutant the golden run was forgiven — the comparison
-    breaks quietly. This caught exactly that: a stripped->proposal map was
-    applied to golden-numbered descriptions.
+    Adjudications are recorded against the golden file, but the exam scores
+    differently-numbered variants. An untranslated (or half-translated)
+    description silently fails to apply, and the engine is charged for a
+    mutant the golden run was forgiven — the comparison breaks quietly.
+    This caught exactly that: a stripped->proposal map was applied to
+    golden-numbered descriptions.
+
+    The `exam` variant and the `timeout_kills` channel are here because
+    `modp`'s ruling missed both: only `equivalent_mutants` was translated,
+    so in the exam its timeout ruling matched no mutant, the runner errored
+    the panel as stale adjudication, and golden scored 0/8 — the baseline
+    the engine is measured against, reading as a total spec failure.
     """
     meta = json.loads((TASKS / task_id / "meta.json").read_text())
     golden = (TASKS / task_id / "task.py").read_text()
@@ -233,18 +252,20 @@ def test_equivalents_translate_into_every_variant_panel(task_id, variant_name):
     variants = {
         "golden": golden,
         "stripped": stripped,
+        # Exam conditions for the golden arm: `#@ proof` clauses dropped.
+        "exam": strip_specs(golden, mode=STRIP_PROOF),
         # A plausible engine answer: same code, differently placed specs.
         "reannotated": "#@ ensures True\n" + stripped,
     }
     variant = variants[variant_name]
     line_map = golden_to_variant_map(golden, stripped, variant)
-    translated = translate_equivalents(meta, line_map)["equivalent_mutants"]
+    translated = translate_equivalents(meta, line_map)[key]
     panel = {d for d, _ in generate_mutations(variant, max_mutants=8)}
     assert set(translated) <= panel, (
-        f"translated equivalents {translated} are not in the {variant_name} "
-        f"panel {sorted(panel)} — the exclusion would silently miss")
-    # And the count matches: every adjudicated mutant is still excluded.
-    assert len(translated) == len(meta["equivalent_mutants"])
+        f"translated {key} {translated} are not in the {variant_name} "
+        f"panel {sorted(panel)} — the ruling would silently miss")
+    # And the count matches: every adjudicated mutant is still ruled on.
+    assert len(translated) == len(meta[key])
 
 
 def test_translate_equivalents_uses_the_map_it_is_given():
@@ -545,6 +566,162 @@ def test_golden_baseline_runs_under_exam_conditions(tmp_path, monkeypatch):
                       "#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n"))
     golden_src = next(v for k, v in sources.items() if "golden" in k)
     assert "#@ ensures" in golden_src and "#@ proof" not in golden_src
+
+
+# --- the timeout-bias check -----------------------------------------------
+
+def _row(task_id, killed, timeouts=(), golden_timeouts=()):
+    return SpecExamScore(
+        task_id=task_id, valid=True, attempts=1, reason="scored",
+        mutants_total=4, mutants_killed=killed,
+        timeout_mutants=list(timeouts),
+        golden_mutants_total=4, golden_mutants_killed=4,
+        golden_timeout_mutants=list(golden_timeouts))
+
+
+def test_timeout_bias_check_reports_both_verdicts():
+    # A refutation gap is a STRENGTH gap only if both arms concluded on the
+    # same mutants. Engine specs can be systematically more expensive to
+    # hunt (more quantifiers, wider domains) without being weaker, so an
+    # inconclusive hunt one arm did not share must disqualify the
+    # comparison rather than quietly widen the gap.
+    clean = _row("a", 3)
+    assert clean.comparable
+    report = render_spec_exam_report([clean])
+    assert "timeout-bias check: PASSED" in report
+    assert "TIMEOUT BIAS" not in report
+    assert "3/4!" not in report
+
+    biased = _row("b", 1, timeouts=["line 2 col 7: `<` -> `<=`",
+                                    "line 4 col 11: `x` -> `0`"])
+    assert not biased.comparable
+    report = render_spec_exam_report([clean, biased])
+    assert "TIMEOUT BIAS" in report and "b" in report
+    assert "1/4!" in report                      # the row is marked
+    assert "inconclusive hunts: engine 2, golden 0" in report
+    assert "PASSED" not in report
+
+    # Symmetric: golden timing out more must disqualify it just as loudly,
+    # since that direction flatters the engine.
+    flipped = _row("c", 4, golden_timeouts=["line 2 col 7: `<` -> `<=`"])
+    assert not flipped.comparable
+    assert "TIMEOUT BIAS" in render_spec_exam_report([flipped])
+
+
+def test_equal_timeout_counts_on_different_mutants_are_not_comparable(
+        tmp_path, monkeypatch):
+    """Counting inconclusive hunts is not enough — they must be the SAME.
+
+    One arm exhausting its wall on mutant A while the other exhausts it on
+    mutant B leaves each arm's refutation count missing a different mutant,
+    so the gap mixes strength with hunt cost exactly as an unequal count
+    does. Equal counts made that row read as comparable and the report
+    printed `timeout-bias check: PASSED`.
+
+    The two arms number the same mutation site differently (they annotate
+    the stripped source with different `#@` lines), so the identities are
+    only comparable after both are mapped back onto the stripped source —
+    which is why the same-mutant half of this test is here too.
+    """
+    import lemmapy.benchmark.specexam as spec_mod
+
+    # MINI carries two `#@` lines, the answer below one: `if x < 0` is
+    # golden line 4, engine line 3, and stripped line 2 in both.
+    answer = ("#@ ensures result >= x\n"
+              "def clamp_low(x: int) -> int:\n"
+              "    if x < 0:\n"
+              "        return 0\n"
+              "    return x\n")
+    same_site = {"golden": "line 4 col 7: `<` -> `<=`",
+                 "engine": "line 3 col 7: `<` -> `<=`"}
+    other_site = "line 6 col 11: `x` -> `0`"          # golden numbering
+
+    def arms(engine_timeout, golden_timeout):
+        def fake(task_dir, workdir, **kwargs):
+            score = _fake_run_task(6, 3, 2)(task_dir, workdir, **kwargs)
+            score.timeouts = [engine_timeout if "scored" in str(task_dir)
+                              else golden_timeout]
+            return score
+        return fake
+
+    monkeypatch.setattr(spec_mod, "run_task",
+                        arms(same_site["engine"], other_site))
+    corpus = _mini_corpus(tmp_path)
+    (mismatched,) = run_spec_exam(corpus, tmp_path / "w1",
+                                  lambda: _engine_replaying(answer))
+    assert mismatched.mutants_timeout == mismatched.golden_mutants_timeout == 1
+    assert not mismatched.comparable
+    assert "TIMEOUT BIAS" in render_spec_exam_report([mismatched])
+
+    # ...and the same mutant in both arms IS comparable: the check must not
+    # degrade into "any timeout disqualifies the row".
+    monkeypatch.setattr(spec_mod, "run_task",
+                        arms(same_site["engine"], same_site["golden"]))
+    (matched,) = run_spec_exam(corpus, tmp_path / "w2",
+                               lambda: _engine_replaying(answer))
+    assert matched.comparable
+    assert matched.timeout_mutants == matched.golden_timeout_mutants
+    assert "timeout-bias check: PASSED" in render_spec_exam_report([matched])
+
+
+def test_incomparable_rows_are_excluded_from_the_aggregate():
+    # Declaring a row unquotable and then summing it into the headline is
+    # the same defect one level up: the `!` does not travel with the
+    # aggregate, so the biased row would be quoted after all.
+    ok = _row("a", 4)
+    biased = _row("b", 0, timeouts=[f"line {i}: `<` -> `<=`" for i in range(4)])
+    report = render_spec_exam_report([ok, biased])
+    assert "engine 4/4 (100%)" in report          # not 4/8 (50%)
+    assert "1/2 row(s) that passed" in report
+    assert "not a whole-corpus rate" in report
+
+    # And with nothing left to compare, there is no rate to state at all.
+    alone = render_spec_exam_report([biased])
+    assert "NOT AGGREGATED" in alone
+    assert "engine 0/4" not in alone
+
+
+def test_golden_cache_written_before_the_timeout_fields_is_not_reused(
+        tmp_path, monkeypatch):
+    """A cache entry predating a field must MISS, not load it as zero.
+
+    The cache key covers the source, meta.json and the ladder settings —
+    none of which change when the recorded fields do. An entry written
+    before golden's timeouts were recorded therefore still matched, and
+    "we never recorded this" loaded as "golden never timed out": a
+    timeout-bias verdict of PASSED drawn from data nobody collected.
+    """
+    import hashlib
+
+    import lemmapy.benchmark.specexam as spec_mod
+
+    corpus = _mini_corpus(tmp_path)
+    task_dir = corpus / "mini"
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+
+    def fake(task_dir_, workdir, **kwargs):
+        score = _fake_run_task(6, 3, 2)(task_dir_, workdir, **kwargs)
+        score.timeouts = ["line 4 col 7: `<` -> `<=`"]
+        return score
+
+    monkeypatch.setattr(spec_mod, "run_task", fake)
+    # Exactly the entry the previous version wrote: its key formula, and a
+    # payload with no timeout fields in it.
+    exam_source = strip_specs(MINI, mode=STRIP_PROOF)
+    meta = json.loads((task_dir / "meta.json").read_text())
+    legacy_key = hashlib.sha256(
+        (exam_source + json.dumps(meta, sort_keys=True)
+         + repr(sorted({}.items()))).encode()).hexdigest()[:16]
+    (cache_dir / f"mini-{legacy_key}.json").write_text(json.dumps({
+        "height": 6, "mutants_total": 3, "mutants_killed": 2,
+        "mutants_crashed": 0, "survivors": [],
+    }))
+
+    golden = spec_mod._golden_baseline(task_dir, tmp_path / "work", cache_dir,
+                                       {})
+    assert golden.timeout_mutants == ["line 4 col 7: `<` -> `<=`"], (
+        "the legacy entry was reused and golden's timeouts read as none")
 
 
 def test_spec_exam_refuses_corpus_overlap(tmp_path):

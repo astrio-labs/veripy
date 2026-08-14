@@ -87,6 +87,12 @@ this function scores poorly."""
 # one otherwise-correct answer a task.
 SPEC_RULES_VERSION = "spec-rules/2"
 
+# Bump whenever the golden-baseline cache entry gains or changes a field.
+# It is part of the cache KEY, so older entries stop matching instead of
+# loading their new fields as zeros. v2 added the per-arm timeout record;
+# v1 entries predate it and cannot say whether golden timed out.
+GOLDEN_CACHE_SCHEMA = 2
+
 STRIP_ALL = "all"
 STRIP_PROOF = "proof"
 
@@ -253,39 +259,64 @@ def golden_to_variant_map(golden: str, stripped: str,
     }
 
 
+def variant_to_stripped_map(stripped: str, variant: str) -> dict[int, int]:
+    """variant line -> STRIPPED line: the common coordinate system.
+
+    The two arms of the exam annotate the same stripped source with
+    different `#@` lines, so the same mutation site carries a different
+    line number in each. Mapping both arms' mutant descriptions back onto
+    the stripped source is what makes them comparable as identities rather
+    than as counts.
+    """
+    _, stripped_to_variant = check_frozen(stripped, variant)
+    return {v: k for k, v in stripped_to_variant.items()}
+
+
+def renumber_description(description: str, line_map: dict[int, int]) -> str:
+    """Rewrite a mutant description's line number through `line_map`.
+
+    A description like ``"line 17 col 4: `>` -> `>=`"`` is the mutant's
+    IDENTITY, and the line number in it is the only part that moves when
+    `#@` lines are inserted or dropped. Columns are unchanged by inserting
+    whole lines, so the rest of the identity is preserved verbatim.
+
+    An unmappable line keeps the original text, so the mismatch surfaces
+    loudly (an un-excluded survivor, a stale-adjudication error, a row
+    marked incomparable) instead of being silently resolved.
+    """
+    match = _EQUIV_LINE_RE.match(description)
+    if match is None:
+        return description
+    new = line_map.get(int(match.group(1)))
+    if new is None:
+        return description
+    return _EQUIV_LINE_RE.sub(
+        lambda m: f"line {new}{m.group(2) or ''}: ", description, count=1)
+
+
 def translate_equivalents(meta: dict[str, Any],
                           line_map: dict[int, int]) -> dict[str, Any]:
-    """Rewrite line-numbered `equivalent_mutants` descriptions into the
-    annotated file's numbering.
+    """Rewrite meta.json's line-numbered adjudications into the annotated
+    file's numbering.
 
-    Adjudicated equivalent mutants are recorded as e.g.
-    ``"line 17: `>` -> `>=`"``. Inserting spec comments shifts those line
-    numbers, so without translation the exclusion silently misses and the
+    Adjudicated mutants are recorded as e.g. ``"line 17: `>` -> `>=`"``,
+    against the GOLDEN file. Inserting spec comments shifts those line
+    numbers, so without translation the ruling silently misses and the
     engine gets charged for a mutant the golden run was forgiven — the
     comparison breaks quietly, which is the worst way for it to break.
+
+    BOTH adjudication channels are translated. `timeout_kills` names
+    mutants by the same description, and the runner errors the whole panel
+    on a ruling that matches nothing — so leaving it untranslated did not
+    merely lose an exclusion, it zeroed the arm's kill count (the corpus's
+    `modp` task scored golden 0/8 in the exam for exactly this reason).
     """
-    equivalents = meta.get("equivalent_mutants")
-    if not equivalents:
-        return meta
-    translated: list[str] = []
-    for description in equivalents:
-        match = _EQUIV_LINE_RE.match(description)
-        if match is None:
-            translated.append(description)
-            continue
-        old = int(match.group(1))
-        new = line_map.get(old)
-        if new is None:
-            # Unmappable: keep the original so the mismatch surfaces as an
-            # un-excluded survivor rather than a silent exclusion.
-            translated.append(description)
-            continue
-        # Columns are unchanged by inserting whole lines, so only the line
-        # number is rewritten; the rest of the identity is preserved.
-        translated.append(_EQUIV_LINE_RE.sub(
-            lambda m: f"line {new}{m.group(2) or ''}: ", description, count=1))
     out = dict(meta)
-    out["equivalent_mutants"] = translated
+    for key in ("equivalent_mutants", "timeout_kills"):
+        entries = meta.get(key)
+        if not entries:
+            continue
+        out[key] = [renumber_description(d, line_map) for d in entries]
     return out
 
 
@@ -318,14 +349,18 @@ class SpecExamScore:
     # Hunts that exhausted their wall: NEITHER refuted nor survived. They
     # are inconclusive, and counting them as "not refuted" silently
     # penalizes whichever arm is more expensive to hunt — which is a
-    # property of the specification's shape, not its strength.
-    mutants_timeout: int = 0
+    # property of the specification's shape, not its strength. Held as
+    # mutant IDENTITIES in the STRIPPED source's line numbering, the one
+    # coordinate system both arms share: two arms that each went
+    # inconclusive once, on different mutants, did not conclude on the
+    # same panel, and equal counts would have called that comparable.
+    timeout_mutants: list[str] = field(default_factory=list)
     survivors: list[str] = field(default_factory=list)
     golden_height: int = 0
     golden_mutants_total: int = 0
     golden_mutants_killed: int = 0
     golden_mutants_crashed: int = 0
-    golden_mutants_timeout: int = 0
+    golden_timeout_mutants: list[str] = field(default_factory=list)
     clause_counts: dict[str, int] = field(default_factory=dict)
     retry_reasons: list[str] = field(default_factory=list)
     rules_version: str = SPEC_RULES_VERSION
@@ -333,15 +368,26 @@ class SpecExamScore:
     usage: list[dict[str, Any] | None] = field(default_factory=list)
 
     @property
+    def mutants_timeout(self) -> int:
+        return len(self.timeout_mutants)
+
+    @property
+    def golden_mutants_timeout(self) -> int:
+        return len(self.golden_timeout_mutants)
+
+    @property
     def comparable(self) -> bool:
         """Whether this row's engine-vs-golden kill rates may be compared.
 
-        If the two arms did not conclude on the same number of mutants,
-        the difference in refutation counts mixes spec STRENGTH with hunt
-        COST. Reporting it as a strength gap would be a timeout bias, so
-        the row is marked and excluded from the aggregate instead.
+        Only if the two arms concluded on the SAME mutants. Equal counts
+        are not enough: one arm timing out on mutant A while the other
+        times out on mutant B leaves each arm's refutation count missing a
+        different mutant, so the difference mixes spec STRENGTH with hunt
+        COST exactly as an unequal count does. Reporting it as a strength
+        gap would be a timeout bias, so the row is marked and excluded
+        from the aggregate instead.
         """
-        return self.mutants_timeout == self.golden_mutants_timeout
+        return sorted(self.timeout_mutants) == sorted(self.golden_timeout_mutants)
 
     @property
     def scored_total(self) -> int:
@@ -451,19 +497,30 @@ def _golden_baseline(task_dir: Path, workdir: Path, cache_dir: Path,
     # The cached score depends on meta.json's adjudications as much as on
     # the source: without meta in the key, editing an adjudication without
     # touching task.py returns the pre-adjudication baseline forever.
+    #
+    # GOLDEN_CACHE_SCHEMA is in the key for the same reason. An entry
+    # written before a field existed matches an unchanged key, and the
+    # missing field would load as its zero default — "we never recorded
+    # golden's timeouts" would read as "golden never timed out", which is
+    # a PASSED timeout-bias verdict drawn from data nobody collected. A
+    # schema bump retires those entries by missing them instead.
     key = hashlib.sha256(
         (exam_source + json.dumps(meta, sort_keys=True)
-         + repr(sorted(ladder_kwargs.items()))).encode()
+         + repr(sorted(ladder_kwargs.items()))
+         + f"|schema={GOLDEN_CACHE_SCHEMA}").encode()
     ).hexdigest()[:16]
     cache_file = cache_dir / f"{task_dir.name}-{key}.json"
     if cache_file.exists():
         cached = json.loads(cache_file.read_text())
         score = TaskScore(task_id=task_dir.name)
+        # Read every field REQUIRED, never defaulted: the schema in the key
+        # guarantees an entry that matched was written with all of them, so
+        # a missing one is a corrupt entry and must not pass as a zero.
         score.mutants_total = cached["mutants_total"]
         score.mutants_killed = cached["mutants_killed"]
-        score.mutants_crashed = cached.get("mutants_crashed", 0)
-        score.timeouts = cached.get("timeouts", [])
-        score.adjudicated_timeouts = cached.get("adjudicated_timeouts", 0)
+        score.mutants_crashed = cached["mutants_crashed"]
+        score.timeouts = cached["timeouts"]
+        score.adjudicated_timeouts = cached["adjudicated_timeouts"]
         score.survivors = cached["survivors"]
         score._cached_height = cached["height"]  # type: ignore[attr-defined]
         return score
@@ -479,6 +536,20 @@ def _golden_baseline(task_dir: Path, workdir: Path, cache_dir: Path,
         "survivors": score.survivors,
     }, indent=1))
     return score
+
+
+def _in_stripped_numbering(descriptions: list[str], stripped: str,
+                           variant: str) -> list[str]:
+    """An arm's mutant descriptions, renumbered onto the stripped source.
+
+    Comparing the two arms' inconclusive hunts is an identity question, and
+    identities only line up in the shared coordinate system. A description
+    whose line does not map keeps its own numbering, so it fails to match
+    its counterpart and the row is marked incomparable — the safe way for
+    an unmappable identity to fail.
+    """
+    line_map = variant_to_stripped_map(stripped, variant)
+    return [renumber_description(d, line_map) for d in descriptions]
 
 
 def _height_of(score: TaskScore) -> int:
@@ -507,6 +578,14 @@ def run_spec_exam(tasks_root: Path, workdir: Path,
         (exam_dir / "stripped.py").write_text(stripped)
 
         golden = _golden_baseline(task_dir, exam_dir, cache_dir, ladder_kwargs)
+        # The golden arm hunts the EXAM source (`#@ proof` stripped), so its
+        # mutant descriptions carry that file's line numbers. Both arms are
+        # recorded in the stripped source's numbering, the only coordinate
+        # system they share — without it "the same mutant" is not a
+        # question the two arms' descriptions can answer.
+        golden_timeouts = _in_stripped_numbering(
+            golden.timeout_mutants, stripped,
+            strip_specs(golden_source, mode=STRIP_PROOF))
         engine = engine_factory()
         t0 = time.monotonic()
         errors: list[dict[str, Any]] = []
@@ -544,7 +623,7 @@ def run_spec_exam(tasks_root: Path, workdir: Path,
                 golden_mutants_total=golden.mutants_total,
                 golden_mutants_killed=golden.mutants_killed,
                 golden_mutants_crashed=golden.mutants_crashed,
-                golden_mutants_timeout=getattr(golden, "timeout_count", 0),
+                golden_timeout_mutants=golden_timeouts,
                 retry_reasons=retry_reasons, wall_ms=wall_ms, usage=usage))
             continue
 
@@ -558,13 +637,14 @@ def run_spec_exam(tasks_root: Path, workdir: Path,
             mutants_total=scored.mutants_total,
             mutants_killed=scored.mutants_killed,
             mutants_crashed=scored.mutants_crashed,
-            mutants_timeout=getattr(scored, "timeout_count", 0),
+            timeout_mutants=_in_stripped_numbering(scored.timeout_mutants,
+                                                   stripped, proposal),
             survivors=scored.survivors,
             golden_height=_height_of(golden),
             golden_mutants_total=golden.mutants_total,
             golden_mutants_killed=golden.mutants_killed,
             golden_mutants_crashed=golden.mutants_crashed,
-            golden_mutants_timeout=getattr(golden, "timeout_count", 0),
+            golden_timeout_mutants=golden_timeouts,
             clause_counts=_clause_counts(proposal),
             retry_reasons=retry_reasons, wall_ms=wall_ms, usage=usage))
     return scores
@@ -596,22 +676,36 @@ def render_spec_exam_report(scores: list[SpecExamScore]) -> str:
                      f"{f'{s.height}/{s.golden_height}':<8} "
                      f"{s.attempts:<4} {clauses}")
     valid = [s for s in scores if s.valid]
-    killed = sum(s.mutants_killed for s in scores)
-    total = sum(s.scored_total for s in scores)
-    crashed = sum(s.mutants_crashed for s in scores)
-    g_killed = sum(s.golden_mutants_killed for s in scores)
-    g_total = sum(s.golden_mutants_total for s in scores)
     incomparable = [s for s in scores if not s.comparable]
+    # The aggregate is built from the COMPARABLE rows only. A row whose
+    # arms did not conclude on the same mutants was just declared unquotable
+    # as a strength difference; summing it into the headline would quote it
+    # anyway, one level up, where the `!` marking no longer travels with it.
+    comparable = [s for s in scores if s.comparable]
+    killed = sum(s.mutants_killed for s in comparable)
+    total = sum(s.scored_total for s in comparable)
+    crashed = sum(s.mutants_crashed for s in scores)
+    g_killed = sum(s.golden_mutants_killed for s in comparable)
+    g_total = sum(s.golden_mutants_total for s in comparable)
     engine_to = sum(s.mutants_timeout for s in scores)
     golden_to = sum(s.golden_mutants_timeout for s in scores)
     lines.append("-" * len(header))
     lines.append(f"valid: {len(valid)}/{len(scores)}")
-    lines.append(
-        f"spec strength (mutants REFUTED by the spec, over the golden panel): "
-        f"engine {killed}/{total}"
-        + (f" ({100 * killed / total:.0f}%)" if total else "")
-        + f" vs golden {g_killed}/{g_total}"
-        + (f" ({100 * g_killed / g_total:.0f}%)" if g_total else ""))
+    if not comparable:
+        lines.append(
+            "spec strength: NOT AGGREGATED — every row failed the "
+            "timeout-bias check, so there is no comparable pair to average")
+    else:
+        lines.append(
+            f"spec strength (mutants REFUTED by the spec, over the golden "
+            f"panel): engine {killed}/{total}"
+            + (f" ({100 * killed / total:.0f}%)" if total else "")
+            + f" vs golden {g_killed}/{g_total}"
+            + (f" ({100 * g_killed / g_total:.0f}%)" if g_total else "")
+            + (f" — over the {len(comparable)}/{len(scores)} row(s) that "
+               f"passed the timeout-bias check; the {len(incomparable)} "
+               f"marked `!` are excluded from BOTH arms, so this is not a "
+               f"whole-corpus rate" if incomparable else ""))
     if crashed:
         lines.append(
             f"{crashed} mutant(s) crashed under the engine's specs — caught by "
@@ -632,8 +726,9 @@ def render_spec_exam_report(scores: list[SpecExamScore]) -> str:
             f"conclude on the same mutants in both arms "
             f"({', '.join(s.task_id for s in incomparable[:4])}) — their "
             f"refutation gap mixes spec strength with hunt cost and must "
-            f"not be quoted as a strength difference. Re-run those tasks "
-            f"with a larger --hunt-timeout before comparing.")
+            f"not be quoted as a strength difference. They are excluded "
+            f"from the aggregate above. Re-run those tasks with a larger "
+            f"--hunt-timeout before comparing.")
     else:
         lines.append(
             "timeout-bias check: PASSED — both arms concluded on the same "
@@ -647,20 +742,31 @@ def render_spec_exam_report(scores: list[SpecExamScore]) -> str:
 
 def spec_scores_to_json(scores: list[SpecExamScore]) -> dict[str, Any]:
     return {
-        "schema": "lemmapy-specwrite-scores/1",
+        # /2 adds the timeout-bias fields. Bumped rather than added
+        # quietly: a consumer written against /1 has no `comparable` to
+        # honour, and a ledger it reads as /1 would aggregate rows the
+        # exam has ruled unquotable.
+        "schema": "lemmapy-specwrite-scores/2",
         "tasks": [
             {
                 "id": s.task_id, "valid": s.valid, "attempts": s.attempts,
                 "reason": s.reason, "height": s.height,
+                # `comparable` and the per-arm inconclusive hunts travel
+                # with every row: a consumer that sums `killed` across the
+                # ledger without them rebuilds the timeout-biased aggregate
+                # the printed report refuses to state.
+                "comparable": s.comparable,
                 "mutants": {"total": s.mutants_total,
                             "scored_total": s.scored_total,
                             "killed": s.mutants_killed,
                             "crashed": s.mutants_crashed,
+                            "timeouts": s.timeout_mutants,
                             "survivors": s.survivors},
                 "golden": {"height": s.golden_height,
                            "mutants_total": s.golden_mutants_total,
                            "mutants_killed": s.golden_mutants_killed,
-                           "mutants_crashed": s.golden_mutants_crashed},
+                           "mutants_crashed": s.golden_mutants_crashed,
+                           "timeouts": s.golden_timeout_mutants},
                 "clause_counts": s.clause_counts,
                 "retry_reasons": s.retry_reasons,
                 "wall_ms": s.wall_ms, "usage": s.usage,
