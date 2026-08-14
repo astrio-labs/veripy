@@ -77,6 +77,15 @@ lemma of the whole comparison: mutations sort by `(line, col, replacement)`
 and inserting comment lines is a monotone renumbering, so ordering survives
 and the `max_mutants` truncation selects the same faults.
 
+State one consequence plainly, before a reviewer reads it as a flaw: on the
+five sidecar-bearing tasks the spec-writing exam has a **ladder ceiling
+below R4**, because the proof channel is deliberately closed (no sidecar,
+`#@ proof` rejected) and those tasks provably cannot prove without lemmas.
+Both sides face that ceiling — the golden baseline is scored under the same
+conditions — so heights are reported relative to the golden's
+exam-conditions height, and R2 kill rate, which is unaffected by the proof
+channel, remains the headline.
+
 ### 5. Experimental protocol (~1pp) — the contamination section
 The section reviewers will remember. Everything here is already recorded.
 
