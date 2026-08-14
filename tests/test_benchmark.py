@@ -648,6 +648,18 @@ def test_thin_panels_are_marked_not_presented_as_comparable():
     report = render_report([thin, thick])
     assert "1/1?" in report, "a one-mutant panel must be marked"
     assert "8/8?" not in report and "8/8" in report
-    assert "panel resolution" in report
-    assert f"median" in report
     assert LOW_RESOLUTION_PANEL == 3
+
+    # The profile must report the median it computed. `[1, 8]` has median
+    # 4.5, and a `.0f` format rounded it to "4" — an inaccurate statistic
+    # inside the line whose whole job is to state the instrument's
+    # precision. (Banker's rounding makes it read LOW, understating the
+    # resolution rather than overstating it, which is the less obvious
+    # direction to notice.)
+    assert "median 4.5" in report, report
+    assert "min 1" in report and "max 8" in report
+    assert "1 task(s) marked ?" in report
+
+    # A whole-number median must not gain a spurious decimal.
+    even = render_report([scored("a", 4, 4), scored("b", 4, 4)])
+    assert "median 4 " in even, even

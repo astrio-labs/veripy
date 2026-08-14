@@ -425,7 +425,7 @@ def render_report(scores: list[TaskScore]) -> str:
 
         thin = sum(1 for n in panels if n < LOW_RESOLUTION_PANEL)
         lines.append(
-            f"panel resolution: median {statistics.median(panels):.0f} "
+            f"panel resolution: median {statistics.median(panels):g} "
             f"mutants/task, min {min(panels)}, max {max(panels)}"
             + (f"; {thin} task(s) marked ? — panel too small for a per-task "
                f"rate to be comparable" if thin else ""))
