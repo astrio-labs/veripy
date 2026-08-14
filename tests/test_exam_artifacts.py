@@ -16,6 +16,9 @@ quietly starts verifying is no longer a near-miss, and the sentence in
 EVALUATION.md describing why it failed becomes wrong.
 """
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,7 +30,12 @@ REPO = Path(__file__).resolve().parent.parent
 ARTIFACTS = REPO / "docs" / "exam-artifacts"
 TASKS = REPO / "benchmark" / "tasks"
 
-pytestmark = pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+# Only the two tests that run the prover need it. A module-level skip would
+# also switch off the filesystem checks below — archive non-empty, naming
+# convention, artifact names a real task — so a Dafny-free CI tier would
+# report green on an emptied archive or a misnamed artifact.
+needs_dafny = pytest.mark.skipif(find_dafny() is None,
+                                 reason="dafny not installed")
 
 
 def _packs(marker: str) -> list[Path]:
@@ -48,12 +56,27 @@ def _run(artifact: Path, tmp_path: Path) -> dict:
     return verify_structured(src, tmp_path / "out", time_limit=60)
 
 
+def _the_prover_rejected_it(payload: dict) -> bool:
+    """Evidence that the prover ran and turned this pack down.
+
+    Not the same as `status != "ok"`: a missing Dafny, a subprocess
+    timeout, an unreadable sidecar and a spec that no longer encodes all
+    report a non-ok status without ever putting a proof obligation to the
+    prover, so `!= "ok"` is satisfied by a toolchain that never worked —
+    the archive's negative claim would then be "checked" by nothing. Only
+    `failed` means obligations were tried and not discharged, and a
+    `failed` carrying no records is a verdict with nothing readable in it.
+    """
+    return payload["status"] == "failed" and bool(payload["failures"])
+
+
 def test_the_archive_is_not_empty():
     # A glob that silently matches nothing would make every test below
     # vacuously pass.
     assert _packs("-engine-pack-") and _packs("-engine-unverified-attempt-")
 
 
+@needs_dafny
 @pytest.mark.parametrize("artifact", _packs("-engine-pack-"),
                          ids=lambda p: p.name)
 def test_archived_engine_pack_still_verifies(artifact, tmp_path):
@@ -64,14 +87,33 @@ def test_archived_engine_pack_still_verifies(artifact, tmp_path):
         f"{payload.get('failures') or payload.get('error')}")
 
 
+@needs_dafny
 @pytest.mark.parametrize("artifact", _packs("-engine-unverified-attempt-"),
                          ids=lambda p: p.name)
 def test_archived_near_miss_still_misses(artifact, tmp_path):
     payload = _run(artifact, tmp_path)
-    assert payload["status"] != "ok", (
-        f"{artifact.name} is cited as an attempt that did NOT verify, but "
-        f"it now does — the write-up's explanation of why it failed is "
-        f"stale")
+    assert _the_prover_rejected_it(payload), (
+        f"{artifact.name} is cited as an attempt the prover REJECTED, but "
+        f"this run ended as {payload['status']!r} "
+        f"({payload.get('error') or payload['failures'] or 'no records'}) — "
+        f"either it now verifies and the write-up's explanation of why it "
+        f"failed is stale, or nothing was proved here at all")
+
+
+def test_a_broken_toolchain_is_not_a_near_miss():
+    # The check the near-miss test rests on has to be able to fail for the
+    # right reason. `status != "ok"` accepted every one of these, so a CI
+    # run whose Dafny was missing or timing out would have "confirmed" the
+    # archive's negative claim without the prover reading a single line.
+    assert not _the_prover_rejected_it(
+        {"status": "tool-error", "error": "dafny failed to run",
+         "failures": []})
+    assert not _the_prover_rejected_it(
+        {"status": "encode-error",
+         "failures": [{"kind": "conformance", "rule": "unsupported-stmt"}]})
+    assert not _the_prover_rejected_it({"status": "failed", "failures": []})
+    assert _the_prover_rejected_it(
+        {"status": "failed", "failures": [{"kind": "postcondition"}]})
 
 
 def test_every_artifact_declares_which_way_it_goes():
@@ -92,3 +134,27 @@ def test_artifact_names_a_real_corpus_task(artifact):
         f"{artifact.name} names task '{_task_of(artifact)}', which is not "
         f"in benchmark/tasks — the artifact cannot be checked against "
         f"anything")
+
+
+def test_the_structural_checks_survive_a_prover_free_tier(tmp_path):
+    """Re-run the filesystem-only checks the way a CI tier without Dafny
+    would see them: an empty PATH, so `find_dafny()` is None.
+
+    A skip is indistinguishable from a pass in the summary line, so a
+    module-level skip put these checks — the only ones that would notice an
+    emptied archive or an artifact named after no task — permanently out of
+    reach of the tier that runs everywhere.
+    """
+    checks = ["test_the_archive_is_not_empty",
+              "test_every_artifact_declares_which_way_it_goes",
+              "test_artifact_names_a_real_corpus_task"]
+    here = Path(__file__).resolve().relative_to(REPO)
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+         *(f"{here}::{name}" for name in checks)],
+        cwd=REPO, capture_output=True, text=True,
+        env={**os.environ, "PATH": str(tmp_path)})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "skipped" not in proc.stdout, (
+        "the archive's structural checks are skipped when Dafny is absent, "
+        f"so a prover-free CI tier checks nothing:\n{proc.stdout}")
