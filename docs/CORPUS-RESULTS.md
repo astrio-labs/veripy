@@ -46,7 +46,7 @@ Top rules by fire count, pooled (full per-repo JSON in `build/survey-*.json`, re
 | `X-CLASS-INHERIT` | methods of inheriting classes | Inheritance exclusion (v2 traits); dominant in rich |
 | `T-FSTRING` | f-strings | Top *admittable* candidate — pure string interpolation is curated-model territory |
 | `U-CALL` | calls to unmodeled names | Tier 3 extern-contract demand signal |
-| `X-YIELD` / `X-RAISE` / `X-DECOR` | generators, raise, decorators | Matches the predicted v1.5 admission order in [ROADMAP.md](ROADMAP.md) |
+| `X-YIELD` / `X-RAISE` / `X-DECOR` | generators, raise, decorators | Matches the predicted v1.5 admission order in the roadmap |
 | `F-DUNDER-ATTR` | `__dict__`/`__class__` access | attrs' metaprogramming core — correctly outside any shallow fragment |
 
 ## Interpretation (initial, one run)
@@ -60,4 +60,4 @@ Top rules by fire count, pooled (full per-repo JSON in `build/survey-*.json`, re
 
 - basedpyright integration (types make `U-*` rules honest; adds `Any`-leak detection)
 - Survey a stratified sample of strict-mode-clean packages beyond these three
-- Wire rule-fire telemetry into the v1.5 admission decision in [ROADMAP.md](ROADMAP.md)
+- Wire rule-fire telemetry into the v1.5 admission decision in the roadmap
