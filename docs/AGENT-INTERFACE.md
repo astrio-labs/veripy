@@ -47,7 +47,9 @@ tool or input error.
     }
   ],
   "sidecar": {"path": "module.proofs.dfy", "exists": true,
-              "lemmas": ["EuclidStepAll"], "text": "..."}
+              "lemmas": ["EuclidStepAll"], "text": "..."},
+  "stub": null,
+  "artifacts_kept": false
 }
 ```
 
@@ -59,6 +61,13 @@ tool or input error.
 prover was never reached (an unreadable source cannot have a prover
 verdict, and asking for one would make an immediate error wait on a
 subprocess).
+
+**Artifacts.** Each call stages into a *private* directory: two concurrent
+verifications sharing an `outdir` once raced on one stub path, so one
+module could be verified against another's generated code. `stub` is the
+generated `.dfy` path when `keep_artifacts=True`, and `null` otherwise —
+never a path that has already been cleaned up. Nothing downstream reads
+it; it is diagnostic only.
 
 **Coordinates.** `py_line` locates the failure in your source;
 `dafny_line` locates it in the generated stub. A failure in the appended
