@@ -258,6 +258,15 @@ claim as `6/6`.
 
 ## Scoring and reproducibility
 
+A note on determinism: mutant *generation* is deterministic (ordered AST
+walk, splice-based), but the *hunter* is a subprocess and can fail
+intermittently — one run in five on an otherwise-clean commit exited 2
+with an analysis error that a repeat run did not reproduce. That is the
+ERROR path behaving correctly (an unmeasured mutant must not be scored),
+so the rung names the offending mutant *and the hunter's reason*, making
+an intermittent failure diagnosable rather than an unactionable
+"1 analysis error(s)".
+
 `lemmapy benchmark [--quick] [--report FILE]` prints the ladder table and
 writes a JSON scorecard. Mutant panels are deterministic (ordered AST walk,
 splice-based so `#@` comments survive verbatim). Surviving mutants may be

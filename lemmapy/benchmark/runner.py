@@ -222,14 +222,15 @@ def run_task(
             "mutants", ERROR,
             "adjudication does not match the panel: " + "; ".join(stale[:3])))
         return score
+    error_reasons: list[str] = []
     score.adjudicated = sum(1 for d in panel_descriptions if d in equivalents)
     mutants = [(d, m) for d, m in mutants if d not in equivalents]
     score.mutants_total = len(mutants)
     for i, (description, mutated) in enumerate(mutants):
         # Mutants get a tighter wall than the original: a diverging mutant
         # would otherwise stall the panel for the full default wall.
-        verdict, _ = _hunt(mutated, f"{task_id}_m{i}", workdir / "mutants",
-                           hunt_timeout, wall=hunt_timeout * 12 + 60)
+        verdict, why = _hunt(mutated, f"{task_id}_m{i}", workdir / "mutants",
+                             hunt_timeout, wall=hunt_timeout * 12 + 60)
         if verdict == "counterexample":
             score.mutants_killed += 1
         elif verdict == "crash":
@@ -251,7 +252,13 @@ def run_task(
                 score.timeouts.append(description)
         elif verdict == "clean":
             score.survivors.append(description)
-        # errors excluded from all counts
+        else:
+            # An errored analysis is excluded from all counts, so the
+            # REASON is the only way to act on it — an intermittent
+            # analysis failure is otherwise an unactionable "1 analysis
+            # error(s)" with no way to tell a crashed hunter from a
+            # misconfigured one.
+            error_reasons.append(f"{description} ({why})")
     analysis_errors = (score.mutants_total - score.mutants_killed
                        - score.mutants_crashed - len(score.survivors)
                        - len(score.timeouts))
@@ -280,6 +287,8 @@ def run_task(
         if score.timeouts:
             detail += (f"; timeouts: {'; '.join(score.timeouts[:3])} "
                        f"-- adjudicate divergence via meta.json \"timeout_kills\"")
+        if error_reasons:
+            detail += f"; errors: {'; '.join(error_reasons[:3])}"
         score.rungs.append(Rung("mutants", ERROR, detail))
     elif score.survivors or score.timeouts:
         parts = [f"{score.mutants_killed}/{score.mutants_total} refuted"]
