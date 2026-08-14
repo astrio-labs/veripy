@@ -13,7 +13,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 ROSTER = ["below_zero", "gcd", "is_prime", "modp", "rolling_max",
-          "sum_squares"]
+          "sum_squares", "sum_to_n"]
 
 
 def test_exam_roster_is_the_sidecar_bearing_tasks():
