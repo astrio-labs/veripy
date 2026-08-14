@@ -33,6 +33,41 @@ LOOP_WITH_INVARIANT = (
     "    return total\n"
 )
 
+TWO_LOOPS_ONE_BARE = (
+    "#@ ensures 0 <= result\n"
+    "def two_phase(xs: list[int]) -> int:\n"
+    "    total = 0\n"
+    "    for i in range(len(xs)):\n"
+    "        #@ invariant 0 <= total\n"
+    "        total = total + 1\n"
+    "    extra = 0\n"
+    "    for j in range(len(xs)):\n"
+    "        extra = extra - 1\n"
+    "    return total + extra\n"
+)
+
+NESTED_INVARIANT_ON_INNER_LOOP = (
+    "#@ ensures 0 <= result\n"
+    "def grid(n: int) -> int:\n"
+    "    total = 0\n"
+    "    for i in range(n):\n"
+    "        for j in range(n):\n"
+    "            #@ invariant 0 <= total\n"
+    "            total = total + 1\n"
+    "    return total\n"
+)
+
+EARLY_RETURN_BEFORE_THE_LOOP = (
+    "#@ ensures 0 <= result\n"
+    "def maybe(xs: list[int]) -> int:\n"
+    "    if len(xs) == 0:\n"
+    "        return -1\n"
+    "    total = 0\n"
+    "    for i in range(len(xs)):\n"
+    "        total = total + 1\n"
+    "    return total\n"
+)
+
 NO_LOOP = (
     "#@ ensures result == x + 1\n"
     "def bump(x: int) -> int:\n"
@@ -61,6 +96,29 @@ def test_hint_changes_once_an_invariant_exists():
     hint = _hint(LOOP_WITH_INVARIANT, "postcondition", 8)
     assert hint and "#@ invariant" not in hint
     assert "strengthened" in hint
+
+
+def test_an_invariant_on_one_loop_does_not_answer_for_another():
+    # The whole-function question ("does this function have an invariant?")
+    # said yes here and produced the strengthen advice, sending the reader to
+    # edit the clause on the FIRST loop when the missing ingredient is a new
+    # one on the second. Naming the bare loop's line is the point of the hint.
+    hint = _hint(TWO_LOOPS_ONE_BARE, "postcondition", 10)
+    assert hint and "#@ invariant" in hint
+    assert "line 8" in hint and "strengthen" not in hint
+
+
+def test_an_inner_loops_invariant_is_not_credited_to_the_outer_loop():
+    # The inner invariant sits inside the outer loop's span, so containment
+    # alone would mark the outer loop as covered; only innermost ownership
+    # reports the outer loop as the bare one.
+    hint = _hint(NESTED_INVARIANT_ON_INNER_LOOP, "postcondition", 8)
+    assert hint and "line 4" in hint
+
+
+def test_a_return_before_every_loop_gets_no_loop_advice():
+    # This path never entered the loop, so the loop cannot be why it failed.
+    assert _hint(EARLY_RETURN_BEFORE_THE_LOOP, "postcondition", 4) is None
 
 
 def test_no_loop_means_no_invariant_advice():

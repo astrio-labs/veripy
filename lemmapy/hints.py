@@ -40,6 +40,25 @@ def _loops_in(fn: ast.FunctionDef) -> list[ast.stmt]:
     return [n for n in ast.walk(fn) if isinstance(n, (ast.For, ast.While))]
 
 
+def _owning_loop(loops: list[ast.stmt], line: int) -> ast.stmt | None:
+    """The loop whose body `line` sits in, innermost first.
+
+    Ownership, not mere presence, is what the postcondition hint needs: an
+    invariant written on an inner loop says nothing about whether the outer
+    one carries its own, and crediting it to the outer loop would send the
+    reader to strengthen a clause that is not the missing ingredient.
+    Mirrors the containment rule `extract` uses to bind body clauses to
+    their function (`lineno < line <= end_lineno`).
+    """
+    best = None
+    for loop in loops:
+        end = loop.end_lineno or loop.lineno
+        if loop.lineno < line <= end:
+            if best is None or loop.lineno > best.lineno:
+                best = loop
+    return best
+
+
 def proof_hint(diagnostic: Any, source: str, specs: Any) -> str | None:
     """A one-line remedy for this diagnostic, or None when the shape is
     not unambiguous enough to advise."""
@@ -57,21 +76,39 @@ def proof_hint(diagnostic: Any, source: str, specs: Any) -> str | None:
 
     if kind == "postcondition":
         loops = _loops_in(fn)
-        if not loops:
+        # Only loops that could have run before this return are on the path
+        # that failed. A loop further down the function cannot be why THIS
+        # return path did not prove, and an early return that precedes every
+        # loop has some other cause entirely.
+        on_path = [n for n in loops if n.lineno <= line]
+        if not on_path:
             return None
-        has_invariant = any(
-            c.kind == "invariant"
-            for spec in getattr(specs, "functions", [])
-            if spec.name == fn.name
-            for c in spec.clauses)
-        if not has_invariant:
-            return (f"`{fn.name}` contains a loop with no `#@ invariant`. A "
-                    f"postcondition about a value the loop builds usually "
-                    f"needs one: state what is true of that value on every "
-                    f"iteration, as the first line inside the loop body.")
-        return ("an invariant is present but did not carry the "
-                "postcondition — it may need to be strengthened to mention "
-                "the value the ensures talks about.")
+        # Per-loop, not per-function. Asking only whether the function has an
+        # invariant ANYWHERE means an invariant on the first of two loops
+        # answers for a failure arising from the second, and the reader is
+        # told to strengthen a clause they already wrote when the missing
+        # ingredient is to ADD one to the bare loop — the wrong edit, from
+        # the module written to stop exactly that.
+        owners = set()
+        for spec in getattr(specs, "functions", []):
+            if spec.name != fn.name:
+                continue
+            for c in spec.clauses:
+                if c.kind == "invariant":
+                    owner = _owning_loop(loops, c.line)
+                    if owner is not None:
+                        owners.add(id(owner))
+        bare = [n for n in on_path if id(n) not in owners]
+        if bare:
+            first = min(bare, key=lambda n: n.lineno)
+            return (f"the loop at line {first.lineno} in `{fn.name}` carries "
+                    f"no `#@ invariant`. A postcondition about a value that "
+                    f"loop builds usually needs one: state what is true of "
+                    f"that value on every iteration, as the first line inside "
+                    f"the loop body.")
+        return ("every loop on this path has an invariant, but they did not "
+                "carry the postcondition — one may need to be strengthened "
+                "to mention the value the ensures talks about.")
 
     if kind == "invariant":
         return ("a loop invariant failed. Dafny checks it on ENTRY and after "
