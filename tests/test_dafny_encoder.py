@@ -1290,3 +1290,27 @@ def test_the_legitimate_cases_still_encode():
     assert "(a + b)" in _encode(_fn("a + b", "a: int, b: int", "int"))
     assert "(a - b)" in _encode(_fn("a - b", "a: int, b: int", "int"))
     assert "PyMod(a, b)" in _encode(_fn("a % b", "a: int, b: int", "int"))
+
+
+def test_empty_list_literal_takes_its_type_from_the_other_operand():
+    # `[] + xs` encoded and verified before operands were type-checked here;
+    # `_infer` cannot type a bare `[]`, so the fail-closed branch would have
+    # rejected a concatenation the fragment has always modelled.
+    assert "([] + xs)" in _encode(_fn("[] + xs", "xs: list[int]", "list[int]"))
+    assert "(xs + [])" in _encode(_fn("xs + []", "xs: list[int]", "list[int]"))
+    # and the type it borrows propagates, so nesting still works
+    assert "(([] + xs) + ys)" in _encode(
+        _fn("([] + xs) + ys", "xs: list[int], ys: list[int]", "list[int]"))
+
+
+@pytest.mark.parametrize("body,sig,ret", [
+    ("[] + []", "", "list[int]"),        # nothing supplies the element type
+    ("[] + s", "s: str", "str"),         # Python: TypeError, list + str
+    ("[] + n", "n: int", "int"),
+    ("[] * 3", "", "list[int]"),         # the exception is `+` only
+    ("[] - xs", "xs: list[int]", "list[int]"),
+])
+def test_empty_list_exception_does_not_leak(body, sig, ret):
+    # The sibling types a bare `[]` only across `+`, and only against a
+    # list; everything else stays fail-closed.
+    _reject(_fn(body, sig, ret), "cannot determine the operand types")

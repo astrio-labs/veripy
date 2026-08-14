@@ -389,6 +389,30 @@ def _py_type_name(tdesc: str | None) -> str:
     return tdesc
 
 
+def _concat_types(left: ast.expr, right: ast.expr,
+                  lt: str | None, rt: str | None) -> tuple[str | None, str | None]:
+    """Operand types for `+`, with a bare `[]` typed by its sibling.
+
+    An empty list literal has no element type of its own — which is why
+    `x = []` demands an annotation — but in `[] + xs` the other operand
+    supplies it, and that is exactly how Dafny types the `[] + xs` we emit.
+    Without this the fail-closed operand check would reject a concatenation
+    the fragment has always encoded and verified.
+
+    Narrow on purpose: a literal `[]` only (not any untypeable operand),
+    against a list only (`[] + "s"` is a TypeError in Python), and only
+    for `+`. `[] + []` stays undecidable and stays rejected.
+    """
+    def bare_empty(n: ast.expr) -> bool:
+        return isinstance(n, ast.List) and not n.elts
+
+    if lt is None and bare_empty(left) and rt is not None and rt.startswith("seq<"):
+        return rt, rt
+    if rt is None and bare_empty(right) and lt is not None and lt.startswith("seq<"):
+        return lt, lt
+    return lt, rt
+
+
 def _opt_inner(tdesc: str | None) -> str | None:
     """PyOpt<T> -> T, else None."""
     if tdesc is not None and tdesc.startswith("PyOpt<") and tdesc.endswith(">"):
@@ -569,6 +593,8 @@ class _MethodEncoder:
                 lt, rt = self._infer(left), self._infer(right)
                 if isinstance(op, (ast.FloorDiv, ast.Mod)):
                     return "int" if lt == "int" and rt == "int" else None
+                if isinstance(op, ast.Add):
+                    lt, rt = _concat_types(left, right, lt, rt)
                 if isinstance(op, ast.Add) and lt == rt and lt is not None \
                         and (lt == "string" or lt.startswith("seq<")):
                     return lt  # concatenation: same meaning in both languages
@@ -842,6 +868,8 @@ class _MethodEncoder:
         """
         sym = self._ARITH_SYMBOL[type(op)]
         lt, rt = self._eff_type(left), self._eff_type(right)
+        if isinstance(op, ast.Add):
+            lt, rt = _concat_types(left, right, lt, rt)
         if lt == "int" and rt == "int":
             return
         if isinstance(op, ast.Add) and lt is not None and lt == rt \
