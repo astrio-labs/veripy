@@ -12,7 +12,8 @@ from lemmapy.repair import make_engine
 REPO = Path(__file__).resolve().parent.parent
 
 
-ROSTER = ["below_zero", "gcd", "is_prime", "rolling_max", "sum_squares"]
+ROSTER = ["below_zero", "gcd", "is_prime", "modp", "rolling_max",
+          "sum_squares"]
 
 
 def test_exam_roster_is_the_sidecar_bearing_tasks():
@@ -107,19 +108,30 @@ def test_exam_strips_sidecar_and_scores_restoration(tmp_path):
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_gcd_exam_restores_with_scripted_golden_pack(tmp_path):
-    # The real corpus exam: strip gcd's 8-lemma divisibility pack, restore
+    # The real corpus exam: strip every roster task's lemma pack, restore
     # it via a scripted engine playing the golden sidecar, and re-earn the
     # proof through the whitelist + prover.
-    attempts = tmp_path / "attempts"
-    attempts.mkdir()
-    golden = (REPO / "benchmark" / "tasks" / "gcd" / "task.proofs.dfy").read_text()
-    (attempts / "1.dfy").write_text(golden)
-    scores = run_repair_exam(REPO / "benchmark" / "tasks", tmp_path / "work",
-                             lambda: make_engine(f"file:{attempts}"),
-                             time_limit=60, only={"gcd"})
-    assert [s.task_id for s in scores] == ["gcd"]
-    assert scores[0].restored and scores[0].iterations == 1
-    assert len(scores[0].golden_lemmas) == 8
+    #
+    # One scripted-attempt dir per task; a factory closes over the roster
+    # order so each task replays its own golden pack. Assertions are
+    # roster-DRIVEN rather than hardcoded, so growing the corpus does not
+    # need this test edited — only ROSTER, which is pinned separately.
+    tasks_root = REPO / "benchmark" / "tasks"
+    roster = [t.name for t in exam_tasks(tasks_root)]
+    dirs = []
+    for name in roster:
+        d = tmp_path / f"attempts_{name}"
+        d.mkdir()
+        (d / "1.dfy").write_text((tasks_root / name / "task.proofs.dfy").read_text())
+        dirs.append(d)
+    it = iter(dirs)
+    scores = run_repair_exam(tasks_root, tmp_path / "work",
+                             lambda: make_engine(f"file:{next(it)}"), time_limit=60)
+    assert [s.task_id for s in scores] == roster
+    assert all(s.restored and s.iterations == 1 for s in scores)
+    # Every roster pack declares at least one lemma, else the `#@ proof`
+    # clause it is supposed to satisfy names nothing.
+    assert all(s.golden_lemmas for s in scores)
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")

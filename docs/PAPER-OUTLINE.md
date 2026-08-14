@@ -38,8 +38,8 @@ The hook is the measured anti-gaming result, stated early:
 > twelve tautologies clear the type gate, the runtime-contract hunt, the
 > encoder, and the SMT prover — every automated check the toolchain has.
 > The mutant panel scores them **0/39**, against **26/39** for the
-> hand-written specifications (both on the pre-operand panel; the current
-> panel puts golden at 34/47).
+> hand-written specifications (both measured on the 12-task pre-operand
+> panel; the current 14-task panel puts golden at 50/63 = 79%).
 
 That is the paper in one experiment: *passing a verifier says nothing about
 whether the property proved was worth proving.*
@@ -72,12 +72,12 @@ no RNG) and why determinism is what makes cross-condition comparison legal.
 Adjudication protocol for equivalent mutants (raw *and* adjudicated rates
 reported).
 
-⬛ Golden baseline: 12 tasks, 12/12 full ladder, **34/47 mutants refuted
-(72%)**, 13 crashed and not credited. `lemmapy benchmark`
+⬛ Golden baseline: 14 tasks, 14/14 full ladder, **50/63 mutants refuted
+(79%)**, 13 crashed and not credited. `lemmapy benchmark`
 
 ### 4. Derived exams (~1.5pp)
 - **Proof-repair**: strip `.proofs.dfy`, restore R4 under frozen specs.
-  Roster ⬛ n=5, each with a **pinned load-bearing control** (the
+  Roster ⬛ n=6, each with a **pinned load-bearing control** (the
   sidecar-less variant must fail, else the row measures nothing).
 - **Spec-writing**: strip every `#@` line, score the specification written
   back on the *identical* panel. Four correctness properties, each pinned
@@ -91,7 +91,7 @@ and inserting comment lines is a monotone renumbering, so ordering survives
 and the `max_mutants` truncation selects the same faults.
 
 State one consequence plainly, before a reviewer reads it as a flaw: on the
-five sidecar-bearing tasks the spec-writing exam has a **ladder ceiling
+six sidecar-bearing tasks the spec-writing exam has a **ladder ceiling
 below R4**, because the proof channel is deliberately closed (no sidecar,
 `#@ proof` rejected) and those tasks provably cannot prove without lemmas.
 Both sides face that ceiling — the golden baseline is scored under the same
@@ -206,11 +206,11 @@ saw the same instructions. Worth a sentence in the paper: a spec-writing
 exam doubles as a grammar-ergonomics probe, and this is what it found.
 
 ### 7. Limitations (~0.5pp) — written before reviewers write them
-- Roster n=5 for proof-repair; 12-task corpus. Methodology + seed corpus,
+- Roster n=6 for proof-repair; 14-task corpus. Methodology + seed corpus,
   not a large-scale benchmark.
 - Difficulty ceiling: no dict/set, no indexed assignment, so no DP tasks.
   State it; do not let a reviewer find it.
-- 9/12 tasks HumanEval-derived. The sandbox stops *retrieval*; it cannot
+- Most tasks HumanEval/MBPP-derived. The sandbox stops *retrieval*; it cannot
   stop **memorization**. What is measured is construction against a frozen
   spec and whitelist — and the golden packs for the four newest roster
   tasks are unpublished until camera-ready.

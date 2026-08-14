@@ -183,16 +183,14 @@ def generate_mutations(source: str, max_mutants: int = 16) -> list[tuple[str, st
                 mutations.append(Mutation(
                     node.lineno, node.col_offset, node.end_col_offset,
                     str(v + 1),
-                    f"line {node.lineno} col {node.col_offset}: "
-                    f"`{v}` -> `{v + 1}`",
+                    f"line {node.lineno} col {node.col_offset}: `{v}` -> `{v + 1}`",
                 ))
             case ast.Call(func=ast.Name(id=("min" | "max") as fname) as func) \
                     if func.lineno == func.end_lineno:
                 other = "max" if fname == "min" else "min"
                 mutations.append(Mutation(
                     func.lineno, func.col_offset, func.end_col_offset, other,
-                    f"line {func.lineno} col {func.col_offset}: "
-                    f"`{fname}` -> `{other}`",
+                    f"line {func.lineno} col {func.col_offset}: `{fname}` -> `{other}`",
                 ))
             case ast.BoolOp(op=op, values=[first, second, *_]) :
                 token = "and" if isinstance(op, ast.And) else "or"

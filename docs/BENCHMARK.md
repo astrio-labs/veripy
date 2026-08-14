@@ -1,6 +1,6 @@
 # lemmapy-benchmark
 
-> **Status: v0 — runner and 12-task seed corpus shipped.** `lemmapy benchmark`
+> **Status: v0 — runner and 14-task seed corpus shipped.** `lemmapy benchmark`
 > runs it; the scorecard below regenerates with `--report`.
 
 ## Why not a skeleton-completion benchmark
@@ -44,12 +44,13 @@ Two properties fall out of this design that no static benchmark has:
    strips each sidecar-bearing task's `.proofs.dfy` (the `#@ proof` clauses
    stay in the frozen source) and scores restoration through the repair
    loop — the same whitelist and prover as the golden proof, so R4 must be
-   re-earned, never asserted. Roster today (5 tasks, each with a
+   re-earned, never asserted. Roster today (6 tasks, each with a
    sidecar-less control pinned by `test_sidecar_is_load_bearing`): `gcd`
-   (8-lemma divisibility pack), `is_prime` (7-lemma sqrt-bounded
-   primality pack sharing gcd's lemma family), `below_zero` (`SliceSnoc`),
-   `rolling_max` (`SeqMaxDominates` induction), `sum_squares`
-   (`SumNonNeg`, instantiated at a mapped-seq `#@ proof` argument).
+   (8-lemma divisibility pack), `modp` (6-lemma mod/pow pack), `is_prime`
+   (7-lemma sqrt-bounded primality pack sharing gcd's lemma family),
+   `below_zero` (`SliceSnoc`), `rolling_max` (`SeqMaxDominates`
+   induction), `sum_squares` (`SumNonNeg`, instantiated at a mapped-seq
+   `#@ proof` argument).
    Executable proof-hint asserts remain admitted source and stay where
    present. The divisibility family is deliberately NOT promoted into the
    preamble while the exam depends on those lemmas being absent.
@@ -92,8 +93,9 @@ Two properties fall out of this design that no static benchmark has:
    golden                   26/39 (67%)    13      —
    ```
 
-   *(Both figures predate the operand-replacement family; the golden
-   baseline on the current panel is 34/47 = 72%.)*
+   *(Both figures predate the operand-replacement family and the modp/
+   triples tasks; the golden baseline on the current 14-task panel is
+   50/63 = 79%.)*
 
    All twelve tautologies clear the type gate, the runtime-contract hunt,
    the encoder, and the SMT prover — *every automated check the toolchain
@@ -170,36 +172,40 @@ the corpus can be published as a spec suite others port to their tools.
 benchmark/tasks/<id>/
   task.py           # annotated Python — the single source of truth
   task.proofs.dfy   # optional ghost lemma sidecar (whitelist-validated)
-  meta.json         # {id, origin, license}
+  meta.json         # {id, origin, license} + adjudications:
+                    #   equivalent_mutants[], timeout_kills[]
 ```
 
-Seed corpus: 12 tasks (9 adapted from HumanEval, MIT; 3 project-original),
+Seed corpus: 14 tasks (11 adapted from HumanEval, MIT; 3 project-original),
 every one at full ladder height as the golden baseline. Growth is free:
 each fragment slice makes more of the 20-task contact corpus (and the 65%
 of HumanEval that surveys in-fragment) eligible — slice 6 (`sum()`/genexp
-folds) admitted `below_zero` and `sum_squares`.
+folds) admitted `below_zero` and `sum_squares`; slice 7 (`**` -> `PyPow`) admitted `modp` (whose mod/pow lemma sidecar joins the proof-repair exam roster) and, verified as-is, `triples_sum_to_zero`.
 
 ## Seed baseline (August 2026)
 
-Full run (defaults: 8-mutant cap, 5s hunt budget, 60s prove budget,
+Full run (defaults: 12-mutant cap, 5s hunt budget, 60s prove budget,
 60 fidelity examples per function):
 
 ```
-task                   gate  hunt  mutants  encode  prove  fidelity  height
-below_threshold        pass  pass  1/1      pass    pass   pass      6/6
-below_zero             pass  pass  7/7      pass    pass   pass      6/6
-bump                   pass  pass  2/2      pass    pass   pass      6/6
-clamp                  pass  pass  2/2      pass    pass   pass      6/6
-gcd                    pass  pass  2/2      pass    pass   pass      6/6
-incr_list              pass  pass  2/2      pass    pass   pass      6/6
-intersperse            pass  pass  3/3      pass    pass   pass      6/6
-is_palindrome          pass  pass  4/4      pass    pass   pass      6/6
-is_prime               pass  pass  7/7      pass    pass   pass      6/6
-max_element            pass  pass  1/1      pass    pass   pass      6/6
-rolling_max            pass  pass  5/5      pass    pass   pass      6/6
-sum_squares            pass  pass  6/6      pass    pass   pass      6/6
-
-tasks: 12   full-ladder: 12   spec strength: 26/39 mutants REFUTED by the specs (67%); 13 crashed (caught by the interpreter, not the spec — never credited)
+task                   gate     hunt     mutants  encode   prove    fidelity height
+below_threshold        pass     pass     1/1      pass     pass     pass     6/6
+below_zero             pass     pass     3/3      pass     pass     pass     6/6
+bump                   pass     pass     2/2      pass     pass     pass     6/6
+clamp                  pass     pass     8/8      pass     pass     pass     6/6
+gcd                    pass     pass     4/4      pass     pass     pass     6/6
+incr_list              pass     pass     2/2      pass     pass     pass     6/6
+intersperse            pass     pass     1/3      pass     pass     pass     6/6
+is_palindrome          pass     pass     2/4      pass     pass     pass     6/6
+is_prime               pass     pass     8/8      pass     pass     pass     6/6
+max_element            pass     pass     0/1*     pass     pass     pass     6/6
+modp                   pass     pass     8/8*     pass     pass     pass     6/6
+rolling_max            pass     pass     1/5      pass     pass     pass     6/6
+sum_squares            pass     pass     2/6      pass     pass     pass     6/6
+triples_sum_to_zero    pass     pass     8/8      pass     pass     pass     6/6
+-----------------------------------------------------------------------------------
+tasks: 14   full-ladder: 14   spec strength: 50/63 mutants REFUTED by the specs (79%); 13 crashed (caught by the interpreter, not the spec — never credited)
+* 1 kill(s) human-adjudicated (timeout), not refuted by the hunter; 1 mutant(s) excluded as adjudicated equivalent
 ```
 
 The benchmark's first run also exercised its adjudication path: the raw run
@@ -209,6 +215,46 @@ it changes which of several equal elements is picked, unobservable in the
 result). It is recorded in the task's `meta.json` under
 `equivalent_mutants` and excluded from the panel, visibly counted in the
 report. Survivors are guilty until adjudicated, never silently dropped.
+
+A mutant whose hunt exhausts its wall is **inconclusive, not a kill**. It
+is tempting to score it as killed — the common cause is a diverging loop
+(e.g. `i += 1` → `i -= 1` in `modp`), and R4 proves termination — but R4
+proves the *original* terminates, not the mutant, and a slow-but-
+terminating analysis is indistinguishable from a diverging one at the
+wall. Counting the timeout would let a merely-slow mutant publish a false
+kill, a false full-ladder height, and a false aggregate score.
+
+So timeouts follow the same discipline as survivors: **guilty until
+adjudicated.** An unadjudicated timeout FAILS the rung, naming the mutant
+and pointing at the remedy; a human who has confirmed the divergence
+records it in the task's `meta.json` under `timeout_kills`, after which it
+counts as a kill and is labeled distinctly in the rung detail (`k/N killed
+(m adjudicated timeout kill(s))`). Mutants also run under a tighter wall
+than the original so one diverging mutant cannot stall a panel, and a
+launch failure remains an analysis ERROR that blocks the rung.
+
+### Adjudications are identified, validated, and never laundered
+
+Both channels key on the mutant's **description**, which names the exact
+site (`line 27 col 14: `+` -> `-``). The column is load-bearing: without
+it two mutations on one line share a description, and a single human
+ruling would silently apply to both — an adversarial review demonstrated
+a ruling about a genuinely *equivalent* mutant erasing a genuinely
+*behavior-changing* one from the denominator and republishing the panel
+as 100% spec strength.
+
+Every adjudication entry must therefore match **exactly one** mutant in
+the generated panel. An entry matching zero (a typo, or a stale ruling
+after a source edit shifted the site) or several makes the panel's
+meaning unknown, so the rung ERRORs and names the offending entry rather
+than scoring. A panel whose every mutant was ruled equivalent measured
+nothing and FAILs — it must not read as a skipped-because-absent rung,
+which would count toward ladder height.
+
+Finally, the scorecard never passes human judgement off as measurement:
+a panel containing adjudicated kills or exclusions is starred (`6/6*`)
+and footnoted with the exact counts, so `6/6*` is visibly not the same
+claim as `6/6`.
 
 ## Scoring and reproducibility
 

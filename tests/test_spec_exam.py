@@ -273,7 +273,8 @@ def test_adjudication_must_resolve_to_exactly_one_mutant(tmp_path):
     score = run_task(d, tmp_path / "w", mutant_cap=4, hunt_timeout=2)
     panel = next(r for r in score.rungs if r.name == "mutants")
     assert panel.status == ERROR
-    assert "does not resolve 1:1" in panel.detail
+    assert "does not match the panel" in panel.detail
+    assert "matches 0 mutants" in panel.detail
 
 
 # --- validity and retries --------------------------------------------------

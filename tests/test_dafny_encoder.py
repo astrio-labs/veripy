@@ -415,6 +415,29 @@ def test_keyword_arguments_rejected_not_dropped():
         _encode(src)
 
 
+# --- pow (slice 7) --------------------------------------------------------------
+
+
+def test_pow_encodes_to_pypow_in_spec_and_code():
+    src = (
+        "#@ requires e >= 0\n"
+        "#@ ensures result == b ** e\n"
+        "def f(b: int, e: int) -> int:\n"
+        "    return b ** e\n"
+    )
+    assert _encode(src).count("PyPow(b, e)") == 2
+
+
+def test_pow_on_non_int_rejected():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    return xs ** 2\n"
+    )
+    with pytest.raises(EncodeError, match="non-int operands"):
+        _encode(src)
+
+
 # --- builtin shadowing / binder capture (adversarial round on slice 6) ----------
 
 

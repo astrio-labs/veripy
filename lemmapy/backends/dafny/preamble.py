@@ -8,11 +8,11 @@ The divisibility lemma pack (needed for e.g. gcd's maximality ensures, which
 times out without it) is designated future preamble work — see ROADMAP.
 """
 
-PREAMBLE_VERSION = "0.4"
+PREAMBLE_VERSION = "0.5"
 
 PREAMBLE = """\
-// LemmaPy Dafny preamble v0.4 -- Python-exact arithmetic, indexing,
-// slicing, Optionals, folds (ARCHITECTURE §7.1, §7 catalog).
+// LemmaPy Dafny preamble v0.5 -- Python-exact arithmetic, indexing,
+// slicing, Optionals, folds, powers (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int
   requires b != 0
@@ -75,5 +75,14 @@ function PySum(s: seq<int>): int
   decreases |s|
 {
   if |s| == 0 then 0 else PySum(s[..|s|-1]) + s[|s|-1]
+}
+
+// x ** e for ints; Python yields a float for negative exponents, so the
+// requires is exactly the int fragment's domain condition.
+function PyPow(b: int, e: int): int
+  requires e >= 0
+  decreases e
+{
+  if e == 0 then 1 else b * PyPow(b, e - 1)
 }
 """
