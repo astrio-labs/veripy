@@ -564,13 +564,21 @@ def main(argv: list[str] | None = None) -> int:
     p_benchmark.add_argument("--report", type=Path, default=None)
     p_benchmark.add_argument("--mutant-cap", type=int, default=8)
     p_benchmark.add_argument(
-        "--exam", choices=["proof-repair"], default=None,
-        help="run an exam instead of the ladder: strip proof additions "
-             "from golden tasks and score restoration under frozen specs",
+        "--exam", choices=["proof-repair", "spec-writing"], default=None,
+        help="run an exam instead of the ladder: 'proof-repair' strips the "
+             "proof additions and scores restoration under frozen specs; "
+             "'spec-writing' strips the SPECS and scores the strength of "
+             "the ones the engine writes (mutant kill rate vs golden)",
     )
     p_benchmark.add_argument(
         "--engine", default="claude",
-        help="repair engine for --exam (claude | file:<dir>)",
+        help="engine for --exam (claude | claude:<model> | "
+             "api:<provider>/<model> | file:<dir>)",
+    )
+    p_benchmark.add_argument(
+        "--retries", type=int, default=2,
+        help="with --exam spec-writing: retries allowed for a MECHANICALLY "
+             "invalid answer (unparseable, freeze violation, bad clause)",
     )
     p_benchmark.add_argument("--quick", action="store_true",
                             help="small mutant panels and example counts (CI mode)")
@@ -735,6 +743,41 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(render_exam_report(scores))
             return 0 if scores and all(s.restored for s in scores) else 1
+        if args.exam == "spec-writing":
+            from .benchmark.specexam import (
+                render_spec_exam_report,
+                run_spec_exam,
+                spec_scores_to_json,
+            )
+            from .repair import make_engine
+
+            try:
+                make_engine(args.engine)  # validate the spec up front
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            ladder = dict(mutant_cap=args.mutant_cap, hunt_timeout=5,
+                          dafny_time_limit=args.time_limit,
+                          difftest_examples=60)
+            if args.quick:
+                ladder.update(mutant_cap=min(args.mutant_cap, 3),
+                              difftest_examples=20)
+            try:
+                scores = run_spec_exam(args.tasks, args.outdir / "spec-exam",
+                                       lambda: make_engine(args.engine),
+                                       retries=args.retries, **ladder)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            print(render_spec_exam_report(scores))
+            if args.report is not None:
+                args.report.parent.mkdir(parents=True, exist_ok=True)
+                args.report.write_text(
+                    json.dumps(spec_scores_to_json(scores), indent=1))
+                print(f"\nreport -> {args.report}")
+            # Exit status reports EXAM VALIDITY, never spec quality: a weak
+            # spec is a measurement, not a failure.
+            return 0 if scores and all(s.valid for s in scores) else 1
         return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
     if args.command == "experiment":
         from .benchmark.experiment import run_experiment, summarize_ledger

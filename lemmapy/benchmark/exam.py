@@ -47,43 +47,56 @@ def exam_tasks(tasks_root: Path) -> list[Path]:
     )
 
 
-def run_repair_exam(tasks_root: Path, workdir: Path,
-                    engine_factory: Callable[[], Engine],
-                    max_iterations: int = 4, time_limit: int = 60,
-                    only: set[str] | None = None) -> list[ExamScore]:
-    from ..backends.dafny.encoder import load_proof_sidecar
-
-    # The workspace must never overlap the corpus: with --tasks pointed at
-    # (or inside) the workdir, the per-task cleanup would recursively
-    # delete golden sources and sidecars.
+def check_workdir_disjoint(tasks_root: Path, workdir: Path) -> Path:
+    """The workspace must never overlap the corpus: with --tasks pointed at
+    (or inside) the workdir, the per-task cleanup would recursively delete
+    golden sources and sidecars. Returns the resolved corpus root."""
     tasks_res, work_res = tasks_root.resolve(), workdir.resolve()
     if tasks_res == work_res or tasks_res in work_res.parents \
             or work_res in tasks_res.parents:
         raise ValueError(
             f"exam workdir {workdir} overlaps the task corpus {tasks_root} — "
             f"choose a workdir outside the corpus")
+    return tasks_res
 
+
+def prepare_exam_workspace(tasks_root: Path, workdir: Path,
+                           task_id: str) -> Path:
+    """A clean `<workdir>/<task_id>/`, refusing anything that could reach
+    the corpus. Shared by every exam: a rerun must start stripped (a
+    retained workspace proof would score a stale restoration), and no
+    cleanup may ever follow a link into the golden corpus."""
+    tasks_res = check_workdir_disjoint(tasks_root, workdir)
+    exam_dir = workdir / task_id
+    if exam_dir.is_symlink():
+        # A symlink here could alias corpus data; remove the LINK itself,
+        # never what it points at.
+        exam_dir.unlink()
+    elif exam_dir.exists():
+        resolved = exam_dir.resolve()
+        if resolved == tasks_res or tasks_res in resolved.parents \
+                or resolved in tasks_res.parents:
+            raise ValueError(
+                f"exam workspace {exam_dir} resolves into the task corpus "
+                f"{tasks_root} — refusing to clean it")
+        shutil.rmtree(exam_dir)
+    exam_dir.mkdir(parents=True)
+    return exam_dir
+
+
+def run_repair_exam(tasks_root: Path, workdir: Path,
+                    engine_factory: Callable[[], Engine],
+                    max_iterations: int = 4, time_limit: int = 60,
+                    only: set[str] | None = None) -> list[ExamScore]:
+    from ..backends.dafny.encoder import load_proof_sidecar
+
+    check_workdir_disjoint(tasks_root, workdir)
     scores: list[ExamScore] = []
     for task_dir in exam_tasks(tasks_root):
         task_id = task_dir.name
         if only is not None and task_id not in only:
             continue
-        exam_dir = workdir / task_id
-        if exam_dir.is_symlink():
-            # A symlink here could alias corpus data; remove the LINK
-            # itself, never what it points at.
-            exam_dir.unlink()
-        elif exam_dir.exists():
-            resolved = exam_dir.resolve()
-            if resolved == tasks_res or tasks_res in resolved.parents \
-                    or resolved in tasks_res.parents:
-                raise ValueError(
-                    f"exam workspace {exam_dir} resolves into the task "
-                    f"corpus {tasks_root} — refusing to clean it")
-            # A rerun must start stripped: a retained workspace proof would
-            # score a stale restoration.
-            shutil.rmtree(exam_dir)
-        exam_dir.mkdir(parents=True)
+        exam_dir = prepare_exam_workspace(tasks_root, workdir, task_id)
         stripped = exam_dir / "task.py"
         stripped.write_text((task_dir / "task.py").read_text())
         # No sidecar is copied: that is the exam. Each task gets a FRESH
