@@ -123,6 +123,7 @@ def test_dafny_version_is_cached_and_degrades_to_none(monkeypatch):
 
     def fake_run(cmd, **kw):
         calls["n"] += 1
+        assert kw.get("timeout", 999) <= 10  # a stalled binary must not block
         return Proc()
 
     monkeypatch.setattr(drv, "find_dafny", lambda: "/fake/dafny")
@@ -130,6 +131,26 @@ def test_dafny_version_is_cached_and_degrades_to_none(monkeypatch):
     assert drv.dafny_version() == "4.11.0"
     assert drv.dafny_version() == "4.11.0"
     assert calls["n"] == 1  # cached: shells out once per process
+
+
+def test_dafny_version_strips_redundant_prefix(monkeypatch):
+    # 4.11.0 prints a bare "4.11.0", other builds print "Dafny version
+    # 4.x.y" — which the report's own "dafny " label would turn into
+    # "dafny Dafny version 4.x.y".
+    import lemmapy.backends.dafny.driver as drv
+
+    for raw, want in (("4.11.0\n", "4.11.0"),
+                      ("Dafny version 4.9.1\n", "4.9.1"),
+                      ("Dafny 4.8.0\n", "4.8.0"),
+                      ("\n", None)):
+        drv.dafny_version.cache_clear()
+        monkeypatch.setattr(drv, "find_dafny", lambda: "/fake/dafny")
+        monkeypatch.setattr(
+            drv.subprocess, "run",
+            lambda *a, raw=raw, **k: type(
+                "P", (), {"returncode": 0, "stdout": raw, "stderr": ""})())
+        assert drv.dafny_version() == want, raw
+    drv.dafny_version.cache_clear()
 
     # An absent or crashing prover yields None, never a bogus identity.
     drv.dafny_version.cache_clear()

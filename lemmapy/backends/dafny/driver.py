@@ -79,14 +79,26 @@ def dafny_version() -> str | None:
     if exe is None:
         return None
     try:
+        # `--version` is trivial (~0.1s); a longer wait means a broken or
+        # stalled binary, and callers should not pay a minute for that.
         proc = subprocess.run([exe, "--version"], capture_output=True,
-                              text=True, timeout=60)
+                              text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:
         return None
     first = (proc.stdout or proc.stderr).strip().splitlines()
-    return first[0].strip() if first else None
+    if not first:
+        return None
+    # Builds differ: 4.11.0 prints a bare "4.11.0", others print
+    # "Dafny version 4.x.y". Strip the redundant prefix so a renderer's own
+    # "dafny " label cannot produce "dafny Dafny version 4.x.y".
+    version = first[0].strip()
+    for prefix in ("Dafny version ", "Dafny "):
+        if version.startswith(prefix):
+            version = version[len(prefix):].strip()
+            break
+    return version or None
 
 
 def _map_line(line_map: dict[int, int], dafny_line: int) -> int | None:

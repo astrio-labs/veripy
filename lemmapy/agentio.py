@@ -47,9 +47,12 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         # report: a host embedding this backend must be able to tell whether
         # two "ok" verdicts meant the same thing. Present on every outcome,
         # including tool errors.
+        # `dafny_version` is filled in only when the prover is actually
+        # reached: an unreadable source or a conformance rejection never ran
+        # it, and should not wait on a `dafny --version` subprocess to say so.
         "toolchain": {
             "preamble_version": PREAMBLE_VERSION,
-            "dafny_version": dafny_version(),
+            "dafny_version": None,
         },
         "status": None,
         "functions": [],
@@ -117,6 +120,7 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         return payload
     payload["stub"] = str(stub)
     stub_extent = encoded.dafny_source.count("\n") + 1
+    payload["toolchain"]["dafny_version"] = dafny_version()  # cached per process
     result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
     if result.error is not None:
         payload["status"] = "tool-error"

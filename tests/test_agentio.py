@@ -50,10 +50,23 @@ def test_payload_carries_toolchain_provenance(tmp_path):
     assert "dafny_version" in payload["toolchain"]
 
     # ...including on a non-ok outcome (unreadable source -> tool-error).
+    # The prover never ran there, so its version is None and — importantly —
+    # is never queried: an immediate error must not wait on a subprocess.
     missing = tmp_path / "nope.py"
-    bad = verify_structured(missing, tmp_path / "out2")
+    import lemmapy.agentio as agentio_mod
+
+    called = {"n": 0}
+    real = agentio_mod.dafny_version
+    agentio_mod.dafny_version = lambda: (called.__setitem__("n", called["n"] + 1)
+                                         or "never")
+    try:
+        bad = verify_structured(missing, tmp_path / "out2")
+    finally:
+        agentio_mod.dafny_version = real
     assert bad["status"] == "tool-error"
     assert bad["toolchain"]["preamble_version"] == PREAMBLE_VERSION
+    assert bad["toolchain"]["dafny_version"] is None
+    assert called["n"] == 0
 
 
 def test_encode_error_is_a_structured_payload(tmp_path):
