@@ -1,6 +1,7 @@
 """The proof-repair loop, driven by the scripted file engine — verifies the
 loop mechanics (feedback, validation, apply) without an LLM."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -230,6 +231,84 @@ def test_api_engine_requires_key(monkeypatch):
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         engine({"rules": "r", "attempt": 0, "source": "s",
                 "failures": {}, "sidecar": "", "history": []})
+
+
+def test_history_digests_proposals_and_reports_drops():
+    # The prompt outgrew the engine's own wall at iteration 3 of the modp
+    # probe, which is why that probe produced no number. Prior proposals are
+    # superseded (the newest IS the current sidecar), so history keeps the
+    # failures and digests the text — and any drop is stated, never silent.
+    from lemmapy.repair import history_for_prompt
+
+    big = ("lemma Helper(x: int)\n  ensures x == x\n{\n"
+           + "  assert true;\n" * 300 + "}\n")
+    hist = [{"attempt": i,
+             "failures": [{"kind": "postcondition", "message": "nope"}],
+             "proposal": big} for i in range(6)]
+
+    kept, dropped = history_for_prompt(hist)
+    assert len(kept) == 3 and dropped == 3          # window of 3, rest counted
+    assert [k["attempt"] for k in kept] == [3, 4, 5]  # newest last
+    assert all("proposal" not in k for k in kept)   # full text never carried
+    assert "declares: Helper" in kept[-1]["proposal_digest"]
+    assert kept[-1]["failures"] == hist[-1]["failures"]  # failures in full
+
+    # The newest entry is never dropped, even under an absurd budget.
+    kept, dropped = history_for_prompt(hist, budget_chars=1)
+    assert len(kept) == 1 and kept[0]["attempt"] == 5
+    assert dropped == 5
+
+    # The budget must measure what the prompt EMITS. Indented JSON is much
+    # larger than compact, so measuring the wrong one let entries near the
+    # threshold render over budget.
+    from lemmapy.repair import _history_json
+
+    nested = [{"attempt": i,
+               "failures": [{"kind": "postcondition", "region": "sidecar",
+                             "message": "a postcondition could not be proved",
+                             "py_line": None, "dafny_line": 108}
+                            for _ in range(4)],
+               "proposal": "lemma L() {}"} for i in range(3)]
+    trimmed = [{k: v for k, v in h.items() if k != "proposal"} for h in nested]
+    for t in trimmed:
+        t["proposal_digest"] = "1 lines; declares: L"
+    # A budget that fits exactly two rendered entries but not three, so the
+    # loop must actually trim — and derived from the real serialization
+    # rather than guessed.
+    budget = len(_history_json(trimmed[-2:]))
+    assert budget < len(_history_json(trimmed))
+    kept, dropped = history_for_prompt(nested, budget_chars=budget)
+    assert len(kept) == 2 and dropped == 1
+    assert len(_history_json(kept)) <= budget
+    # The bug this pins: compact JSON is much smaller, so measuring it would
+    # have let three entries "fit" a budget they exceed when rendered.
+    assert len(json.dumps(kept)) < budget
+
+    # Schema-agnostic: an entry with no `proposal` keeps its own keys and
+    # gains no digest (the spec-writing exam's history has `errors`, not
+    # `proposal` — whitelisting keys here silently dropped it).
+    kept, _ = history_for_prompt([{"attempt": 0, "errors": ["freeze"]}])
+    assert kept[0] == {"attempt": 0, "errors": ["freeze"]}
+    kept, _ = history_for_prompt([{"attempt": 0, "proposal": ""}])
+    assert "(nothing)" in kept[0]["proposal_digest"]
+
+
+def test_prompt_states_omissions_and_stays_bounded():
+    from lemmapy.repair import _render_prompt, build_request
+
+    big = ("lemma Helper(x: int)\n  ensures x == x\n{\n"
+           + "  assert true;\n" * 300 + "}\n")
+    hist = [{"attempt": i, "failures": [{"kind": "postcondition"}],
+             "proposal": big} for i in range(6)]
+    payload = {"status": "failed", "failures": [], "sidecar": {"text": big}}
+    prompt = _render_prompt(build_request("src", payload, 6, hist))
+
+    assert "3 earlier attempt(s) omitted" in prompt
+    assert "digested" in prompt
+    # Exactly ONE full copy of the sidecar: the dedicated section. Prior
+    # proposals are digests, and the failures payload no longer repeats the
+    # text it already carries.
+    assert prompt.count("assert true;") == big.count("assert true;")
 
 
 def test_strip_fences():
