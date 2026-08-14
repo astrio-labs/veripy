@@ -36,6 +36,13 @@ EXAMS = ("proof-repair", "spec-writing")
 # The spec-writing exam has no loop to ablate and no budget to vary: its
 # arms would all be the same run.
 SPEC_ARMS = ("one-shot",)
+# NOT bumped when `comparable` and the timeout identities were added to
+# spec-writing rows. `_rows` drops every row whose schema does not match, so
+# a bump discards the whole ledger — including proof-repair rows, which this
+# has nothing to do with. A ledger is an append-only RECORD that cannot be
+# recomputed (unlike the golden cache, which is versioned for exactly this
+# reason). A row missing the field is handled where it matters instead: its
+# comparability is UNKNOWN, which `_quotable` refuses to read as comparable.
 TRIAL_SCHEMA = "lemmapy-exam-trial/1"
 RUN_SCHEMA = "lemmapy-exam-run/1"
 
@@ -194,6 +201,13 @@ def _spec_row(score: SpecExamScore, *, run_id: str, engine: str, arm: str,
         "mutants_crashed": score.mutants_crashed,
         "golden_mutants_total": score.golden_mutants_total,
         "golden_mutants_killed": score.golden_mutants_killed,
+        # The timeout-bias verdict, carried INTO the ledger. Without it the
+        # ledger's own spec-strength line re-pooled rows the exam report had
+        # just marked unquotable — the same defect one level up, where the
+        # `!` marking no longer travels with the row.
+        "comparable": score.comparable,
+        "timeout_mutants": sorted(score.timeout_mutants),
+        "golden_timeout_mutants": sorted(score.golden_timeout_mutants),
         "survivors": score.survivors, "clause_counts": score.clause_counts,
         "retry_reasons": score.retry_reasons,
         "rules_version": score.rules_version,
@@ -377,8 +391,11 @@ def summarize_ledger(ledger: Path) -> str:
         rejections = sum(r["rejections"] for r in cell)
         rej = f"{100 * rejections / proposals:.0f}" if proposals else "-"
         out_tok = sum(r["usage_total"]["output_tokens"] or 0 for r in cell)
-        kill = _rate(cell, "mutants_killed", "mutants_total")
-        golden = _rate(cell, "golden_mutants_killed", "golden_mutants_total")
+        quotable = _quotable(cell)
+        kill = _rate(quotable, "mutants_killed", "mutants_total")
+        golden = _rate(quotable, "golden_mutants_killed", "golden_mutants_total")
+        if len(quotable) < len(cell):
+            kill += "!"  # some trials failed the timeout-bias check
         lines.append(f"{exam:<13} {task:<16} {_display(engine):<26} {arm:<9} "
                      f"{f'{k}/{n}':<7} {mean_iters:<6} {rej:<6} {kill:<7} "
                      f"{golden:<8} {out_tok or '-':<8}")
@@ -405,7 +422,7 @@ def summarize_ledger(ledger: Path) -> str:
         lines.append(
             f"{exam:<13} {_display(engine):<26} {arm:<9} {f'{k}/{n}':<8} "
             f"{f'{100 * k / n:.0f}%':<7} {_ci(k, n):<11} "
-            f"{_rate(cell, 'mutants_killed', 'mutants_total'):<7} "
+            f"{_rate(_quotable(cell), 'mutants_killed', 'mutants_total'):<7} "
             f"{f'{cost:.2f}' if cost else '-':<8}")
     lines.append("-" * len(header))
     total = len(rows)
@@ -414,13 +431,27 @@ def summarize_ledger(ledger: Path) -> str:
                  f"{_ci(restored, total)}")
     spec_rows = [r for r in rows if r["exam"] == "spec-writing"]
     if spec_rows:
-        lines.append(
-            f"spec strength: engine {_rate(spec_rows, 'mutants_killed', 'mutants_total')}"
-            f" vs golden "
-            f"{_rate(spec_rows, 'golden_mutants_killed', 'golden_mutants_total')}"
-            f"   (refutations only — crashes never credited; every attempted "
-            f"task scored over GOLDEN's panel, so a failed answer is 0/N, "
-            f"not excluded)")
+        quotable = _quotable(spec_rows)
+        dropped = len(spec_rows) - len(quotable)
+        if not quotable:
+            lines.append(
+                f"spec strength: NOT AGGREGATED — none of the {len(spec_rows)} "
+                f"spec-writing trial(s) passed the timeout-bias check (or all "
+                f"predate it), so there is no comparable pair to pool")
+        else:
+            lines.append(
+                f"spec strength: engine "
+                f"{_rate(quotable, 'mutants_killed', 'mutants_total')}"
+                f" vs golden "
+                f"{_rate(quotable, 'golden_mutants_killed', 'golden_mutants_total')}"
+                f"   (refutations only — crashes never credited; every "
+                f"attempted task scored over GOLDEN's panel, so a failed "
+                f"answer is 0/N, not excluded)"
+                + (f"\n  — over the {len(quotable)}/{len(spec_rows)} trial(s) "
+                   f"whose two arms went inconclusive on the SAME mutants; "
+                   f"{dropped} excluded by the timeout-bias check or written "
+                   f"before it existed, so this is not a whole-matrix rate"
+                   if dropped else ""))
     if rules:
         breakdown = ", ".join(f"{r}: {c}" for r, c in sorted(rules.items()))
         lines.append(f"whitelist rejections by rule: {breakdown}")
@@ -449,6 +480,20 @@ def wilson_interval(successes: int, trials: int,
 def _ci(successes: int, trials: int) -> str:
     lo, hi = wilson_interval(successes, trials)
     return f"[{100 * lo:.0f},{100 * hi:.0f}]"
+
+
+def _quotable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Spec-writing rows whose refutation gap is a strength difference.
+
+    A row whose two arms went inconclusive on DIFFERENT mutants mixes hunt
+    cost into that gap, and the exam report already refuses to quote it. A
+    row written before the check existed carries no verdict at all: absent
+    is not the same as comparable, and defaulting it to True would restore
+    the biased rate on exactly the historical data nobody can re-examine.
+    Both are dropped, and the caller says how many.
+    """
+    return [r for r in rows
+            if r["exam"] != "spec-writing" or r.get("comparable") is True]
 
 
 def _rate(rows: list[dict[str, Any]], killed_key: str, total_key: str) -> str:

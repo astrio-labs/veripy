@@ -96,6 +96,56 @@ def test_negative_indexing_verifies_python_exactly(tmp_path, capsys):
     assert "VERIFIED" in capsys.readouterr().out
 
 
+def test_preamble_outcome_supports_raising_and_propagation(tmp_path):
+    # The preamble's PyOutcome must be FAILURE-COMPATIBLE — `:-` only
+    # resolves when IsFailure/PropagateFailure/Extract are members of the
+    # datatype. A free-function version type-checks as ordinary Dafny and
+    # then fails at every `:-` site, so this pins the shape, not just the
+    # presence of the names.
+    import subprocess
+
+    from lemmapy.backends.dafny.driver import find_dafny
+    from lemmapy.backends.dafny.preamble import PREAMBLE
+
+    dafny = find_dafny()
+    if dafny is None:
+        pytest.skip("dafny not installed")
+    stub = tmp_path / "outcome.dfy"
+    stub.write_text(PREAMBLE + """
+method checked_div(a: int, b: int) returns (result: PyOutcome<int>)
+  ensures b == 0 ==> result == PyErr(ZeroDivisionError)
+  ensures b != 0 ==> result == PyOk(PyFloorDiv(a, b))
+{
+  if b == 0 { return PyErr(ZeroDivisionError); }
+  return PyOk(PyFloorDiv(a, b));
+}
+
+method propagates(a: int, b: int, c: int) returns (result: PyOutcome<int>)
+  ensures b != 0 && c != 0 ==> result == PyOk(PyFloorDiv(a, b) + PyFloorDiv(a, c))
+  ensures b == 0 || c == 0 ==> result.PyErr?
+{
+  var x :- checked_div(a, b);
+  var y :- checked_div(a, c);
+  return PyOk(x + y);
+}
+
+method handles(a: int, b: int, fallback: int) returns (result: int)
+  ensures b == 0 ==> result == fallback
+  ensures b != 0 ==> result == PyFloorDiv(a, b)
+{
+  var o := checked_div(a, b);
+  match o {
+    case PyErr(e) => return fallback;
+    case PyOk(v) => return v;
+  }
+}
+""")
+    proc = subprocess.run([dafny, "verify", "--verification-time-limit", "60",
+                           str(stub)], capture_output=True, text=True, timeout=600)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "0 errors" in proc.stdout
+
+
 BAD_PACK_SRC = (
     "#@ ensures result == x\n"
     "def f(x: int) -> int:\n"

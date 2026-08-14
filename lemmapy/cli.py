@@ -17,6 +17,35 @@ from .agentio import atomic_write_text, stub_dir_for
 from .backends.dafny.driver import verify_dafny_file
 from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from .backends.runtime.emit import emit_checked
+from .hints import proof_hint
+
+def _engine_wall(value: str) -> int:
+    """argparse type for --engine-wall: a positive number of seconds.
+
+    A non-positive wall can only be a mistake, and each kind used to fail
+    quietly in its own way: a negative one reached `subprocess.run(timeout=)`
+    and raised TimeoutExpired before the engine ran at all (an UNMEASURED
+    task that reads like an engine that did not answer), and `0` was eaten by
+    boolean defaulting and silently became 600s. Rejecting here means the
+    wall an exam reports is the wall it ran under."""
+    try:
+        seconds = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer")
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            f"must be a positive number of seconds, got {seconds}")
+    return seconds
+
+
+def _wall(args) -> int:
+    """The engine wall for this invocation (unset -> the default)."""
+    from .repair import DEFAULT_ENGINE_WALL_S
+
+    wall = getattr(args, "engine_wall", None)
+    # `is None`, not `or`: an explicit value must never be defaulted away.
+    return DEFAULT_ENGINE_WALL_S if wall is None else wall
+
 
 _NOT_ENFORCED = ("invariant", "decreases", "proof")
 
@@ -27,7 +56,17 @@ def _report(path: Path) -> int:
     errors = 0
     print(f"{path}")
     if not specs.functions and not specs.orphans:
+        # "(no #@ specs found)" was the whole message, which tells a
+        # newcomer nothing: not whether this file is even a candidate, and
+        # not what to write. Name the functions the fragment would accept
+        # — that is the actionable half, and it is already computable.
         print("  (no #@ specs found)")
+        candidates = _fragment_candidates(path)
+        if candidates:
+            names = ", ".join(candidates)
+            print(f"  in-fragment and ready to annotate: {names}")
+            print(f"  add `#@ ensures <property of result>` directly above "
+                  f"`def {candidates[0]}` — see docs/SPEC-GRAMMAR.md")
         return 0
     for fn in specs.functions:
         tag = " [verified]" if fn.verified else ""
@@ -47,6 +86,56 @@ def _report(path: Path) -> int:
         errors += 1
         print(f"  line {c.line}: ERROR: {c.error}")
     return errors
+
+
+def _fragment_candidates(path: Path) -> list[str]:
+    """Module-level functions the fragment would accept if they carried
+    specs. Annotating one is the newcomer's next action, so `check` should
+    say which ones qualify rather than leaving them to guess."""
+    import ast as _ast
+
+    from .backends.dafny.encoder import EncodeError, encode_module
+    from .frontend.parse import Clause, FunctionSpec, ModuleSpecs
+
+    try:
+        source = path.read_text()
+        tree = _ast.parse(source)
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+        return []
+    ready: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, _ast.FunctionDef):
+            continue
+        if node.decorator_list:
+            # X-DECOR: the fragment excludes decorated functions ("function
+            # surgery" — the decorator replaces the function object, so the
+            # body Dafny verifies is not what runs). The encoder probe below
+            # cannot see this: it encodes the body and never looks at the
+            # decorator list, so it would happily report a candidate. Two
+            # things would then go wrong at once — the user is sent to
+            # annotate a function outside the fragment, and the placement
+            # advice is wrong for it besides, since a contract block must sit
+            # above the FIRST DECORATOR, not above the `def`.
+            continue
+        # A trivial `ensures True` is enough to ask the encoder "would you
+        # take this body?" without inventing a property for the user.
+        probe = FunctionSpec(
+            name=node.name, lineno=node.lineno, anchor_lineno=node.lineno,
+            params=tuple(a.arg for a in node.args.args),
+            clauses=[Clause(kind="ensures", raw="True", line=node.lineno,
+                            desugared="True")])
+        try:
+            encode_module(source, ModuleSpecs(functions=[probe], orphans=[]),
+                          module_name=path.name)
+        except EncodeError:
+            continue  # outside the fragment: not a candidate, correctly
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        # Deliberately NOT a bare `except`: this is advisory output, but
+        # swallowing every exception would turn a genuine encoder bug into
+        # a silently shorter list, which is the hardest kind to notice.
+        ready.append(node.name)
+    return ready
 
 
 def _fragment_check(path: Path) -> int:
@@ -346,6 +435,9 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
                     else:
                         where = f"{stub}:{d.dafny_line}"
                     print(f"  {where}: {d.message}")
+                    hint = proof_hint(d, source, specs)
+                    if hint:
+                        print(f"    hint: {hint}")
                     errs.append(d)
             # Attribute failures to the enclosing function by source span.
             # Failures in the appended sidecar region (beyond the stub) or
@@ -387,33 +479,162 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
     return 1 if failed else 0
 
 
-def cmd_difftest(paths: list[Path], outdir: Path, examples: int) -> int:
+# Directories that hold code nobody wrote as corpus: dependencies, build
+# output, caches. Sweeping them is not merely slow — every third-party file
+# lands in the report as "trouble" or as compared functions, and `compared`
+# is exactly the number `--min-functions` is measured against, so a floor
+# meant to prove the corpus is still covered could be satisfied entirely by
+# whatever happens to be vendored into the tree.
+_SWEEP_PRUNED = frozenset({
+    "__pycache__", "node_modules", "site-packages", "build", "dist",
+    "venv", "env",
+})
+
+
+def _swept(root: Path, file: Path) -> bool:
+    """Is `file` corpus, or is it something that landed under `root`?"""
+    rel = file.relative_to(root).parts
+    # Hidden at any depth: `.venv/lib/.../x.py` is not hidden by filename,
+    # only by the directory it sits in.
+    return not any(part.startswith(".") or part in _SWEEP_PRUNED
+                   or part.endswith(".egg-info") for part in rel)
+
+
+def _difftest_targets(paths: list[Path]) -> list[Path]:
+    """Expand directories to the `.py` files under them.
+
+    A nightly sweep is pointed at a corpus, not at a hand-written file
+    list — a list goes stale silently the moment a task is added, which is
+    the failure mode this whole command exists to prevent.
+
+    Pruning applies to directory expansion only: a file named on the command
+    line is swept wherever it lives, because naming it is the intent.
+    """
+    targets: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            targets.extend(sorted(p for p in path.rglob("*.py")
+                                  if _swept(path, p)))
+        else:
+            targets.append(path)
+    # A file reachable twice (listed AND inside a listed directory) would
+    # otherwise be compared twice and counted twice.
+    seen: set[Path] = set()
+    unique = []
+    for path in targets:
+        key = path.resolve()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def cmd_difftest(paths: list[Path], outdir: Path, examples: int,
+                 report: Path | None = None, min_functions: int = 1) -> int:
     """Translation validation (§6): original Python vs Dafny-compiled model."""
     from .difftest.harness import difftest_file
 
     diverged = 0
     trouble = 0
-    for path in paths:
+    compared = 0
+    skipped: list[str] = []
+    files: list[dict] = []
+    targets = _difftest_targets(paths)
+    for path in targets:
         result = difftest_file(path, outdir, examples=examples)
+        entry: dict = {"path": str(path), "error": result.error, "functions": []}
+        files.append(entry)
         if result.error:
             print(f"{path}: difftest trouble: {result.error}", file=sys.stderr)
             trouble += 1
             continue
+        if not result.functions:
+            # NOT silent: a file with nothing to compare used to print
+            # nothing and leave the exit code at 0, so a sweep that had
+            # quietly stopped covering anything looked exactly like a
+            # sweep that passed.
+            skipped.append(str(path))
+            print(f"{path}: no spec'd functions — nothing to compare")
+            continue
         for fn in result.functions:
+            record = {"name": fn.name, "examples": fn.examples,
+                      "ok": fn.ok, "error": fn.error, "mismatch": None}
+            entry["functions"].append(record)
             if fn.ok:
+                compared += 1
                 print(f"{path}::{fn.name}: OK ({fn.examples} examples)")
             elif fn.mismatch is not None:
                 diverged += 1
+                compared += 1
                 m = fn.mismatch
+                # reprs, not the values: this record is the REPRODUCER, and
+                # it has to survive JSON for objects that may not.
+                record["mismatch"] = {"args": repr(m.args),
+                                      "python": repr(m.python_result),
+                                      "dafny": repr(m.dafny_result)}
                 print(f"{path}::{fn.name}: DIVERGENCE (encoder bug)")
                 print(f"  args={m.args!r}")
                 print(f"  python={m.python_result!r}  dafny-model={m.dafny_result!r}")
             else:
                 trouble += 1
                 print(f"{path}::{fn.name}: trouble: {fn.error}", file=sys.stderr)
+
+    print(f"\n{compared} function(s) compared at {examples} examples across "
+          f"{len(targets)} file(s); {len(skipped)} with nothing to compare, "
+          f"{diverged} diverged, {trouble} trouble")
+    if report is not None:
+        payload = {
+            "schema": "lemmapy-difftest/1",
+            "examples": examples,
+            "files": files,
+            "totals": {"files": len(targets), "compared": compared,
+                       "skipped": len(skipped), "diverged": diverged,
+                       "trouble": trouble},
+        }
+        try:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            # ATOMIC: `write_text` truncates first, so a failure part-way
+            # through leaves invalid JSON at the final path — and the
+            # nightly's upload step runs `if: always()`, so it would
+            # publish that unusable file in place of the reproducer. The
+            # report either appears whole or does not appear.
+            atomic_write_text(report, json.dumps(payload, indent=1))
+            print(f"report -> {report}")
+        except OSError as exc:
+            # The sweep's verdict must outlive a bad --report path. Letting
+            # this raise threw away the exit code the whole command exists
+            # to produce, and an uncaught exception exits 1 — the code that
+            # means DIVERGENCE, so an unwritable directory would have been
+            # read as an encoder bug (or, on a run that had diverged, would
+            # have suppressed the summary the next steps read).
+            print(f"could not write the difftest report to {report}: {exc}",
+                  file=sys.stderr)
+            trouble += 1
     if diverged:
         return 1
+    if compared < min_functions:
+        # The vacuity guard. A sweep that compared less than it was told to
+        # expect has not passed — it has stopped testing, and green is the
+        # most dangerous thing it could report.
+        print(f"difftest compared {compared} function(s), expected at least "
+              f"{min_functions} — the sweep is not covering what it should",
+              file=sys.stderr)
+        return 2
     return 2 if trouble else 0
+
+
+def cmd_screen(tasks: Path, time_limit: int = 60) -> int:
+    """Report whether each task's proof pack is load-bearing — the gate a
+    candidate must clear before joining the exam roster."""
+    from .benchmark.exam import exam_tasks, render_screen_report, screen_sidecar
+
+    results = [screen_sidecar(d, time_limit=time_limit)
+               for d in exam_tasks(tasks)]
+    print(render_screen_report(results))
+    if not results:
+        print(f"no sidecar-bearing tasks under {tasks}", file=sys.stderr)
+        return 2
+    return 0 if all(r.adoptable for r in results) else 1
 
 
 def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
@@ -485,11 +706,12 @@ def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False) -> i
 
 
 def cmd_repair(path: Path, outdir: Path, engine_spec: str, max_iterations: int,
-               time_limit: int, apply: bool) -> int:
-    from .repair import make_engine, repair_file
+               time_limit: int, apply: bool, engine_wall: int | None = None) -> int:
+    from .repair import DEFAULT_ENGINE_WALL_S, make_engine, repair_file
 
+    wall = DEFAULT_ENGINE_WALL_S if engine_wall is None else engine_wall
     try:
-        engine = make_engine(engine_spec)
+        engine = make_engine(engine_spec, wall)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -586,6 +808,13 @@ def main(argv: list[str] | None = None) -> int:
     p_difftest.add_argument("files", nargs="+", type=Path)
     p_difftest.add_argument("-o", "--outdir", type=Path, default=Path("build/difftest"))
     p_difftest.add_argument("-n", "--examples", type=int, default=100)
+    p_difftest.add_argument("--report", type=Path,
+                            help="write a machine-readable divergence report "
+                                 "(JSON) — what a nightly sweep uploads")
+    p_difftest.add_argument("--min-functions", type=int, default=1,
+                            help="fail unless at least N functions were "
+                                 "actually compared (default 1: a sweep that "
+                                 "compared nothing has not passed)")
 
     p_benchmark = sub.add_parser(
         "benchmark",
@@ -603,6 +832,11 @@ def main(argv: list[str] | None = None) -> int:
              "the ones the engine writes (mutant kill rate vs golden)",
     )
     p_benchmark.add_argument(
+        "--engine-wall", type=_engine_wall, default=None,
+        help="seconds a single engine call may take (default 600); raise it "
+             "to tell 'could not prove it' apart from 'did not answer'",
+    )
+    p_benchmark.add_argument(
         "--engine", default="claude",
         help="engine for --exam (claude | claude:<model> | "
              "api:<provider>/<model> | file:<dir>)",
@@ -612,6 +846,11 @@ def main(argv: list[str] | None = None) -> int:
         help="with --exam spec-writing: retries allowed for a MECHANICALLY "
              "invalid answer (unparseable, freeze violation, bad clause)",
     )
+    p_benchmark.add_argument(
+        "--screen", action="store_true",
+        help="report whether each task's proof pack is LOAD-BEARING (the "
+             "gate for joining the exam roster) instead of running the "
+             "ladder; exits 1 if any pack is vacuous or unscreenable")
     p_benchmark.add_argument("--quick", action="store_true",
                             help="small mutant panels and example counts (CI mode)")
     p_benchmark.add_argument("--max-iterations", type=int, default=4,
@@ -662,6 +901,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_repair.add_argument("file", type=Path)
     p_repair.add_argument("-o", "--outdir", type=Path, default=Path("build/repair"))
+    p_repair.add_argument("--engine-wall", type=_engine_wall, default=None,
+                          help="seconds a single engine call may take "
+                               "(default 600)")
     p_repair.add_argument("--engine", default="claude",
                           help="'claude' (headless CLI) or 'file:<dir>' "
                                "(scripted attempts, for tests/replays)")
@@ -674,7 +916,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "lsp",
         help="run the LSP server over stdio: instant conformance "
-             "diagnostics + per-function status for editors",
+             "diagnostics + per-function status, and proof status on "
+             "explicit request (docs/EDITOR.md)",
     )
 
     p_survey = sub.add_parser(
@@ -764,22 +1007,27 @@ def main(argv: list[str] | None = None) -> int:
         return lsp_main()
     if args.command == "repair":
         return cmd_repair(args.file, args.outdir, args.engine,
-                          args.max_iterations, args.time_limit, args.apply)
+                          args.max_iterations, args.time_limit, args.apply,
+                          engine_wall=args.engine_wall)
     if args.command == "difftest":
-        return cmd_difftest(args.files, args.outdir, args.examples)
+        return cmd_difftest(args.files, args.outdir, args.examples,
+                            report=args.report,
+                            min_functions=args.min_functions)
     if args.command == "benchmark":
+        if args.screen:
+            return cmd_screen(args.tasks, time_limit=args.time_limit)
         if args.exam == "proof-repair":
             from .benchmark.exam import render_exam_report, run_repair_exam
             from .repair import make_engine
 
             try:
-                make_engine(args.engine)  # validate the spec up front
+                make_engine(args.engine, _wall(args))  # validate the spec up front
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
             try:
                 scores = run_repair_exam(args.tasks, args.outdir / "exam",
-                                         lambda: make_engine(args.engine),
+                                         lambda: make_engine(args.engine, _wall(args)),
                                          max_iterations=args.max_iterations,
                                          time_limit=args.time_limit)
             except ValueError as exc:
@@ -796,7 +1044,7 @@ def main(argv: list[str] | None = None) -> int:
             from .repair import make_engine
 
             try:
-                make_engine(args.engine)  # validate the spec up front
+                make_engine(args.engine, _wall(args))  # validate the spec up front
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
@@ -808,7 +1056,7 @@ def main(argv: list[str] | None = None) -> int:
                               difftest_examples=20)
             try:
                 scores = run_spec_exam(args.tasks, args.outdir / "spec-exam",
-                                       lambda: make_engine(args.engine),
+                                       lambda: make_engine(args.engine, _wall(args)),
                                        retries=args.retries, **ladder)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)

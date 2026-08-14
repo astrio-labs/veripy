@@ -59,7 +59,18 @@ class TaskScore:
     crashers: list[str] = field(default_factory=list)
     adjudicated: int = 0  # mutants ruled equivalent in meta.json, excluded
     timeouts: list[str] = field(default_factory=list)  # inconclusive, unadjudicated
-    adjudicated_timeouts: int = 0  # wall exhaustions ruled divergent in meta.json
+    # Wall exhaustions ruled divergent in meta.json. Named, not counted: a
+    # cross-arm timeout comparison has to know WHICH mutants went
+    # inconclusive, and a bare count cannot answer that.
+    adjudicated_timeouts: list[str] = field(default_factory=list)
+
+    @property
+    def timeout_mutants(self) -> list[str]:
+        """Mutants whose hunt exhausted its wall — inconclusive, whether or
+        not a human later ruled the divergence. Comparing two arms' kill
+        rates is only meaningful when the two arms went inconclusive on the
+        SAME mutants: otherwise the gap mixes spec strength with hunt cost."""
+        return sorted(self.timeouts + self.adjudicated_timeouts)
 
     @property
     def height(self) -> int:
@@ -255,7 +266,7 @@ def run_task(
             # `#@ ensures True` "kills" it just as well and the mutant
             # carries no information about the spec.
             if description in timeout_adjudicated:
-                score.adjudicated_timeouts += 1
+                score.adjudicated_timeouts.append(description)
             else:
                 score.timeouts.append(description)
         elif verdict == "clean":
@@ -268,7 +279,8 @@ def run_task(
             # misconfigured one.
             error_reasons.append(f"{description} ({why})")
     analysis_errors = (score.mutants_total - score.mutants_killed
-                       - score.mutants_crashed - score.adjudicated_timeouts
+                       - score.mutants_crashed
+                       - len(score.adjudicated_timeouts)
                        - len(score.survivors) - len(score.timeouts))
     if score.mutants_total == 0 and score.adjudicated:
         # The panel existed but adjudication emptied it: nothing was
@@ -288,7 +300,7 @@ def run_task(
         detail = (f"{score.mutants_killed}/{score.mutants_total} refuted; "
                   f"{score.mutants_crashed} crashed; "
                   f"{len(score.survivors)} survivor(s); "
-                  f"{score.adjudicated_timeouts} diverged; "
+                  f"{len(score.adjudicated_timeouts)} diverged; "
                   f"{len(score.timeouts)} unadjudicated timeout(s); "
                   f"{analysis_errors} analysis error(s)")
         if score.survivors:
@@ -304,7 +316,7 @@ def run_task(
         if score.mutants_crashed:
             parts.append(f"{score.mutants_crashed} crashed")
         if score.adjudicated_timeouts:
-            parts.append(f"{score.adjudicated_timeouts} diverged")
+            parts.append(f"{len(score.adjudicated_timeouts)} diverged")
         if score.survivors:
             parts.append(f"survivors: {'; '.join(score.survivors[:3])}")
         if score.timeouts:
@@ -319,7 +331,7 @@ def run_task(
         if score.adjudicated_timeouts:
             # Named "diverged", not "killed": adjudication established a
             # behaviour change, not that the SPEC discriminated it.
-            extra.append(f"{score.adjudicated_timeouts} diverged "
+            extra.append(f"{len(score.adjudicated_timeouts)} diverged "
                          f"(adjudicated, not credited)")
         score.rungs.append(Rung(
             "mutants", PASS,
@@ -426,7 +438,7 @@ def render_report(scores: list[TaskScore]) -> str:
     killed = sum(s.mutants_killed for s in scores)
     crashed = sum(s.mutants_crashed for s in scores)
     total = sum(s.mutants_total for s in scores)
-    asserted = sum(s.adjudicated_timeouts for s in scores)
+    asserted = sum(len(s.adjudicated_timeouts) for s in scores)
     excluded = sum(s.adjudicated for s in scores)
     lines.append("-" * len(header))
     lines.append(
@@ -470,7 +482,7 @@ def scores_to_json(scores: list[TaskScore]) -> dict:
                 "rungs": [{"name": r.name, "status": r.status, "detail": r.detail} for r in s.rungs],
                 "mutants": {"total": s.mutants_total, "killed": s.mutants_killed,
                             "crashed": s.mutants_crashed, "crashers": s.crashers,
-                            "diverged": s.adjudicated_timeouts,
+                            "diverged": len(s.adjudicated_timeouts),
                             "timeouts": s.timeouts,
                             "adjudicated_timeouts": s.adjudicated_timeouts,
                             "survivors": s.survivors, "adjudicated_equivalent": s.adjudicated},
