@@ -242,6 +242,92 @@ def test_kept_artifacts_are_content_addressed_not_per_run(tmp_path):
     assert edited["stub"] != first["stub"]
 
 
+def test_plain_write_text_has_an_observable_truncation_window(tmp_path):
+    """Why the stub is written atomically, demonstrated rather than asserted.
+
+    Opening for write truncates IMMEDIATELY, before any content is
+    produced. A concurrent reader — the Dafny process we launch on the
+    stub — can therefore observe an empty file. Content-addressing makes
+    two writers agree on the final bytes, but says nothing about what a
+    reader sees in between.
+    """
+    target = tmp_path / "stub.dfy"
+    target.write_text("method Complete() { }\n")
+    handle = open(target, "w")          # what write_text does first
+    try:
+        assert target.read_text() == "", (
+            "expected an observable truncation window; if this ever fails, "
+            "the atomicity argument for atomic_write_text needs revisiting")
+    finally:
+        handle.close()
+
+
+def test_atomic_write_never_leaves_a_partial_target(tmp_path, monkeypatch):
+    """The property the fix actually provides.
+
+    A concurrency test cannot reliably schedule itself into a
+    sub-millisecond window, so the guarantee is pinned directly: a write
+    that dies partway must leave the target untouched and no debris
+    behind — never a truncated stub for Dafny to read.
+    """
+    import lemmapy.agentio as mod
+    from lemmapy.agentio import atomic_write_text
+
+    target = tmp_path / "stub.dfy"
+    target.write_text("method Complete() { }\n")
+
+    class Boom(Exception):
+        pass
+
+    real_named_temp = mod.tempfile.NamedTemporaryFile
+
+    def exploding(*args, **kwargs):
+        handle = real_named_temp(*args, **kwargs)
+        original_write = handle.write
+
+        def half_then_fail(text):
+            original_write(text[: len(text) // 2])
+            raise Boom("disk full mid-write")
+
+        handle.write = half_then_fail
+        return handle
+
+    monkeypatch.setattr(mod.tempfile, "NamedTemporaryFile", exploding)
+    with pytest.raises(Boom):
+        atomic_write_text(target, "method Replacement() { }\n" * 50)
+
+    assert target.read_text() == "method Complete() { }\n", (
+        "a failed write corrupted the target")
+    assert not [f for f in tmp_path.iterdir() if f.name.endswith(".tmp")], (
+        "a failed write left a temp file behind")
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_concurrent_retained_verifications_share_one_directory(tmp_path):
+    # A smoke test, not a race reproduction: four retained verifications of
+    # one module must all succeed, address the same content-addressed
+    # directory, and leave no temp debris.
+    import concurrent.futures
+
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    out = tmp_path / "out"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        payloads = list(pool.map(
+            lambda _i: verify_structured(src, out, time_limit=60,
+                                         keep_artifacts=True),
+            range(4)))
+    for p in payloads:
+        assert p["status"] == "ok", (
+            f"a verifying module reported {p['status']} "
+            f"({p.get('error') or p['failures']})")
+    assert len({p["stub"] for p in payloads}) == 1
+    assert len(list(out.iterdir())) == 1
+    stub_dir = Path(payloads[0]["stub"]).parent
+    assert not [f for f in stub_dir.iterdir() if f.name.endswith(".tmp")]
+
+
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_concurrent_same_stem_verifications_do_not_swap_verdicts(tmp_path):
     """The soundness case: a shared outdir must not let one verification

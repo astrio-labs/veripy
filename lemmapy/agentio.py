@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -64,8 +65,10 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     - kept: a CONTENT-ADDRESSED directory, so re-verifying the same file
       overwrites its own artifacts instead of accumulating a directory per
       run. The digest covers everything that determines the stub, so two
-      calls sharing a directory necessarily write identical bytes — the
-      race cannot come back through the stable name.
+      calls sharing a directory agree on the final bytes — but agreeing on
+      the destination is NOT the same as being safe to write concurrently,
+      which is why the stub is written atomically (see
+      `atomic_write_text`).
 
     The artifacts are purely diagnostic (nothing downstream reads the stub;
     the CLI prints its path for a human), so `payload["stub"]` is None when
@@ -98,6 +101,28 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     finally:
         if workdir is not None and not keep_artifacts:
             shutil.rmtree(workdir, ignore_errors=True)
+
+
+def atomic_write_text(target: Path, text: str) -> None:
+    """Write via a sibling temp file and `os.replace`.
+
+    A plain `write_text` TRUNCATES before writing, so a concurrent reader —
+    here, the Dafny process we are about to launch — can observe an empty
+    or half-written file. Content-addressing makes concurrent writers agree
+    on the final bytes, but agreement about the destination says nothing
+    about what a reader sees mid-write. `os.replace` is atomic on POSIX, so
+    a reader gets either the whole old file or the whole new one.
+    """
+    tmp = tempfile.NamedTemporaryFile(
+        "w", dir=target.parent, prefix=target.name + ".", suffix=".tmp",
+        delete=False)
+    try:
+        with tmp:
+            tmp.write(text)
+        os.replace(tmp.name, target)
+    except BaseException:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
 
 
 def stub_dir_for(outdir: Path, path: Path, stub_text: str) -> Path:
@@ -175,7 +200,7 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
             workdir = stub_dir_for(outdir, path, stub_text)
             workdir.mkdir(parents=True, exist_ok=True)
         stub = workdir / f"{path.stem}.dfy"
-        stub.write_text(stub_text)
+        atomic_write_text(stub, stub_text)
     except OSError as exc:
         payload["status"] = "tool-error"
         payload["error"] = f"cannot write stub: {exc}"

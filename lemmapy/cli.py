@@ -13,7 +13,7 @@ from pathlib import Path
 from .frontend.conformance import RULES, aggregate, survey_paths
 from .frontend.extract import parse_source
 from .frontend.typegate import run_type_gate
-from .agentio import stub_dir_for
+from .agentio import atomic_write_text, stub_dir_for
 from .backends.dafny.driver import verify_dafny_file
 from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from .backends.runtime.emit import emit_checked
@@ -312,7 +312,7 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
         stub_dir = stub_dir_for(outdir, path, stub_text)
         stub_dir.mkdir(parents=True, exist_ok=True)
         stub = stub_dir / f"{path.stem}.dfy"
-        stub.write_text(stub_text)
+        atomic_write_text(stub, stub_text)
         result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
         if result.error is not None:
             print(f"{path}: dafny trouble: {result.error}", file=sys.stderr)
