@@ -235,3 +235,37 @@ def test_no_workflow_interpolates_an_expression_into_a_shell_script():
     assert not offenders, (
         "workflow expression substituted into a shell script — pass it via "
         "`env:` and reference \"$VAR\" instead:\n  " + "\n  ".join(offenders))
+
+
+def test_a_failed_report_write_leaves_no_partial_artifact(
+        tmp_path, monkeypatch, capsys):
+    # `write_text` truncates before it writes, so a failure part-way through
+    # left invalid JSON at the final path -- and the nightly uploads the
+    # report with `if: always()`, so it would publish that unusable file in
+    # place of the reproducer. The write is atomic now: whole, or absent.
+    import os
+
+    src = _write(tmp_path / "a.py")
+    _stub(monkeypatch, lambda n: [FunctionDiff("f", n)])
+    report = tmp_path / "r.json"
+    previous = json.dumps({"schema": "lemmapy-difftest/1", "totals": {}})
+    report.write_text(previous)
+
+    real_replace = os.replace
+
+    def failing_replace(a, b):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    status = cmd_difftest([src], tmp_path / "out", 10, report=report)
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    # The earlier report survives intact rather than being truncated to a
+    # half-written file that json.load cannot read.
+    assert json.loads(report.read_text()) == json.loads(previous)
+    # And the failure is reported rather than swallowed.
+    assert status == 2
+    assert "could not write the difftest report" in capsys.readouterr().err
+    # No temp files left beside it.
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("r.json")) \
+        == ["r.json"]

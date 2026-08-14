@@ -480,7 +480,12 @@ def cmd_difftest(paths: list[Path], outdir: Path, examples: int,
         }
         try:
             report.parent.mkdir(parents=True, exist_ok=True)
-            report.write_text(json.dumps(payload, indent=1))
+            # ATOMIC: `write_text` truncates first, so a failure part-way
+            # through leaves invalid JSON at the final path — and the
+            # nightly's upload step runs `if: always()`, so it would
+            # publish that unusable file in place of the reproducer. The
+            # report either appears whole or does not appear.
+            atomic_write_text(report, json.dumps(payload, indent=1))
             print(f"report -> {report}")
         except OSError as exc:
             # The sweep's verdict must outlive a bad --report path. Letting
