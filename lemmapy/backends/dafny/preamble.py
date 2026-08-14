@@ -8,6 +8,8 @@ The divisibility lemma pack (needed for e.g. gcd's maximality ensures, which
 times out without it) is designated future preamble work — see ROADMAP.
 """
 
+import re
+
 PREAMBLE_VERSION = "0.6"
 
 PREAMBLE = """\
@@ -111,3 +113,39 @@ datatype PyOutcome<T> = PyOk(value: T) | PyErr(exn: PyExn)
   { this.value }
 }
 """
+
+
+# Names the preamble occupies in the emitted stub's top-level scope: every
+# column-0 declaration, plus the constructors a datatype injects into the
+# enclosing scope. An encoded Python name that lands on one of these is a
+# duplicate Dafny declaration (or, for a local or binder, a use that
+# resolves to the wrong thing), and the user sees a resolver error against
+# generated Dafny instead of a fragment rejection -- so the encoder reserves
+# this set. Derived from the preamble TEXT, not restated by hand: a
+# declaration added to a later preamble is reserved the moment it is
+# written, and cannot reopen the hole by being forgotten here.
+# Datatype members (IsFailure/PropagateFailure/Extract) are deliberately not
+# in the set -- they are reached only through a receiver, so a Python name
+# equal to one of them cannot collide.
+_DECL = re.compile(
+    r"^(?:function|predicate|method|lemma|datatype|codatatype|newtype|type"
+    r"|const|class|trait|iterator)\s+(?:\{:[^}]*\}\s*)*"
+    r"([A-Za-z_?'][A-Za-z0-9_?']*)",
+    re.MULTILINE,
+)
+_DATATYPE_RHS = re.compile(
+    r"^(?:co)?datatype\s+\w+(?:<[^>]*>)?\s*=\s*(.*)$", re.MULTILINE)
+_CTOR = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _top_level_names(text: str) -> frozenset[str]:
+    names = set(_DECL.findall(text))
+    for rhs in _DATATYPE_RHS.findall(text):
+        for alternative in rhs.split("|"):
+            ctor = _CTOR.match(alternative)
+            if ctor:
+                names.add(ctor.group(1))
+    return frozenset(names)
+
+
+PREAMBLE_NAMES = _top_level_names(PREAMBLE)
