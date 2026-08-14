@@ -52,8 +52,10 @@ class TaskScore:
     task_id: str
     rungs: list[Rung] = field(default_factory=list)
     mutants_total: int = 0
-    mutants_killed: int = 0
+    mutants_killed: int = 0   # REFUTED by the specification
+    mutants_crashed: int = 0  # caught by the interpreter, not by the spec
     survivors: list[str] = field(default_factory=list)
+    crashers: list[str] = field(default_factory=list)
     adjudicated: int = 0  # mutants ruled equivalent in meta.json, excluded
     timeouts: list[str] = field(default_factory=list)  # inconclusive, unadjudicated
     adjudicated_timeouts: int = 0  # wall exhaustions ruled divergent in meta.json
@@ -77,10 +79,22 @@ def _find_crosshair() -> str | None:
     return str(candidate) if candidate.exists() else None
 
 
+# A CrossHair diagnostic that begins "false when calling" is a CONTRACT
+# refutation — the specification itself was violated. Anything else it
+# reports (IndexError, ZeroDivisionError, TypeError, ...) is the
+# interpreter catching a fault, which every specification "catches"
+# equally, including `#@ ensures True`. Crediting those to the spec is what
+# gave a tautology 38% spec strength on this corpus.
+_REFUTATION_MARKER = "error: false when calling"
+
+
 def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int,
           wall: int | None = None) -> tuple[str, str]:
-    """Emit runtime contracts and let CrossHair hunt. Returns (verdict, detail)
-    with verdict one of: 'clean', 'counterexample', 'timeout', 'error'."""
+    """Emit runtime contracts and let CrossHair hunt. Returns (verdict,
+    detail) with verdict one of: 'clean', 'counterexample' (the SPEC was
+    refuted), 'crash' (an uncaught exception — a real fault, but not one
+    the specification discriminated), 'timeout' (the wall was exhausted —
+    inconclusive), or 'error'."""
     exe = _find_crosshair()
     if exe is None:
         return ERROR, "crosshair not installed"
@@ -114,14 +128,18 @@ def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int,
     if proc.returncode == 0:
         return "clean", ""
     if proc.returncode == 1:
-        return "counterexample", (proc.stdout + proc.stderr).strip().splitlines()[0] if (proc.stdout + proc.stderr).strip() else ""
+        output = (proc.stdout + proc.stderr).strip()
+        first = output.splitlines()[0] if output else ""
+        if _REFUTATION_MARKER in output:
+            return "counterexample", first
+        return "crash", first
     return ERROR, f"crosshair exited {proc.returncode}"
 
 
 def run_task(
     task_dir: Path,
     workdir: Path,
-    mutant_cap: int = 8,
+    mutant_cap: int = 12,
     hunt_timeout: int = 5,
     dafny_time_limit: int = 60,
     difftest_examples: int = 60,
@@ -146,12 +164,15 @@ def run_task(
     else:
         score.rungs.append(Rung("gate", PASS))
 
-    # R1: hunt
+    # R1: hunt. A crash is as much a failure here as a refutation — the
+    # module must be clean against its own specs either way.
     verdict, detail = _hunt(source, task_id, workdir / "hunt", hunt_timeout)
     if verdict == "clean":
         score.rungs.append(Rung("hunt", PASS))
     else:
-        score.rungs.append(Rung("hunt", FAIL if verdict == "counterexample" else ERROR, detail))
+        score.rungs.append(Rung(
+            "hunt", FAIL if verdict in ("counterexample", "crash") else ERROR,
+            detail))
         return score
 
     # R2: mutant panel (spec strength)
@@ -211,6 +232,12 @@ def run_task(
                            hunt_timeout, wall=hunt_timeout * 12 + 60)
         if verdict == "counterexample":
             score.mutants_killed += 1
+        elif verdict == "crash":
+            # The interpreter caught this fault, not the specification. A
+            # tautological spec "kills" it just as well, so it carries no
+            # information about spec strength and is never credited.
+            score.mutants_crashed += 1
+            score.crashers.append(description)
         elif verdict == "timeout":
             # A wall exhaustion is INCONCLUSIVE on its own: R4 proves the
             # original terminates, not the mutant, and a slow-but-
@@ -224,9 +251,10 @@ def run_task(
                 score.timeouts.append(description)
         elif verdict == "clean":
             score.survivors.append(description)
-        # errors excluded from both counts
+        # errors excluded from all counts
     analysis_errors = (score.mutants_total - score.mutants_killed
-                       - len(score.survivors) - len(score.timeouts))
+                       - score.mutants_crashed - len(score.survivors)
+                       - len(score.timeouts))
     if score.mutants_total == 0 and score.adjudicated:
         # The panel existed but adjudication emptied it: nothing was
         # measured, so this must not read as a skipped-because-absent rung
@@ -242,7 +270,8 @@ def run_task(
         # are untested, and hiding them behind a survivor report would
         # misstate what was actually measured. The census names every
         # bucket so the printed numbers add up to the panel.
-        detail = (f"{score.mutants_killed}/{score.mutants_total} killed; "
+        detail = (f"{score.mutants_killed}/{score.mutants_total} refuted; "
+                  f"{score.mutants_crashed} crashed; "
                   f"{len(score.survivors)} survivor(s); "
                   f"{len(score.timeouts)} unadjudicated timeout(s); "
                   f"{analysis_errors} analysis error(s)")
@@ -253,7 +282,9 @@ def run_task(
                        f"-- adjudicate divergence via meta.json \"timeout_kills\"")
         score.rungs.append(Rung("mutants", ERROR, detail))
     elif score.survivors or score.timeouts:
-        parts = [f"{score.mutants_killed}/{score.mutants_total} killed"]
+        parts = [f"{score.mutants_killed}/{score.mutants_total} refuted"]
+        if score.mutants_crashed:
+            parts.append(f"{score.mutants_crashed} crashed")
         if score.survivors:
             parts.append(f"survivors: {'; '.join(score.survivors[:3])}")
         if score.timeouts:
@@ -266,7 +297,8 @@ def run_task(
                if score.adjudicated_timeouts else "")
         score.rungs.append(Rung(
             "mutants", PASS,
-            f"{score.mutants_killed}/{score.mutants_total} killed{adj}"))
+            f"{score.mutants_killed}/{score.mutants_total} refuted{adj}"
+            + (f"; {score.mutants_crashed} crashed" if score.mutants_crashed else "")))
 
     # R3: encode
     try:
@@ -354,14 +386,17 @@ def render_report(scores: list[TaskScore]) -> str:
         lines.append(f"{s.task_id:<22} " + " ".join(cells) + f" {s.height}/6")
     full = sum(1 for s in scores if s.height == 6)
     killed = sum(s.mutants_killed for s in scores)
+    crashed = sum(s.mutants_crashed for s in scores)
     total = sum(s.mutants_total for s in scores)
     asserted = sum(s.adjudicated_timeouts for s in scores)
     excluded = sum(s.adjudicated for s in scores)
     lines.append("-" * len(header))
     lines.append(
         f"tasks: {len(scores)}   full-ladder: {full}   "
-        f"spec strength: {killed}/{total} mutants killed"
+        f"spec strength: {killed}/{total} mutants REFUTED by the specs"
         + (f" ({100 * killed / total:.0f}%)" if total else "")
+        + (f"; {crashed} crashed (caught by the interpreter, not the spec — "
+           f"never credited)" if crashed else "")
     )
     if asserted or excluded:
         # The headline must not launder human judgement as measurement: say
@@ -384,6 +419,7 @@ def scores_to_json(scores: list[TaskScore]) -> dict:
                 "height": s.height,
                 "rungs": [{"name": r.name, "status": r.status, "detail": r.detail} for r in s.rungs],
                 "mutants": {"total": s.mutants_total, "killed": s.mutants_killed,
+                            "crashed": s.mutants_crashed, "crashers": s.crashers,
                             "timeouts": s.timeouts,
                             "adjudicated_timeouts": s.adjudicated_timeouts,
                             "survivors": s.survivors, "adjudicated_equivalent": s.adjudicated},

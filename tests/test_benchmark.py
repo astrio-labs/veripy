@@ -51,6 +51,68 @@ def test_mutation_sites_cover_operators_and_constants():
     assert "`0` -> `1`" in joined or "`1` -> `2`" in joined
 
 
+def test_operand_replacement_swaps_same_typed_parameters():
+    """The family that gives the rung resolution.
+
+    Every other family perturbs an OPERATOR, so a specification that never
+    says which input the result depends on scores full marks. `clamp` was
+    the corpus's own counterexample: with the weaker "result is one of x,
+    lo, hi" postcondition — satisfied by `return lo`, ignoring the input —
+    it scored identically to a spec that determines the function.
+    """
+    descriptions = [d for d, _ in generate_mutations(CLAMP, max_mutants=16)]
+    joined = " | ".join(descriptions)
+    assert "`x` -> `lo`" in joined
+    assert "`lo` -> `hi`" in joined
+    # Sources stay parseable and specs untouched.
+    for _d, mutated in generate_mutations(CLAMP, max_mutants=16):
+        import ast
+
+        ast.parse(mutated)
+        assert "#@ ensures" in mutated
+
+
+def test_operand_replacement_respects_types_and_scope():
+    # Only same-annotation parameters are swapped: a cross-type swap would
+    # raise TypeError and a non-parameter name could raise NameError —
+    # either way the "fault" would be caught by the interpreter rather than
+    # discriminated by the spec, wasting a panel slot.
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(n: int, xs: list[int], m: int) -> int:\n"
+        "    total = n + m\n"
+        "    return total\n"
+    )
+    joined = " | ".join(d for d, _ in generate_mutations(src, max_mutants=16))
+    assert "`n` -> `m`" in joined and "`m` -> `n`" in joined
+    assert "xs" not in joined      # different annotation
+    assert "total" not in joined   # a local, not a parameter — and only
+                                   # READ sites are mutation sites
+
+
+def test_panel_cap_is_round_robin_not_a_line_prefix():
+    # A positional cap makes the panel a line-prefix of the function, so a
+    # later family (or the back half of the body) goes silently unprobed.
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    t = a + 1\n"
+        "    t = t + a\n"
+        "    t = t + a\n"
+        "    if a < b:\n"
+        "        t = t + b\n"
+        "    return t\n"
+    )
+    capped = [d for d, _ in generate_mutations(src, max_mutants=4)]
+    assert len(capped) == 4
+    # Both families survive the cap.
+    assert any("`a` -> `b`" in d or "`b` -> `a`" in d for d in capped), capped
+    assert any("->" in d and ("`+`" in d or "`<`" in d or "`1`" in d)
+               for d in capped), capped
+    # And selection stays deterministic.
+    assert capped == [d for d, _ in generate_mutations(src, max_mutants=4)]
+
+
 def test_errored_mutant_analysis_blocks_the_rung(tmp_path, monkeypatch):
     # An incomplete panel (analysis errors) must not read as passing.
     from lemmapy.benchmark import runner as runner_mod
