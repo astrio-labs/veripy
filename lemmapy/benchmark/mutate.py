@@ -2,6 +2,12 @@
 
 Each mutant is ONE small, plausible bug spliced into the original source
 TEXT (not unparsed AST — the `#@` spec comments must survive verbatim).
+
+A mutant's description is its IDENTITY: `meta.json` adjudicates equivalent
+mutants by exact string match, so the description must name exactly one
+fault. It therefore carries the column as well as the line — two mutation
+sites of the same kind on one line would otherwise share a label, and a
+single adjudication would silently retire both.
 Generation is deterministic: an ordered AST walk, no randomness, so a
 task's mutant panel is stable across runs and machines.
 
@@ -35,6 +41,90 @@ class Mutation:
     end_col: int
     replacement: str
     description: str
+    family: str = "operator"
+
+
+def _param_groups(fn: ast.FunctionDef) -> dict[str, list[str]]:
+    """Parameters grouped by annotation text.
+
+    Operand replacement swaps a parameter for another of the SAME declared
+    type: always in scope (so no NameError masquerading as a fault) and
+    type-compatible (so no TypeError either) — the mutant is a genuine
+    wrong-variable bug, which is what the operator is for.
+    """
+    groups: dict[str, list[str]] = {}
+    args = fn.args
+    for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+        if arg.annotation is None:
+            continue
+        groups.setdefault(ast.unparse(arg.annotation), []).append(arg.arg)
+    return {k: v for k, v in groups.items() if len(v) > 1}
+
+
+def _operand_mutations(tree: ast.Module) -> list[Mutation]:
+    """Replace a parameter read with another parameter of the same type.
+
+    The panel's five operator families all perturb an OPERATOR; none
+    perturbs an OPERAND, so a specification that never says which input the
+    result depends on scores full marks. `clamp`'s golden spec is the
+    corpus's own counterexample: drop its value-pinning clause and the
+    weakened spec — satisfied by `return lo`, ignoring the input entirely —
+    was indistinguishable from golden until this family existed.
+    """
+    out: list[Mutation] = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        groups = _param_groups(fn)
+        if not groups:
+            continue
+        by_name = {name: group for group in groups.values() for name in group}
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
+                continue
+            if node.lineno != node.end_lineno or node.id not in by_name:
+                continue
+            for other in by_name[node.id]:
+                if other == node.id:
+                    continue
+                out.append(Mutation(
+                    node.lineno, node.col_offset, node.end_col_offset, other,
+                    f"line {node.lineno} col {node.col_offset}: "
+                    f"`{node.id}` -> `{other}`",
+                    family="operand",
+                ))
+    return out
+
+
+def _select(mutations: list[Mutation], cap: int) -> list[Mutation]:
+    """Cap the panel by round-robin across families, not by position.
+
+    A plain positional prefix makes the panel a *line-prefix* of the
+    function: `is_prime` hit the old cap exactly, so its panel silently
+    became "the first 8 sites in line order" and the later half of the
+    function went unprobed. Round-robin keeps every family represented at
+    any cap, and stays deterministic (families and members are sorted).
+    """
+    by_family: dict[str, list[Mutation]] = {}
+    for m in mutations:
+        by_family.setdefault(m.family, []).append(m)
+    for family in by_family:
+        by_family[family].sort(key=lambda m: (m.line, m.col, m.replacement))
+    picked: list[Mutation] = []
+    index = 0
+    while len(picked) < cap:
+        added = False
+        for family in sorted(by_family):
+            members = by_family[family]
+            if index < len(members):
+                picked.append(members[index])
+                added = True
+                if len(picked) >= cap:
+                    break
+        if not added:
+            break
+        index += 1
+    return sorted(picked, key=lambda m: (m.line, m.col, m.replacement))
 
 
 def _splice(source_lines: list[str], m: Mutation) -> str:
@@ -114,7 +204,10 @@ def generate_mutations(source: str, max_mutants: int = 16) -> list[tuple[str, st
             case _:
                 pass
 
-    mutations.sort(key=lambda m: (m.line, m.col, m.replacement))
+    mutations.extend(_operand_mutations(tree))
+    # Select across families FIRST, then splice: capping by position alone
+    # would let the cheapest family crowd the panel.
+    mutations = _select(mutations, max_mutants)
     results: list[tuple[str, str]] = []
     seen: set[str] = set()
     for m in mutations:
@@ -129,6 +222,4 @@ def generate_mutations(source: str, max_mutants: int = 16) -> list[tuple[str, st
             continue
         seen.add(mutated)
         results.append((m.description, mutated))
-        if len(results) >= max_mutants:
-            break
     return results

@@ -23,7 +23,7 @@ A task is one annotated-Python module (`task.py`, plus an optional
 | --- | --- | --- |
 | R0 | **gate** | specs parse; basedpyright strict clean |
 | R1 | **hunt** | CrossHair finds no counterexample against the specs |
-| R2 | **mutants** | **spec strength**: an auto-generated panel of single-fault mutants (operator swaps, off-by-ones — deterministic, no RNG) must each be *refuted* from the specs alone; kill rate is the score, survivors are listed |
+| R2 | **mutants** | **spec strength**: an auto-generated panel of single-fault mutants (operator swaps, off-by-ones — deterministic, no RNG) must each be *refuted* from the specs alone; the refutation rate is the score, survivors are listed. A mutant that makes the code **crash** (IndexError, ZeroDivisionError, …) is reported separately and **never credited**: the interpreter caught it, not the specification, and `#@ ensures True` catches it just as well |
 | R3 | **encode** | the fragment encoder accepts the module |
 | R4 | **prove** | the prover verifies — proof additions allowed (executable `assert`s, `#@ proof` clauses, sidecar lemmas); **specs are frozen** |
 | R5 | **fidelity** | the prover-compiled model agrees with CPython under Hypothesis |
@@ -44,9 +44,111 @@ Two properties fall out of this design that no static benchmark has:
    strips each sidecar-bearing task's `.proofs.dfy` (the `#@ proof` clauses
    stay in the frozen source) and scores restoration through the repair
    loop — the same whitelist and prover as the golden proof, so R4 must be
-   re-earned, never asserted. Roster today: `gcd` (8-lemma divisibility
-   pack) and `modp` (6-lemma mod/pow pack); executable proof-hint asserts
-   are admitted source and stay.
+   re-earned, never asserted. Roster today (6 tasks, each with a
+   sidecar-less control pinned by `test_sidecar_is_load_bearing`): `gcd`
+   (8-lemma divisibility pack), `modp` (6-lemma mod/pow pack), `is_prime`
+   (7-lemma sqrt-bounded primality pack sharing gcd's lemma family),
+   `below_zero` (`SliceSnoc`), `rolling_max` (`SeqMaxDominates`
+   induction), `sum_squares` (`SumNonNeg`, instantiated at a mapped-seq
+   `#@ proof` argument).
+   Executable proof-hint asserts remain admitted source and stay where
+   present. The divisibility family is deliberately NOT promoted into the
+   preamble while the exam depends on those lemmas being absent.
+
+   **The spec-writing exam is live too**: `lemmapy benchmark --exam
+   spec-writing` strips every `#@` line, hands the engine the bare
+   implementation, and scores the specification it writes back on the same
+   deterministic panel as the golden — engine kill rate beside golden kill
+   rate. Its correctness rests on four properties, each pinned by tests:
+
+   - **Source freeze.** Dropping full-line `#@` comments from the answer
+     must reproduce the stripped input *exactly*. Text equality is
+     authoritative, not AST equality: an inserted blank line is
+     AST-invisible, and an engine free to edit the implementation can
+     always weaken the task to fit a trivial spec.
+   - **No verification feedback.** Retries fire only for mechanical
+     invalidity (unparseable, freeze violation, malformed clause, no
+     postcondition at all). Feeding prover outcomes back would silently
+     turn this into the proof-repair exam.
+   - **Fair baseline.** The golden is scored under identical exam
+     conditions — its own `#@ proof` clauses stripped and no sidecar
+     staged — so the engine is never compared against a run that had
+     lemmas available. (`#@ proof` clauses are rejected in this exam;
+     there is no sidecar channel for them to name.)
+   - **Panel alignment.** Mutations sort by `(line, col, replacement)` and
+     inserting `#@` lines is a monotone renumbering, so ordering survives
+     and the `max_mutants` truncation selects the same faults; line-numbered
+     `equivalent_mutants` are translated through the same map. Untranslated,
+     the adjudication would silently miss and the engine would be charged
+     for a mutant the golden run was forgiven.
+
+   The anti-gaming property is the design's whole point, and it is
+   measured, not asserted. An adversarial arm replaces every task's
+   specification with `#@ ensures True` (keeping only the golden
+   `#@ requires`, so the inputs are the same) and runs the whole corpus:
+
+   ```
+   arm                    refuted    crashed   valid
+   tautology (ensures True)  0/39 (0%)     15    12/12
+   golden                   26/39 (67%)    13      —
+   ```
+
+   *(Both figures predate the operand-replacement family and the modp/
+   triples tasks; the golden baseline on the current 14-task panel is
+   50/63 = 79%.)*
+
+   All twelve tautologies clear the type gate, the runtime-contract hunt,
+   the encoder, and the SMT prover — *every automated check the toolchain
+   has* — and the panel scores them at zero.
+
+   **This measurement is the reason R2 separates refutations from
+   crashes.** Before the split, a tautology scored **38%**, because
+   CrossHair exits non-zero on an uncaught `IndexError` just as it does on
+   a violated postcondition, and the harness credited both. The metric's
+   zero point was 38%, and on `max_element` and `gcd` a tautology was
+   *indistinguishable from golden*. Counting only refutations moves the
+   floor to a true 0% — and honestly lowers the golden baseline from a
+   flattering 39/39 to **26/39**, because 13 of golden's own kills were
+   crashes too. A narrower claim, but a real one, and the dynamic range it
+   opens (0% → 67%) is what lets the rung rank anything at all.
+
+   `max_element` is now visibly the corpus's weakest specification (0/1):
+   its single mutant is caught only by a crash. That is exactly the kind of
+   gap the rung exists to surface, and it was invisible while crashes
+   counted.
+
+### Operator families, and why operand replacement had to exist
+
+The panel's original five families all perturb an **operator** (comparison
+swaps, `+`/`-`, integer ±1, `min`/`max`, `and`/`or`). None perturbs an
+**operand** — so a specification that never says *which input the result
+depends on* scored full marks.
+
+`clamp` was the corpus's own counterexample. Its spec used to read
+`ensures result == x or result == lo or result == hi`, which is satisfied
+by `return lo` — a clamp that ignores its input entirely. On the old panel
+that spec scored **2/2 (100%)**, indistinguishable from one that determines
+the function.
+
+Adding **operand replacement** (swap a parameter read for another
+parameter of the *same declared type* — always in scope and type-compatible,
+so the mutant is a genuine wrong-variable bug rather than a `NameError` or
+`TypeError` the interpreter would catch) separates them:
+
+```
+clamp spec                                    refuted
+"result is one of x, lo, hi"  (old golden)     4/8  (50%)
+case-split spec that DETERMINES the function   8/8  (100%)
+```
+
+The corpus's own `clamp` spec was strengthened as a result — a golden task
+is supposed to be the answer key. Panel totals went 40 → 47 mutants, median
+2.5 → 3.5 per task, and the cap rose to 12.
+
+**The cap is applied round-robin across families, not by position.** A
+positional cap makes the panel a *line-prefix* of the function: `is_prime`
+hit the old cap exactly, so its panel silently became "the first 8 sites in
+line order" and the back half of the function went unprobed.
 
 ## Backend policy (and the "ultimate benchmark" question)
 
@@ -82,29 +184,28 @@ folds) admitted `below_zero` and `sum_squares`; slice 7 (`**` -> `PyPow`) admitt
 
 ## Seed baseline (August 2026)
 
-Full run (defaults: 8-mutant cap, 5s hunt budget, 60s prove budget,
+Full run (defaults: 12-mutant cap, 5s hunt budget, 60s prove budget,
 60 fidelity examples per function):
 
 ```
-task                   gate  hunt  mutants  encode  prove  fidelity  height
-below_threshold        pass  pass  1/1      pass    pass   pass      6/6
-below_zero             pass  pass  7/7      pass    pass   pass      6/6
-bump                   pass  pass  2/2      pass    pass   pass      6/6
-clamp                  pass  pass  2/2      pass    pass   pass      6/6
-gcd                    pass  pass  2/2      pass    pass   pass      6/6
-incr_list              pass  pass  2/2      pass    pass   pass      6/6
-intersperse            pass  pass  3/3      pass    pass   pass      6/6
-is_palindrome          pass  pass  4/4      pass    pass   pass      6/6
-is_prime               pass  pass  7/7      pass    pass   pass      6/6
-max_element            pass  pass  1/1*     pass    pass   pass      6/6
-modp                   pass  pass  6/6*     pass    pass   pass      6/6
-rolling_max            pass  pass  5/5      pass    pass   pass      6/6
-sum_squares            pass  pass  6/6      pass    pass   pass      6/6
-triples_sum_to_zero    pass  pass  8/8      pass    pass   pass      6/6
-
-tasks: 14   full-ladder: 14   spec strength: 56/56 mutants killed (100%)
-* 1 kill(s) human-adjudicated (timeout), not refuted by the hunter;
-  1 mutant(s) excluded as adjudicated equivalent
+task                   gate     hunt     mutants  encode   prove    fidelity height
+below_threshold        pass     pass     1/1      pass     pass     pass     6/6
+below_zero             pass     pass     3/3      pass     pass     pass     6/6
+bump                   pass     pass     2/2      pass     pass     pass     6/6
+clamp                  pass     pass     8/8      pass     pass     pass     6/6
+gcd                    pass     pass     4/4      pass     pass     pass     6/6
+incr_list              pass     pass     2/2      pass     pass     pass     6/6
+intersperse            pass     pass     1/3      pass     pass     pass     6/6
+is_palindrome          pass     pass     2/4      pass     pass     pass     6/6
+is_prime               pass     pass     8/8      pass     pass     pass     6/6
+max_element            pass     pass     0/1*     pass     pass     pass     6/6
+modp                   pass     pass     8/8*     pass     pass     pass     6/6
+rolling_max            pass     pass     1/5      pass     pass     pass     6/6
+sum_squares            pass     pass     2/6      pass     pass     pass     6/6
+triples_sum_to_zero    pass     pass     8/8      pass     pass     pass     6/6
+-----------------------------------------------------------------------------------
+tasks: 14   full-ladder: 14   spec strength: 50/63 mutants REFUTED by the specs (79%); 13 crashed (caught by the interpreter, not the spec — never credited)
+* 1 kill(s) human-adjudicated (timeout), not refuted by the hunter; 1 mutant(s) excluded as adjudicated equivalent
 ```
 
 The benchmark's first run also exercised its adjudication path: the raw run

@@ -242,8 +242,12 @@ def difftest_file(path: Path, outdir: Path, examples: int = 100) -> DiffResult:
     stub = workdir / f"{path.stem}.dfy"
     stub.write_text(encoded.dafny_source + sidecar.text)
     translate_base = workdir / "compiled"
+    # --allow-warnings mirrors the verify driver: a style warning (e.g. a
+    # triggerless forall in a proof sidecar) must not fail translation —
+    # R4 already established the verdict, and ghost code is erased anyway.
     proc = subprocess.run(
-        [dafny, "translate", "py", str(stub), "--output", str(translate_base), "--no-verify"],
+        [dafny, "translate", "py", str(stub), "--output", str(translate_base),
+         "--no-verify", "--allow-warnings"],
         capture_output=True, text=True, timeout=600,
     )
     compiled_dir = Path(f"{translate_base}-py")

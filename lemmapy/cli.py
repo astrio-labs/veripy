@@ -391,7 +391,7 @@ def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
     kwargs = dict(mutant_cap=mutant_cap, hunt_timeout=5,
                   dafny_time_limit=60, difftest_examples=60)
     if quick:
-        kwargs.update(mutant_cap=min(mutant_cap, 3), difftest_examples=20)
+        kwargs.update(mutant_cap=min(mutant_cap, 4), difftest_examples=20)
     scores = run_benchmark(tasks, outdir, **kwargs)
     if not scores:
         print(f"no tasks found under {tasks}", file=sys.stderr)
@@ -562,18 +562,66 @@ def main(argv: list[str] | None = None) -> int:
     p_benchmark.add_argument("--tasks", type=Path, default=Path("benchmark/tasks"))
     p_benchmark.add_argument("-o", "--outdir", type=Path, default=Path("build/benchmark"))
     p_benchmark.add_argument("--report", type=Path, default=None)
-    p_benchmark.add_argument("--mutant-cap", type=int, default=8)
+    p_benchmark.add_argument("--mutant-cap", type=int, default=12)
     p_benchmark.add_argument(
-        "--exam", choices=["proof-repair"], default=None,
-        help="run an exam instead of the ladder: strip proof additions "
-             "from golden tasks and score restoration under frozen specs",
+        "--exam", choices=["proof-repair", "spec-writing"], default=None,
+        help="run an exam instead of the ladder: 'proof-repair' strips the "
+             "proof additions and scores restoration under frozen specs; "
+             "'spec-writing' strips the SPECS and scores the strength of "
+             "the ones the engine writes (mutant kill rate vs golden)",
     )
     p_benchmark.add_argument(
         "--engine", default="claude",
-        help="repair engine for --exam (claude | file:<dir>)",
+        help="engine for --exam (claude | claude:<model> | "
+             "api:<provider>/<model> | file:<dir>)",
+    )
+    p_benchmark.add_argument(
+        "--retries", type=int, default=2,
+        help="with --exam spec-writing: retries allowed for a MECHANICALLY "
+             "invalid answer (unparseable, freeze violation, bad clause)",
     )
     p_benchmark.add_argument("--quick", action="store_true",
                             help="small mutant panels and example counts (CI mode)")
+    p_benchmark.add_argument("--max-iterations", type=int, default=4,
+                             help="with --exam: repair-loop iteration budget")
+    p_benchmark.add_argument("--time-limit", type=int, default=60,
+                             help="with --exam: prover time limit per attempt (s)")
+
+    p_experiment = sub.add_parser(
+        "experiment",
+        help="run an exam as a (task x engine x arm x trial) matrix with an "
+             "append-only JSONL ledger; resumable",
+    )
+    p_experiment.add_argument("--tasks", type=Path, default=Path("benchmark/tasks"))
+    p_experiment.add_argument("-o", "--outdir", type=Path,
+                              default=Path("build/experiment"))
+    p_experiment.add_argument("--engines", nargs="+", default=["claude"],
+                              help="engine specs: claude | claude:<model> | "
+                                   "api:<provider>/<model> | file:<dir>")
+    p_experiment.add_argument("--exam", choices=["proof-repair", "spec-writing"],
+                              default="proof-repair")
+    p_experiment.add_argument("--arms", nargs="+", default=["full", "one-shot"],
+                              help="full | one-shot | ablated "
+                                   "(spec-writing supports one-shot only)")
+    p_experiment.add_argument("--retries", type=int, default=2,
+                              help="with --exam spec-writing: retries for a "
+                                   "mechanically invalid answer")
+    p_experiment.add_argument("--mutant-cap", type=int, default=12)
+    p_experiment.add_argument("--trials", type=int, default=3)
+    p_experiment.add_argument("--ledger", type=Path, default=None,
+                              help="JSONL ledger path (default: <outdir>/ledger.jsonl)")
+    p_experiment.add_argument("--max-iterations", type=int, default=4)
+    p_experiment.add_argument("--time-limit", type=int, default=60)
+    p_experiment.add_argument("--task", action="append", default=None,
+                              dest="only_tasks", metavar="TASK",
+                              help="restrict to this task (repeatable)")
+    p_experiment.add_argument("--no-resume", action="store_true",
+                              help="re-run cells already in the ledger "
+                                   "(appends; the newest row wins)")
+    p_experiment.add_argument("--summarize", type=Path, default=None,
+                              metavar="LEDGER",
+                              help="print the summary table for an existing "
+                                   "ledger and exit (no cells are run)")
 
     p_repair = sub.add_parser(
         "repair",
@@ -694,13 +742,111 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             try:
                 scores = run_repair_exam(args.tasks, args.outdir / "exam",
-                                         lambda: make_engine(args.engine))
+                                         lambda: make_engine(args.engine),
+                                         max_iterations=args.max_iterations,
+                                         time_limit=args.time_limit)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
             print(render_exam_report(scores))
             return 0 if scores and all(s.restored for s in scores) else 1
+        if args.exam == "spec-writing":
+            from .benchmark.specexam import (
+                render_spec_exam_report,
+                run_spec_exam,
+                spec_scores_to_json,
+            )
+            from .repair import make_engine
+
+            try:
+                make_engine(args.engine)  # validate the spec up front
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            ladder = dict(mutant_cap=args.mutant_cap, hunt_timeout=5,
+                          dafny_time_limit=args.time_limit,
+                          difftest_examples=60)
+            if args.quick:
+                ladder.update(mutant_cap=min(args.mutant_cap, 3),
+                              difftest_examples=20)
+            try:
+                scores = run_spec_exam(args.tasks, args.outdir / "spec-exam",
+                                       lambda: make_engine(args.engine),
+                                       retries=args.retries, **ladder)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            print(render_spec_exam_report(scores))
+            if args.report is not None:
+                args.report.parent.mkdir(parents=True, exist_ok=True)
+                args.report.write_text(
+                    json.dumps(spec_scores_to_json(scores), indent=1))
+                print(f"\nreport -> {args.report}")
+            # Exit status reports EXAM VALIDITY, never spec quality: a weak
+            # spec is a measurement, not a failure.
+            return 0 if scores and all(s.valid for s in scores) else 1
         return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
+    if args.command == "experiment":
+        from .benchmark.experiment import (
+            exam_roster,
+            matrix_rows,
+            run_experiment,
+            summarize_ledger,
+        )
+
+        if args.summarize is not None:
+            if not args.summarize.exists():
+                print(f"no ledger at {args.summarize}", file=sys.stderr)
+                return 2
+            print(summarize_ledger(args.summarize))
+            return 0
+        ledger = args.ledger or (args.outdir / "ledger.jsonl")
+        arms = args.arms
+        if args.exam == "spec-writing" and arms == ["full", "one-shot"]:
+            arms = ["one-shot"]  # the default is proof-repair's; don't error
+        try:
+            written = run_experiment(
+                args.tasks, args.outdir / "cells", args.engines, arms,
+                args.trials, ledger, max_iterations=args.max_iterations,
+                time_limit=args.time_limit,
+                only_tasks=set(args.only_tasks) if args.only_tasks else None,
+                resume=not args.no_resume, exam=args.exam,
+                retries=args.retries,
+                ladder=dict(mutant_cap=args.mutant_cap, hunt_timeout=5,
+                            dafny_time_limit=args.time_limit,
+                            difftest_examples=60),
+                progress=print)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        # Exit status covers the WHOLE requested matrix, read back from the
+        # ledger — not just the rows this invocation wrote. On resume the
+        # completed cells are skipped and never re-emitted, so judging by
+        # `written` would report success while the ledger still holds
+        # failed trials from an earlier run.
+        # Scope to the roster this run actually covered. A ledger is
+        # append-only and outlives corpus changes, so a task since renamed
+        # or removed keeps its old rows — and an unsuccessful one would
+        # fail a matrix that no longer contains it.
+        covered = set(args.only_tasks) if args.only_tasks \
+            else set(exam_roster(args.tasks, args.exam))
+        matrix = matrix_rows(ledger, exam=args.exam, engines=args.engines,
+                             arms=arms, trials=args.trials, tasks=covered)
+        resumed = len(matrix) - len(written)
+        print(f"\n{len(written)} cell-task row(s) appended -> {ledger}"
+              + (f" ({resumed} resumed from earlier runs)" if resumed > 0 else "")
+              + "\n")
+        print(summarize_ledger(ledger))
+        if not matrix:
+            print("no trials recorded for the requested matrix",
+                  file=sys.stderr)
+            return 2
+        failed = [r for r in matrix if not r["restored"]]
+        if failed:
+            print(f"\n{len(failed)}/{len(matrix)} trial(s) in this matrix did "
+                  f"not succeed", file=sys.stderr)
+            return 1
+        return 0
     if args.command == "survey":
         return cmd_survey(args.paths, args.top, args.json)
     return 2

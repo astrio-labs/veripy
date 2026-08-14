@@ -4,13 +4,16 @@ Adaptations: the canonical accumulator `result` is renamed (reserved spec
 word); the value loop is indexed so the invariants can name the iteration
 count (grammar-contact finding #3); and one executable `assert` supplies
 the slice-extension fact the prover needs — a runtime check in CPython,
-a proof hint in Dafny.
+a proof hint in Dafny. The dominance postcondition (every element seen so
+far is bounded by the rolling max) is inductive over `max(...)` and needs
+the `SeqMaxDominatesAll` lemma from the `.proofs.dfy` sidecar.
 """
 
 
 #@ verified
 #@ ensures len(result) == len(numbers)
 #@ ensures forall i in range(len(numbers)) :: result[i] == max(numbers[:i + 1])
+#@ ensures forall i in range(len(numbers)) :: forall j in range(i + 1) :: numbers[j] <= result[i]
 def rolling_max(numbers: list[int]) -> list[int]:
     running_max: int | None = None
     maxes: list[int] = []
@@ -29,4 +32,5 @@ def rolling_max(numbers: list[int]) -> list[int]:
         assert numbers[:i + 1] == numbers[:i] + [numbers[i]]
         maxes.append(running_max)
 
+    #@ proof SeqMaxDominatesAll(numbers)
     return maxes

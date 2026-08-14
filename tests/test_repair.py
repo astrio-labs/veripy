@@ -44,6 +44,22 @@ def test_claude_engine_denies_tools():
     assert cmd.index("prompt text") < cmd.index("--disallowedTools")
 
 
+def test_claude_cmd_model_and_json_keep_denial_last():
+    # The engine-matrix additions (--model, --output-format json) must not
+    # reshape the pinned invariant: `--disallowedTools "*"` stays the FINAL
+    # two argv entries, the prompt stays before it.
+    from lemmapy.repair import _claude_cmd
+
+    cmd = _claude_cmd("/usr/bin/claude", "prompt text", model="opus",
+                      json_output=True)
+    assert cmd[-2:] == ["--disallowedTools", "*"]
+    assert cmd.index("prompt text") < cmd.index("--disallowedTools")
+    i = cmd.index("--model")
+    assert cmd[i + 1] == "opus"
+    j = cmd.index("--output-format")
+    assert cmd[j + 1] == "json"
+
+
 def test_claude_engine_runs_in_empty_sandbox(monkeypatch):
     # The other half of measurement integrity: the subprocess must run in
     # an isolated EMPTY directory, not the repository (where a tool-bearing
@@ -84,6 +100,138 @@ def test_make_engine_specs():
         make_engine("gpt")
 
 
+def test_make_engine_model_specs():
+    from lemmapy.repair import _ApiEngine, _ClaudeEngine
+
+    engine = make_engine("claude:opus")
+    assert isinstance(engine, _ClaudeEngine) and engine.model == "opus"
+    assert make_engine("claude").model is None
+    # argv hygiene: empty or flag-shaped "models" must not reach the CLI.
+    with pytest.raises(ValueError, match="unknown engine"):
+        make_engine("claude:")
+    with pytest.raises(ValueError, match="unknown engine"):
+        make_engine("claude:-x")
+    api = make_engine("api:openrouter/moonshotai/kimi-k3")
+    assert isinstance(api, _ApiEngine)
+    assert api.provider == "openrouter"
+    assert api.model == "moonshotai/kimi-k3"  # model may itself contain '/'
+    with pytest.raises(ValueError, match="unknown engine"):
+        make_engine("api:no-slash")
+    with pytest.raises(ValueError, match="unknown api provider"):
+        make_engine("api:nonesuch/model")
+
+
+# Field names pinned from a live `claude -p --output-format json` run
+# (CLI 2.1.193), trimmed to the fields the parser reads.
+CLAUDE_JSON_SAMPLE = (
+    '{"type":"result","subtype":"success","is_error":false,'
+    '"duration_api_ms":2040,"num_turns":1,"result":"lemma L()\\n{\\n}",'
+    '"total_cost_usd":0.0274,'
+    '"usage":{"input_tokens":2,"cache_creation_input_tokens":2681,'
+    '"cache_read_input_tokens":0,"output_tokens":4},'
+    '"modelUsage":{"claude-opus-4-8[1m]":{"inputTokens":2}}}'
+)
+
+
+def test_parse_claude_json():
+    from lemmapy.repair import _parse_claude_json
+
+    text, usage = _parse_claude_json(CLAUDE_JSON_SAMPLE)
+    assert text == "lemma L()\n{\n}"
+    assert usage["input_tokens"] == 2
+    assert usage["output_tokens"] == 4
+    assert usage["cache_creation_input_tokens"] == 2681
+    assert usage["cost_usd"] == 0.0274
+    assert usage["models"] == ["claude-opus-4-8[1m]"]
+    # Missing fields degrade to None, not KeyError.
+    text, usage = _parse_claude_json('{"result":"x"}')
+    assert text == "x" and usage["input_tokens"] is None
+    # is_error surfaces as an engine failure.
+    with pytest.raises(RuntimeError, match="claude engine error"):
+        _parse_claude_json('{"is_error":true,"result":"boom"}')
+    # Non-JSON stdout (format drift) degrades to text mode.
+    assert _parse_claude_json("plain text") == ("plain text", None)
+
+
+def test_claude_engine_records_usage(monkeypatch):
+    import lemmapy.repair as repair_mod
+    from lemmapy.repair import _ClaudeEngine
+
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        import os
+
+        seen["cmd"] = cmd
+        seen["entries"] = os.listdir(kwargs["cwd"])
+
+        class Proc:
+            returncode = 0
+            stdout = CLAUDE_JSON_SAMPLE
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(repair_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(repair_mod.shutil, "which", lambda name: "/fake/claude")
+    engine = _ClaudeEngine(model="opus")
+    request = {"rules": "r", "attempt": 0, "source": "s",
+               "failures": {}, "sidecar": "", "history": []}
+    assert engine(request) == "lemma L()\n{\n}\n"
+    assert engine.usage_log[-1]["output_tokens"] == 4
+    assert engine.usage_log[-1]["models"] == ["claude-opus-4-8[1m]"]
+    # The sandbox and the pinned command shape survive the JSON path.
+    assert seen["entries"] == []
+    assert seen["cmd"][-2:] == ["--disallowedTools", "*"]
+    assert "opus" in seen["cmd"]
+
+
+def test_api_engine_parses_completion_and_usage(monkeypatch):
+    import io
+    import urllib.request
+
+    seen = {}
+
+    class FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        import json as _json
+
+        seen["url"] = req.full_url
+        seen["auth"] = req.headers.get("Authorization")
+        seen["body"] = _json.loads(req.data.decode())
+        return FakeResp(_json.dumps({
+            "model": "moonshotai/kimi-k3-0811",
+            "choices": [{"message": {"content": "```dafny\nlemma L()\n{\n}\n```"}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 7},
+        }).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    engine = make_engine("api:openrouter/moonshotai/kimi-k3")
+    request = {"rules": "r", "attempt": 0, "source": "s",
+               "failures": {}, "sidecar": "", "history": []}
+    assert engine(request) == "lemma L()\n{\n}\n"  # fences stripped
+    assert seen["url"].endswith("/chat/completions")
+    assert seen["auth"] == "Bearer sk-test"
+    assert seen["body"]["model"] == "moonshotai/kimi-k3"
+    assert engine.usage_log[-1]["input_tokens"] == 100
+    assert engine.usage_log[-1]["models"] == ["moonshotai/kimi-k3-0811"]
+
+
+def test_api_engine_requires_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    engine = make_engine("api:openai/gpt-5.6-terra")
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        engine({"rules": "r", "attempt": 0, "source": "s",
+                "failures": {}, "sidecar": "", "history": []})
+
+
 def test_strip_fences():
     fenced = "```dafny\nlemma L()\n{\n}\n```"
     assert _strip_fences(fenced) == "lemma L()\n{\n}\n"
@@ -96,6 +244,36 @@ def test_request_carries_rules_and_history():
     assert req["rules"] == RULES
     assert req["sidecar"] == "s"
     assert req["attempt"] == 2
+
+
+def test_render_prompt_serves_every_exam_schema():
+    # ONE renderer must serve every exam: engines are shared, and a request
+    # shape the renderer cannot handle raises inside the engine, scoring the
+    # whole cell as an engine error. (This is exactly how the spec-writing
+    # exam first failed: KeyError 'failures' on every task.)
+    from lemmapy.benchmark.specexam import build_spec_request
+    from lemmapy.repair import _render_prompt
+
+    repair_req = build_request(
+        "SRC", {"status": "failed", "failures": [{"kind": "postcondition"}],
+                "sidecar": {"text": "lemma L() {}"}}, 0, [])
+    text = _render_prompt(repair_req)
+    assert "SRC" in text and "postcondition" in text
+    assert text.rstrip().endswith("sidecar content only.")
+
+    spec_req = build_spec_request(
+        "SRC", "mini", 1,
+        [{"kind": "freeze", "line": 3, "message": "changed"}],
+        [{"attempt": 0, "errors": ["freeze"]}])
+    text = _render_prompt(spec_req)
+    assert "SRC" in text and "freeze" in text
+    assert "Verification outcome" not in text  # no such section here
+    assert "Current sidecar" not in text
+    assert text.rstrip().endswith("annotated file only.")
+
+    # An empty feedback list renders no feedback section at all.
+    first = _render_prompt(build_spec_request("SRC", "mini", 0, [], []))
+    assert "rejected as malformed" not in first
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
@@ -291,3 +469,46 @@ def test_iteration_budget_exhaustion(tmp_path):
     outcome = repair_file(src, tmp_path / "out", engine, max_iterations=2)
     assert not outcome.verified
     assert outcome.reason == "iteration budget exhausted"
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_repair_attempts_record_rejections(tmp_path):
+    # Telemetry: one attempt record per verify; a whitelist-tripping
+    # proposal is classified AT PROPOSAL TIME with its rule id. Loop
+    # behavior (iterations, history) is unchanged by the recording.
+    src = tmp_path / "m.py"
+    src.write_text(NEEDS_LEMMA)
+    attempts = tmp_path / "attempts"
+    attempts.mkdir()
+    (attempts / "1.dfy").write_text(BODILESS)  # rejected: axiom
+    (attempts / "2.dfy").write_text(GOOD)      # accepted, verifies
+    engine = make_engine(f"file:{attempts}")
+    outcome = repair_file(src, tmp_path / "out", engine, max_iterations=4)
+    assert outcome.verified and outcome.iterations == 2
+    assert [a["attempt"] for a in outcome.attempts] == [0, 1, 2]
+    assert outcome.attempts[0]["status"] == "encode-error"
+    assert outcome.attempts[0]["rejection"]["rule"] == "bodiless"
+    assert outcome.attempts[1]["rejection"] is None
+    assert outcome.attempts[2]["status"] == "ok"
+    assert outcome.attempts[2]["engine_ms"] is None  # no engine call after ok
+    assert all(a["verify_ms"] >= 0 for a in outcome.attempts)
+    # History shape is what it was before telemetry landed.
+    assert any("axiom" in str(h["failures"]) for h in outcome.history[1:])
+
+
+def test_exhausted_loop_still_counts_last_rejection(tmp_path):
+    # The final proposal of an exhausted budget never gets a next-iteration
+    # verify payload — proposal-time classification must count it anyway.
+    # (Encode-error loops never reach Dafny, so this needs no prover.)
+    src = tmp_path / "m.py"
+    src.write_text(NEEDS_LEMMA)
+    attempts = tmp_path / "attempts"
+    attempts.mkdir()
+    (attempts / "1.dfy").write_text(BODILESS)
+    (attempts / "2.dfy").write_text(BODILESS)
+    engine = make_engine(f"file:{attempts}")
+    outcome = repair_file(src, tmp_path / "out", engine, max_iterations=2)
+    assert not outcome.verified
+    rejections = [a["rejection"] for a in outcome.attempts if a["rejection"]]
+    assert len(rejections) == 2  # every proposal counted, including the last
+    assert all(r["rule"] == "bodiless" for r in rejections)

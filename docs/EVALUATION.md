@@ -114,6 +114,30 @@ proofs, once smaller than the human one — while modp's nonlinear
 mod-multiplication congruence does not restore within budget. Roster
 growth remains the highest-leverage improvement to this metric.
 
+### Roster n=6, and the experiment harness (late August 2026)
+
+Four more tasks gained load-bearing sidecars — `below_zero` (`SliceSnoc`),
+`rolling_max` (`SeqMaxDominates`), `sum_squares` (`SumNonNeg`), and
+`is_prime` (rewritten to sqrt-bounded trial division with the full iff
+spec, reusing gcd's divisibility family) — joining `gcd` and `modp` for a
+six-task roster.
+
+Each was **screened before adoption**: the strengthened spec had to fail
+to prove *without* its pack. A task Z3 proves from its invariants alone
+makes an exam row that measures nothing, and the screen is now permanent
+as `test_sidecar_is_load_bearing`, parameterized over the roster — it also
+tripwires against preamble growth silently making a sidecar vacuous. (For
+the same reason the divisibility family is deliberately **not** promoted
+into the preamble; see ROADMAP.)
+
+Runs are now driven by `lemmapy experiment`, which executes an exam as a
+(task × engine × arm × trial) matrix against an append-only JSONL ledger:
+resumable, with the run's git rev and tool versions in the header, three
+arms (full loop / one-shot / feedback-ablated) to separate what the loop
+contributes from what the model already knows, and per-proposal
+whitelist-rejection telemetry. Rates are reported with Wilson intervals —
+k/n at these trial counts is not a defensible point estimate on its own.
+
 **Methodology notes — two invalid runs preceded the first measurement, in
 opposite directions, and both are part of the record:**
 
