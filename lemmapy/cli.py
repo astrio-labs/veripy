@@ -574,6 +574,39 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_benchmark.add_argument("--quick", action="store_true",
                             help="small mutant panels and example counts (CI mode)")
+    p_benchmark.add_argument("--max-iterations", type=int, default=4,
+                             help="with --exam: repair-loop iteration budget")
+    p_benchmark.add_argument("--time-limit", type=int, default=60,
+                             help="with --exam: prover time limit per attempt (s)")
+
+    p_experiment = sub.add_parser(
+        "experiment",
+        help="run an exam as a (task x engine x arm x trial) matrix with an "
+             "append-only JSONL ledger; resumable",
+    )
+    p_experiment.add_argument("--tasks", type=Path, default=Path("benchmark/tasks"))
+    p_experiment.add_argument("-o", "--outdir", type=Path,
+                              default=Path("build/experiment"))
+    p_experiment.add_argument("--engines", nargs="+", default=["claude"],
+                              help="engine specs: claude | claude:<model> | "
+                                   "api:<provider>/<model> | file:<dir>")
+    p_experiment.add_argument("--arms", nargs="+", default=["full", "one-shot"],
+                              help="full | one-shot | ablated")
+    p_experiment.add_argument("--trials", type=int, default=3)
+    p_experiment.add_argument("--ledger", type=Path, default=None,
+                              help="JSONL ledger path (default: <outdir>/ledger.jsonl)")
+    p_experiment.add_argument("--max-iterations", type=int, default=4)
+    p_experiment.add_argument("--time-limit", type=int, default=60)
+    p_experiment.add_argument("--task", action="append", default=None,
+                              dest="only_tasks", metavar="TASK",
+                              help="restrict to this task (repeatable)")
+    p_experiment.add_argument("--no-resume", action="store_true",
+                              help="re-run cells already in the ledger "
+                                   "(appends; the newest row wins)")
+    p_experiment.add_argument("--summarize", type=Path, default=None,
+                              metavar="LEDGER",
+                              help="print the summary table for an existing "
+                                   "ledger and exit (no cells are run)")
 
     p_repair = sub.add_parser(
         "repair",
@@ -694,13 +727,40 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             try:
                 scores = run_repair_exam(args.tasks, args.outdir / "exam",
-                                         lambda: make_engine(args.engine))
+                                         lambda: make_engine(args.engine),
+                                         max_iterations=args.max_iterations,
+                                         time_limit=args.time_limit)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
             print(render_exam_report(scores))
             return 0 if scores and all(s.restored for s in scores) else 1
         return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
+    if args.command == "experiment":
+        from .benchmark.experiment import run_experiment, summarize_ledger
+
+        if args.summarize is not None:
+            if not args.summarize.exists():
+                print(f"no ledger at {args.summarize}", file=sys.stderr)
+                return 2
+            print(summarize_ledger(args.summarize))
+            return 0
+        ledger = args.ledger or (args.outdir / "ledger.jsonl")
+        try:
+            written = run_experiment(
+                args.tasks, args.outdir / "cells", args.engines, args.arms,
+                args.trials, ledger, max_iterations=args.max_iterations,
+                time_limit=args.time_limit,
+                only_tasks=set(args.only_tasks) if args.only_tasks else None,
+                resume=not args.no_resume, progress=print)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"\n{len(written)} cell-task row(s) appended -> {ledger}\n")
+        print(summarize_ledger(ledger))
+        if any(not row["restored"] for row in written):
+            return 1
+        return 0
     if args.command == "survey":
         return cmd_survey(args.paths, args.top, args.json)
     return 2

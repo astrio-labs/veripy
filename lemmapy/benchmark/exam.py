@@ -16,9 +16,10 @@ loop's contract is that the source is frozen.
 from __future__ import annotations
 
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from ..repair import Engine, repair_file
 
@@ -30,6 +31,13 @@ class ExamScore:
     iterations: int
     reason: str
     golden_lemmas: list[str] = field(default_factory=list)
+    # Telemetry for the experiment ledger: per-verify attempt records
+    # (from RepairOutcome.attempts), wall-clock for the whole task, and
+    # per-engine-call usage (zipped by call order — call order IS attempt
+    # order; None when the engine reports no usage).
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+    wall_ms: int = 0
+    usage: list[dict[str, Any] | None] = field(default_factory=list)
 
 
 def exam_tasks(tasks_root: Path) -> list[Path]:
@@ -41,7 +49,8 @@ def exam_tasks(tasks_root: Path) -> list[Path]:
 
 def run_repair_exam(tasks_root: Path, workdir: Path,
                     engine_factory: Callable[[], Engine],
-                    max_iterations: int = 4, time_limit: int = 60) -> list[ExamScore]:
+                    max_iterations: int = 4, time_limit: int = 60,
+                    only: set[str] | None = None) -> list[ExamScore]:
     from ..backends.dafny.encoder import load_proof_sidecar
 
     # The workspace must never overlap the corpus: with --tasks pointed at
@@ -57,6 +66,8 @@ def run_repair_exam(tasks_root: Path, workdir: Path,
     scores: list[ExamScore] = []
     for task_dir in exam_tasks(tasks_root):
         task_id = task_dir.name
+        if only is not None and task_id not in only:
+            continue
         exam_dir = workdir / task_id
         if exam_dir.is_symlink():
             # A symlink here could alias corpus data; remove the LINK
@@ -77,9 +88,12 @@ def run_repair_exam(tasks_root: Path, workdir: Path,
         stripped.write_text((task_dir / "task.py").read_text())
         # No sidecar is copied: that is the exam. Each task gets a FRESH
         # engine so a stateful engine (file:<dir>) replays its own attempt
-        # sequence per task instead of continuing a previous task's counter.
+        # sequence per task instead of continuing a previous task's counter
+        # (and so per-call usage attributes cleanly to one task).
         golden = load_proof_sidecar(task_dir / "task.py")
-        outcome = repair_file(stripped, exam_dir / "repair", engine_factory(),
+        engine = engine_factory()
+        t0 = time.monotonic()
+        outcome = repair_file(stripped, exam_dir / "repair", engine,
                               max_iterations=max_iterations,
                               time_limit=time_limit)
         scores.append(ExamScore(
@@ -88,6 +102,9 @@ def run_repair_exam(tasks_root: Path, workdir: Path,
             iterations=outcome.iterations,
             reason=outcome.reason,
             golden_lemmas=sorted(golden.lemmas),
+            attempts=outcome.attempts,
+            wall_ms=int((time.monotonic() - t0) * 1000),
+            usage=list(getattr(engine, "usage_log", [])),
         ))
     return scores
 

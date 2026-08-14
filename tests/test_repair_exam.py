@@ -12,9 +12,30 @@ from lemmapy.repair import make_engine
 REPO = Path(__file__).resolve().parent.parent
 
 
+ROSTER = ["below_zero", "gcd", "is_prime", "rolling_max", "sum_squares"]
+
+
 def test_exam_roster_is_the_sidecar_bearing_tasks():
     tasks = exam_tasks(REPO / "benchmark" / "tasks")
-    assert [t.name for t in tasks] == ["gcd"]
+    assert [t.name for t in tasks] == ROSTER
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+@pytest.mark.parametrize("task_id", ROSTER)
+def test_sidecar_is_load_bearing(task_id, tmp_path):
+    # The scientific control for every roster task — and a permanent
+    # tripwire against preamble growth making a sidecar vacuous: WITHOUT
+    # its sidecar the task must NOT verify (else the exam row measures
+    # nothing).
+    from lemmapy.agentio import verify_structured
+
+    src = tmp_path / "task.py"
+    src.write_text(
+        (REPO / "benchmark" / "tasks" / task_id / "task.py").read_text())
+    payload = verify_structured(src, tmp_path / "out", time_limit=60)
+    assert payload["status"] != "ok", (
+        f"{task_id} verifies WITHOUT its sidecar — the golden pack is "
+        f"vacuous and the exam row would measure nothing")
 
 
 def test_workdir_overlapping_corpus_refused(tmp_path):
@@ -94,7 +115,8 @@ def test_gcd_exam_restores_with_scripted_golden_pack(tmp_path):
     golden = (REPO / "benchmark" / "tasks" / "gcd" / "task.proofs.dfy").read_text()
     (attempts / "1.dfy").write_text(golden)
     scores = run_repair_exam(REPO / "benchmark" / "tasks", tmp_path / "work",
-                             lambda: make_engine(f"file:{attempts}"), time_limit=60)
+                             lambda: make_engine(f"file:{attempts}"),
+                             time_limit=60, only={"gcd"})
     assert [s.task_id for s in scores] == ["gcd"]
     assert scores[0].restored and scores[0].iterations == 1
     assert len(scores[0].golden_lemmas) == 8
