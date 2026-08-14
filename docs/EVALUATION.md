@@ -93,7 +93,7 @@ of the golden proof: eight lemmas under a different decomposition
 `#@ proof` clause names. Artifact:
 [exam-artifacts/gcd-engine-pack-2026-08.dfy](exam-artifacts/gcd-engine-pack-2026-08.dfy).
 
-### Run 2 — roster n=2 (gcd, modp), after slice 7 grew the corpus
+### Run 2 — roster n=2 (gcd, modp), after slice 7 grew the corpus (superseded by Run 3)
 
 **1/2 restored (50%) at the default 4-iteration budget.**
 
@@ -137,6 +137,41 @@ arms (full loop / one-shot / feedback-ablated) to separate what the loop
 contributes from what the model already knows, and per-proposal
 whitelist-rejection telemetry. Rates are reported with Wilson intervals —
 k/n at these trial counts is not a defensible point estimate on its own.
+
+### Run 3 — roster n=6 (2026-08-14), the current figure
+
+**4/6 restored at the default 4-iteration budget** — but the denominator
+needs reading, because one task never produced a measurement at all:
+
+| task | restored | iterations | note |
+| --- | --- | --- | --- |
+| below_zero | yes | 2 | |
+| gcd | yes | 1 | |
+| is_prime | yes | 2 | |
+| sum_squares | yes | 1 | |
+| modp | **no** | 4 (budget) | genuine failure: nonlinear mod-multiplication congruence not reached within budget |
+| rolling_max | **unmeasured** | 3 | the engine call exceeded its own 600 s wall — a HARNESS failure, not a statement about proof-completion |
+
+So: **4/5 = 80% of tasks that produced a measurement**, or 4/6 = 67% if the
+harness failure is counted against the engine. Both are stated because
+silently choosing the flattering denominator is exactly the kind of thing
+the trivial-spec floor exists to prevent elsewhere. `rolling_max` should be
+re-run before either number is quoted.
+
+Note the prompt-budget fix was already in effect for this run (prior
+proposals digested, the duplicate sidecar copy removed), so it reduced
+prompt growth without eliminating the 600 s wall on the hardest task —
+the engine's own thinking time, not just prompt size, is the binding
+constraint there.
+
+**What the run taught beyond the number.** It produced 15 unclassified
+failure records, and every one was a Dafny *resolution* error in an
+engine-written sidecar (`unresolved identifier: PyMaxSeq`, `wrong number
+of arguments`, `incorrect argument type`). That is the most common failure
+the repair loop actually hits, it was unlabelled, and it needs the
+opposite instruction from the obligation kinds it resembled: the sidecar
+did not typecheck, so the proof was never attempted and strengthening it
+is wrong. It is now its own `resolution` kind in the published taxonomy.
 
 **Methodology notes — two invalid runs preceded the first measurement, in
 opposite directions, and both are part of the record:**
