@@ -3,6 +3,7 @@ back to Python source lines."""
 
 from __future__ import annotations
 
+import functools
 import re
 import shutil
 import subprocess
@@ -63,6 +64,29 @@ class VerifyResult:
 
 def find_dafny() -> str | None:
     return shutil.which("dafny")
+
+
+@functools.lru_cache(maxsize=1)
+def dafny_version() -> str | None:
+    """The prover's own version string, or None if it cannot be determined.
+
+    Provenance in a verification report has to be the REAL version: a
+    backend must be able to tell whether "verified" meant the same thing
+    across two runs. (This field once held `result.summary` — "finished
+    with N verified, 0 errors" — which is an outcome, not an identity.)
+    Cached because it shells out and the answer cannot change mid-run."""
+    exe = find_dafny()
+    if exe is None:
+        return None
+    try:
+        proc = subprocess.run([exe, "--version"], capture_output=True,
+                              text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    first = (proc.stdout or proc.stderr).strip().splitlines()
+    return first[0].strip() if first else None
 
 
 def _map_line(line_map: dict[int, int], dafny_line: int) -> int | None:

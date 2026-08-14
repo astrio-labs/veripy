@@ -14,8 +14,9 @@ from pathlib import Path
 from tokenize import TokenError
 from typing import Any
 
-from .backends.dafny.driver import verify_dafny_file
+from .backends.dafny.driver import dafny_version, verify_dafny_file
 from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
+from .backends.dafny.preamble import PREAMBLE_VERSION
 from .frontend.extract import parse_source
 
 SCHEMA = "lemmapy-failures/1"
@@ -42,6 +43,14 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     payload: dict[str, Any] = {
         "schema": SCHEMA,
         "file": str(path),
+        # Provenance travels with the MACHINE payload, not only the human
+        # report: a host embedding this backend must be able to tell whether
+        # two "ok" verdicts meant the same thing. Present on every outcome,
+        # including tool errors.
+        "toolchain": {
+            "preamble_version": PREAMBLE_VERSION,
+            "dafny_version": dafny_version(),
+        },
         "status": None,
         "functions": [],
         "failures": [],

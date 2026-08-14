@@ -92,6 +92,57 @@ def test_report_records_encode_errors_without_dafny(tmp_path):
     assert payload["summary"]["errors"] == 1
 
 
+def test_report_records_the_real_dafny_version(tmp_path):
+    # Provenance must be an IDENTITY, not an outcome: this field once held
+    # `result.summary` ("finished with N verified, 0 errors"), which cannot
+    # tell a caller whether two runs meant the same thing.
+    from lemmapy.backends.dafny.driver import dafny_version
+
+    if find_dafny() is None:
+        pytest.skip("dafny not installed")
+    src = tmp_path / "m.py"
+    src.write_text(BUMP)
+    report = tmp_path / "report.json"
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False,
+                      report=report) == 0
+    payload = json.loads(report.read_text())
+    assert payload["dafny_version"] == dafny_version()
+    assert "verified" not in (payload["dafny_version"] or "")  # not a summary
+
+
+def test_dafny_version_is_cached_and_degrades_to_none(monkeypatch):
+    import lemmapy.backends.dafny.driver as drv
+
+    drv.dafny_version.cache_clear()
+    calls = {"n": 0}
+
+    class Proc:
+        returncode = 0
+        stdout = "4.11.0\n"
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        calls["n"] += 1
+        return Proc()
+
+    monkeypatch.setattr(drv, "find_dafny", lambda: "/fake/dafny")
+    monkeypatch.setattr(drv.subprocess, "run", fake_run)
+    assert drv.dafny_version() == "4.11.0"
+    assert drv.dafny_version() == "4.11.0"
+    assert calls["n"] == 1  # cached: shells out once per process
+
+    # An absent or crashing prover yields None, never a bogus identity.
+    drv.dafny_version.cache_clear()
+    monkeypatch.setattr(drv, "find_dafny", lambda: None)
+    assert drv.dafny_version() is None
+    drv.dafny_version.cache_clear()
+    monkeypatch.setattr(drv, "find_dafny", lambda: "/fake/dafny")
+    monkeypatch.setattr(drv.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    assert drv.dafny_version() is None
+    drv.dafny_version.cache_clear()
+
+
 # ---- island integrity ---------------------------------------------------------
 
 

@@ -37,6 +37,25 @@ def test_classify_obligation_kinds():
         assert classify_obligation(message) == kind, message
 
 
+def test_payload_carries_toolchain_provenance(tmp_path):
+    # A host embedding this backend must be able to tell whether two "ok"
+    # verdicts meant the same thing — provenance rides the MACHINE payload,
+    # not only the human report, and is present on every outcome.
+    from lemmapy.backends.dafny.preamble import PREAMBLE_VERSION
+
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    payload = verify_structured(src, tmp_path / "out")
+    assert payload["toolchain"]["preamble_version"] == PREAMBLE_VERSION
+    assert "dafny_version" in payload["toolchain"]
+
+    # ...including on a non-ok outcome (unreadable source -> tool-error).
+    missing = tmp_path / "nope.py"
+    bad = verify_structured(missing, tmp_path / "out2")
+    assert bad["status"] == "tool-error"
+    assert bad["toolchain"]["preamble_version"] == PREAMBLE_VERSION
+
+
 def test_encode_error_is_a_structured_payload(tmp_path):
     src = tmp_path / "m.py"
     src.write_text(
