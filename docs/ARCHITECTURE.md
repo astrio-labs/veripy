@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status: planned architecture, M0 built + M1 slices 1–2** (spec parser, runtime backend, conformance survey, basedpyright type gate, clean-bucket Dafny encoder + verifier driver with Python-line failure mapping, translation-validation harness `lemmapy difftest`; the rest is not implemented yet). The first half of this document describes the system we intend to build: components, data flow, and what is trusted vs. validated vs. verified. The numbered sections (§1–§9, "The soundness design") specify the mechanisms those components implement and the argument for why the result can be trusted. The system half will be revised against reality as code lands (see [ROADMAP.md](ROADMAP.md)); the soundness half is the design's source of truth.
+> **Status: planned architecture, M0 built + M1 slices 1–2** (spec parser, runtime backend, conformance survey, basedpyright type gate, clean-bucket Dafny encoder + verifier driver with Python-line failure mapping, translation-validation harness `lemmapy difftest`; the rest is not implemented yet). The first half of this document describes the system we intend to build: components, data flow, and what is trusted vs. validated vs. verified. The numbered sections (§1–§9, "The soundness design") specify the mechanisms those components implement and the argument for why the result can be trusted. The system half will be revised against reality as code lands (see the roadmap); the soundness half is the design's source of truth.
 
 ## Pipeline overview
 
@@ -52,7 +52,7 @@ Emits **two files per module**:
 
 This split is what makes the regenerate-and-reprove workflow (and agent integration) tractable. The encoder lowers via the catalog (§7 below): clean rules, exactly-right desugarings (`PyFloorDiv`/`PyMod`, slice clamping, truthiness), and Tier 2 curated models from the **versioned preamble** — one auditable file of stdlib models, lemmas, and its own differential test corpus.
 
-Between the front-end and the encoder sits a thin, backend-neutral **fragment IR**. Its only job is to keep the emitter swappable — Dafny is the v1 target; Strata's Laurel is the candidate second target (watchpoints in [ROADMAP.md](ROADMAP.md)). The IR is not a research artifact and stays as small as possible.
+Between the front-end and the encoder sits a thin, backend-neutral **fragment IR**. Its only job is to keep the emitter swappable — Dafny is the v1 target; Strata's Laurel is the candidate second target (watchpoints in the roadmap). The IR is not a research artifact and stays as small as possible.
 
 ### Guard generator
 
@@ -417,4 +417,4 @@ Each "not claimed" is either detected and rejected, guarded, or stated — never
 
 ---
 
-*Phasing and milestones for building these mechanisms: [ROADMAP.md](ROADMAP.md).*
+*Phasing and milestones for building these mechanisms are tracked in the project roadmap.*

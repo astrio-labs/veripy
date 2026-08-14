@@ -1,6 +1,6 @@
 # Evaluation
 
-> **Status: partial draft.** The proof-completion benchmark family (this document's core) is designed; the fragment-coverage corpus selection, success thresholds, and guard-overhead methodology are sketched but **not yet decided** — marked *open* below. Companion to [ROADMAP.md](ROADMAP.md) (which milestone produces what) and [ARCHITECTURE.md](ARCHITECTURE.md) (what the measurements are claims about).
+> **Status: partial draft.** The proof-completion benchmark family (this document's core) is designed; the fragment-coverage corpus selection, success thresholds, and guard-overhead methodology are sketched but **not yet decided** — marked *open* below. Companion to the roadmap (which milestone produces what) and [ARCHITECTURE.md](ARCHITECTURE.md) (what the measurements are claims about).
 
 ## Research questions
 
@@ -58,7 +58,7 @@ The source side of the corpus from step 1 above: annotated Python in, verificati
 
 ## Fragment coverage (RQ1)
 
-Run the conformance rules read-only over typed OSS repos; report the fraction of functions/LOC accepted and rule-fire frequencies (which drive v1.5 admission priorities, per [ROADMAP.md](ROADMAP.md)). Candidate corpora: `black`, `attrs`, `mypy`, `rich`, plus a stratified sample of strict-mode-clean packages. *(Open: final repo list, selection criteria, and what coverage number constitutes "enough" for the greenfield thesis — note the thesis frames the fragment as a generation target, so brownfield coverage is context, not a gate.)*
+Run the conformance rules read-only over typed OSS repos; report the fraction of functions/LOC accepted and rule-fire frequencies (which drive v1.5 admission priorities, per the roadmap). Candidate corpora: `black`, `attrs`, `mypy`, `rich`, plus a stratified sample of strict-mode-clean packages. *(Open: final repo list, selection criteria, and what coverage number constitutes "enough" for the greenfield thesis — note the thesis frames the fragment as a generation target, so brownfield coverage is context, not a gate.)*
 
 ## Guard overhead (RQ3)
 
@@ -128,7 +128,7 @@ makes an exam row that measures nothing, and the screen is now permanent
 as `test_sidecar_is_load_bearing`, parameterized over the roster — it also
 tripwires against preamble growth silently making a sidecar vacuous. (For
 the same reason the divisibility family is deliberately **not** promoted
-into the preamble; see ROADMAP.)
+into the preamble while the exam depends on those lemmas being absent.)
 
 Runs are now driven by `lemmapy experiment`, which executes an exam as a
 (task × engine × arm × trial) matrix against an append-only JSONL ledger:

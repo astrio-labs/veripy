@@ -88,7 +88,6 @@ The result is a precise, honest guarantee: *verified properties hold for every e
 | Document | Contents | Status |
 | --- | --- | --- |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture (components, data flow, trusted computing base, repo layout) and the soundness design (four layers, ownership rules, guard anatomy, assumptions A1–A7, lowering catalog) | ✅ (planned) |
-| [ROADMAP.md](docs/ROADMAP.md) | Milestones M0 → v2 with exit criteria; backend watchpoints | ✅ |
 | SUBSET.md | The versioned fragment definition (seeded from the lowering catalog) | planned |
 | DECISIONS.md | Resolved design decisions with rationale and revisit tripwires | planned |
 | RELATED-WORK.md | The verification landscape and positioning | planned |
