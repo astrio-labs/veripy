@@ -122,6 +122,25 @@ def test_check_names_in_fragment_candidates(tmp_path):
     assert "#@ ensures" in out  # says what to write, not just which
 
 
+def test_decorated_function_is_not_advertised_as_a_candidate(tmp_path):
+    # The encoder probe never looks at the decorator list, so a decorated
+    # function used to be listed as in-fragment. It is not (X-DECOR: the
+    # decorator replaces the function object), and the printed advice was
+    # wrong for it twice over: a contract block attaches above the FIRST
+    # DECORATOR, so "directly above `def`" produces an orphan, not a spec.
+    status, out = _check(tmp_path, (
+        "import functools\n"
+        "\n"
+        "\n"
+        "@functools.cache\n"
+        "def double(x: int) -> int:\n"
+        "    return x * 2\n"
+    ))
+    assert status == 0
+    assert "double" not in out
+    assert "ready to annotate" not in out
+
+
 def test_check_stays_quiet_when_nothing_is_a_candidate(tmp_path):
     status, out = _check(tmp_path, (
         "def uses_a_set(xs: list[int]) -> int:\n"

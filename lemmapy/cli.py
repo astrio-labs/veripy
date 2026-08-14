@@ -77,6 +77,17 @@ def _fragment_candidates(path: Path) -> list[str]:
     for node in tree.body:
         if not isinstance(node, _ast.FunctionDef):
             continue
+        if node.decorator_list:
+            # X-DECOR: the fragment excludes decorated functions ("function
+            # surgery" — the decorator replaces the function object, so the
+            # body Dafny verifies is not what runs). The encoder probe below
+            # cannot see this: it encodes the body and never looks at the
+            # decorator list, so it would happily report a candidate. Two
+            # things would then go wrong at once — the user is sent to
+            # annotate a function outside the fragment, and the placement
+            # advice is wrong for it besides, since a contract block must sit
+            # above the FIRST DECORATOR, not above the `def`.
+            continue
         # A trivial `ensures True` is enough to ask the encoder "would you
         # take this body?" without inventing a property for the user.
         probe = FunctionSpec(
