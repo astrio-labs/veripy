@@ -68,6 +68,10 @@ Clause syntax (grammar v0):
 - Expressions: Python operators, plus `==>` (implies), `<==>` (iff), and
     forall X in range(A, B) :: BODY        exists X in range(A, B) :: BODY
     forall X in <list expr> :: BODY        exists X in <list expr> :: BODY
+- A quantifier used as an operand of `and`/`or` MUST be parenthesized —
+  its `::` body would otherwise swallow the rest of the line:
+      GOOD:  result == (n >= 2 and (forall d in range(2, n) :: n % d != 0))
+      BAD:   result == (n >= 2 and forall d in range(2, n) :: n % d != 0)
 - Available: len, range, sum, min, max, abs, all, any, slicing `xs[a:b]`,
   indexing, arithmetic (`//`, `%`; no `/`, no `**`).
 - Do NOT write `#@ proof` clauses — there is no lemma sidecar in this exam.
@@ -76,6 +80,12 @@ Write the STRONGEST specification you can that is TRUE of this implementation:
 a postcondition that pins down the result exactly, not merely a property it
 happens to satisfy. A specification weak enough to hold of a buggy version of
 this function scores poorly."""
+
+# Bump whenever SPEC_RULES changes: kill rates are only comparable across
+# engines that saw the SAME instructions, so the version travels into every
+# ledger row. v1 omitted the quantifier-parenthesization rule, which cost
+# one otherwise-correct answer a task.
+SPEC_RULES_VERSION = "spec-rules/2"
 
 STRIP_ALL = "all"
 STRIP_PROOF = "proof"
@@ -281,6 +291,7 @@ def build_spec_request(source: str, task_id: str, attempt: int,
                        history: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "schema": "lemmapy-specwrite-request/1",
+        "rules_version": SPEC_RULES_VERSION,
         "rules": SPEC_RULES,
         "task": task_id,
         "attempt": attempt,
@@ -306,6 +317,7 @@ class SpecExamScore:
     golden_mutants_killed: int = 0
     clause_counts: dict[str, int] = field(default_factory=dict)
     retry_reasons: list[str] = field(default_factory=list)
+    rules_version: str = SPEC_RULES_VERSION
     wall_ms: int = 0
     usage: list[dict[str, Any] | None] = field(default_factory=list)
 

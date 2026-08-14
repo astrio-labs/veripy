@@ -127,12 +127,55 @@ The section reviewers will remember. Everything here is already recorded.
 | T4 | Spec-writing: engine kill rate vs golden on the identical panel, per task | ◐ 4-task pilot done; 12-task run in flight |
 | T5 | Engine-pack structural divergence from golden | ⬛ seed: gcd, 8 lemmas under a different decomposition (`DivModRel`, `MulMono`, …; 130 lines vs golden 115), sharing only the entry point the frozen `#@ proof` clause names |
 
-**Pilot signal already observed** (4 tasks, one engine): the exam
-discriminates — three tasks matched golden kill rates exactly, one scored
-below. And spec **strength** and **provability** separate: an engine spec
-that killed every mutant golden killed still failed to prove, reaching a
-lower ladder height. Worth a sentence: these are different axes, and a
-benchmark that reports only "verified" conflates them.
+**⚠ The prediction this section was written to confirm is FALSIFIED, and
+the paper must lead with that.**
+
+First full run (12 tasks, `claude:sonnet`, one trial): **11/12 valid, and
+every valid answer scored 100% kill rate — exactly matching golden.** The
+predicted "engine specs score below golden" separation did not appear.
+
+Diagnosis, and it is not "the model is good":
+
+⬛ **The panels are too small to rank anything.** Median panel is **2.5
+mutants**; **6 of 12 tasks have ≤2**; `below_threshold` has **exactly
+one**. A kill rate computed over one mutant carries one bit. The metric
+cannot resolve differences between strong specifications because there is
+almost nothing to resolve them with.
+
+```
+panel size:  1 1 2 2 2 2 2 3 3 4 5 6 8      (n=12, total 40, median 2.5)
+operators:   `+`->`-` (8), `1`->`2` (8), `0`->`1` (6), `-`->`+` (3),
+             `==`->`!=` (3), `<`->`<=` (2)
+```
+
+**The honest claim, revised.** Mutant kill rate is a *sound but
+low-resolution* instrument: high precision at the bottom of the range —
+it decisively catches specifications that every other checker in the
+toolchain accepts (⬛ 0/3 on both vacuous and tautological specs) — and
+**no resolution at the top** on this corpus. Ranking strong specifications
+against each other needs materially larger panels.
+
+This reframes the contribution rather than sinking it, and the CFP
+explicitly invites negative results. It also yields the concrete next
+experiment (WS6): extend the operator set beyond the current five classes
+and re-baseline. Report the before/after panel sizes — the fact that
+resolution is a *function of operator design*, and that most spec-quality
+work never states its panel size, is itself a finding worth publishing.
+
+**Also observed:** spec **strength** and **provability** separate — an
+engine spec matching golden's kill rate still failed to prove, reaching a
+lower ladder height. Different axes; a benchmark reporting only "verified"
+conflates them.
+
+**Grammar-ergonomics confound, found and fixed.** The single invalid
+answer (`is_prime`) was not a weak specification: the engine wrote the
+correct two-way implication form and was rejected because a quantifier
+used as an operand of `and`/`or` must be parenthesized — a rule the
+instructions never stated. The exam was partly measuring "did you guess
+the syntax convention." Rules updated (`spec-rules/2`) and versioned into
+every ledger row, since kill rates are only comparable across engines that
+saw the same instructions. Worth a sentence in the paper: a spec-writing
+exam doubles as a grammar-ergonomics probe, and this is what it found.
 
 ### 7. Limitations (~0.5pp) — written before reviewers write them
 - Roster n=5 for proof-repair; 12-task corpus. Methodology + seed corpus,
