@@ -23,7 +23,7 @@ A task is one annotated-Python module (`task.py`, plus an optional
 | --- | --- | --- |
 | R0 | **gate** | specs parse; basedpyright strict clean |
 | R1 | **hunt** | CrossHair finds no counterexample against the specs |
-| R2 | **mutants** | **spec strength**: an auto-generated panel of single-fault mutants (operator swaps, off-by-ones — deterministic, no RNG) must each be *refuted* from the specs alone; kill rate is the score, survivors are listed |
+| R2 | **mutants** | **spec strength**: an auto-generated panel of single-fault mutants (operator swaps, off-by-ones — deterministic, no RNG) must each be *refuted* from the specs alone; the refutation rate is the score, survivors are listed. A mutant that makes the code **crash** (IndexError, ZeroDivisionError, …) is reported separately and **never credited**: the interpreter caught it, not the specification, and `#@ ensures True` catches it just as well |
 | R3 | **encode** | the fragment encoder accepts the module |
 | R4 | **prove** | the prover verifies — proof additions allowed (executable `assert`s, `#@ proof` clauses, sidecar lemmas); **specs are frozen** |
 | R5 | **fidelity** | the prover-compiled model agrees with CPython under Hypothesis |
@@ -82,23 +82,35 @@ Two properties fall out of this design that no static benchmark has:
      for a mutant the golden run was forgiven.
 
    The anti-gaming property is the design's whole point, and it is
-   measured, not asserted. Two worthless specifications — a tautological
-   postcondition (`#@ ensures result == result`) and a vacuous precondition
-   (`#@ requires x > 0 and x < 0`, satisfied by no input) — were run
-   through the full ladder:
+   measured, not asserted. An adversarial arm replaces every task's
+   specification with `#@ ensures True` (keeping only the golden
+   `#@ requires`, so the inputs are the same) and runs the whole corpus:
 
    ```
-   task     gate  hunt  mutants  encode  prove  fidelity  height
-   triv     pass  pass  0/3      pass    pass   pass      2/6
-   vac      pass  pass  0/3      pass    pass   FAIL      2/6
+   arm                    refuted    crashed   valid
+   tautology (ensures True)  0/39 (0%)     15    12/12
+   golden                   26/39 (67%)    13      —
    ```
 
-   Both clear the type gate, the runtime-contract hunt, the encoder, and
-   the SMT prover — *every automated check the toolchain has* — and only
-   the mutant panel reports them as worthless, naming in its survivor list
-   each bug they cannot see. That is the case for measuring spec strength
-   separately: passing a verifier says nothing about whether the property
-   proved was worth proving.
+   All twelve tautologies clear the type gate, the runtime-contract hunt,
+   the encoder, and the SMT prover — *every automated check the toolchain
+   has* — and the panel scores them at zero.
+
+   **This measurement is the reason R2 separates refutations from
+   crashes.** Before the split, a tautology scored **38%**, because
+   CrossHair exits non-zero on an uncaught `IndexError` just as it does on
+   a violated postcondition, and the harness credited both. The metric's
+   zero point was 38%, and on `max_element` and `gcd` a tautology was
+   *indistinguishable from golden*. Counting only refutations moves the
+   floor to a true 0% — and honestly lowers the golden baseline from a
+   flattering 39/39 to **26/39**, because 13 of golden's own kills were
+   crashes too. A narrower claim, but a real one, and the dynamic range it
+   opens (0% → 67%) is what lets the rung rank anything at all.
+
+   `max_element` is now visibly the corpus's weakest specification (0/1):
+   its single mutant is caught only by a crash. That is exactly the kind of
+   gap the rung exists to surface, and it was invisible while crashes
+   counted.
 
 ## Backend policy (and the "ultimate benchmark" question)
 
@@ -151,7 +163,7 @@ max_element            pass  pass  1/1      pass    pass   pass      6/6
 rolling_max            pass  pass  5/5      pass    pass   pass      6/6
 sum_squares            pass  pass  6/6      pass    pass   pass      6/6
 
-tasks: 12   full-ladder: 12   spec strength: 42/42 killed (+1 adjudicated)
+tasks: 12   full-ladder: 12   spec strength: 26/39 mutants REFUTED by the specs (67%); 13 crashed (caught by the interpreter, not the spec — never credited)
 ```
 
 The benchmark's first run also exercised its adjudication path: the raw run

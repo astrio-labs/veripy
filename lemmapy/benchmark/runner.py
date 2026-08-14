@@ -52,8 +52,10 @@ class TaskScore:
     task_id: str
     rungs: list[Rung] = field(default_factory=list)
     mutants_total: int = 0
-    mutants_killed: int = 0
+    mutants_killed: int = 0   # REFUTED by the specification
+    mutants_crashed: int = 0  # caught by the interpreter, not by the spec
     survivors: list[str] = field(default_factory=list)
+    crashers: list[str] = field(default_factory=list)
     adjudicated: int = 0  # mutants ruled equivalent in meta.json, excluded
 
     @property
@@ -75,9 +77,20 @@ def _find_crosshair() -> str | None:
     return str(candidate) if candidate.exists() else None
 
 
+# A CrossHair diagnostic that begins "false when calling" is a CONTRACT
+# refutation — the specification itself was violated. Anything else it
+# reports (IndexError, ZeroDivisionError, TypeError, ...) is the
+# interpreter catching a fault, which every specification "catches"
+# equally, including `#@ ensures True`. Crediting those to the spec is what
+# gave a tautology 38% spec strength on this corpus.
+_REFUTATION_MARKER = "error: false when calling"
+
+
 def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int) -> tuple[str, str]:
-    """Emit runtime contracts and let CrossHair hunt. Returns (verdict, detail)
-    with verdict one of: 'clean', 'counterexample', 'error'."""
+    """Emit runtime contracts and let CrossHair hunt. Returns (verdict,
+    detail) with verdict one of: 'clean', 'counterexample' (the SPEC was
+    refuted), 'crash' (an uncaught exception — a real fault, but not one
+    the specification discriminated), or 'error'."""
     exe = _find_crosshair()
     if exe is None:
         return ERROR, "crosshair not installed"
@@ -105,7 +118,11 @@ def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int) -> 
     if proc.returncode == 0:
         return "clean", ""
     if proc.returncode == 1:
-        return "counterexample", (proc.stdout + proc.stderr).strip().splitlines()[0] if (proc.stdout + proc.stderr).strip() else ""
+        output = (proc.stdout + proc.stderr).strip()
+        first = output.splitlines()[0] if output else ""
+        if _REFUTATION_MARKER in output:
+            return "counterexample", first
+        return "crash", first
     return ERROR, f"crosshair exited {proc.returncode}"
 
 
@@ -137,12 +154,15 @@ def run_task(
     else:
         score.rungs.append(Rung("gate", PASS))
 
-    # R1: hunt
+    # R1: hunt. A crash is as much a failure here as a refutation — the
+    # module must be clean against its own specs either way.
     verdict, detail = _hunt(source, task_id, workdir / "hunt", hunt_timeout)
     if verdict == "clean":
         score.rungs.append(Rung("hunt", PASS))
     else:
-        score.rungs.append(Rung("hunt", FAIL if verdict == "counterexample" else ERROR, detail))
+        score.rungs.append(Rung(
+            "hunt", FAIL if verdict in ("counterexample", "crash") else ERROR,
+            detail))
         return score
 
     # R2: mutant panel (spec strength)
@@ -161,10 +181,17 @@ def run_task(
         verdict, _ = _hunt(mutated, f"{task_id}_m{i}", workdir / "mutants", hunt_timeout)
         if verdict == "counterexample":
             score.mutants_killed += 1
+        elif verdict == "crash":
+            # The interpreter caught this fault, not the specification. A
+            # tautological spec "kills" it just as well, so it carries no
+            # information about spec strength and is never credited.
+            score.mutants_crashed += 1
+            score.crashers.append(description)
         elif verdict == "clean":
             score.survivors.append(description)
-        # errors excluded from both counts
-    analysis_errors = score.mutants_total - score.mutants_killed - len(score.survivors)
+        # errors excluded from all counts
+    analysis_errors = (score.mutants_total - score.mutants_killed
+                       - score.mutants_crashed - len(score.survivors))
     if score.mutants_total == 0:
         score.rungs.append(Rung("mutants", SKIP, "no mutation sites"))
     elif analysis_errors:
@@ -181,11 +208,15 @@ def run_task(
     elif score.survivors:
         score.rungs.append(Rung(
             "mutants", FAIL,
-            f"{score.mutants_killed}/{score.mutants_total} killed; "
-            f"survivors: {'; '.join(score.survivors[:3])}",
+            f"{score.mutants_killed}/{score.mutants_total} refuted"
+            + (f"; {score.mutants_crashed} crashed" if score.mutants_crashed else "")
+            + f"; survivors: {'; '.join(score.survivors[:3])}",
         ))
     else:
-        score.rungs.append(Rung("mutants", PASS, f"{score.mutants_killed}/{score.mutants_total} killed"))
+        score.rungs.append(Rung(
+            "mutants", PASS,
+            f"{score.mutants_killed}/{score.mutants_total} refuted"
+            + (f"; {score.mutants_crashed} crashed" if score.mutants_crashed else "")))
 
     # R3: encode
     try:
@@ -269,12 +300,15 @@ def render_report(scores: list[TaskScore]) -> str:
         lines.append(f"{s.task_id:<22} " + " ".join(cells) + f" {s.height}/6")
     full = sum(1 for s in scores if s.height == 6)
     killed = sum(s.mutants_killed for s in scores)
+    crashed = sum(s.mutants_crashed for s in scores)
     total = sum(s.mutants_total for s in scores)
     lines.append("-" * len(header))
     lines.append(
         f"tasks: {len(scores)}   full-ladder: {full}   "
-        f"spec strength: {killed}/{total} mutants killed"
+        f"spec strength: {killed}/{total} mutants REFUTED by the specs"
         + (f" ({100 * killed / total:.0f}%)" if total else "")
+        + (f"; {crashed} crashed (caught by the interpreter, not the spec — "
+           f"never credited)" if crashed else "")
     )
     return "\n".join(lines)
 
@@ -287,6 +321,7 @@ def scores_to_json(scores: list[TaskScore]) -> dict:
                 "height": s.height,
                 "rungs": [{"name": r.name, "status": r.status, "detail": r.detail} for r in s.rungs],
                 "mutants": {"total": s.mutants_total, "killed": s.mutants_killed,
+                            "crashed": s.mutants_crashed, "crashers": s.crashers,
                             "survivors": s.survivors, "adjudicated_equivalent": s.adjudicated},
             }
             for s in scores

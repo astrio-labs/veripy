@@ -186,8 +186,12 @@ def _spec_row(score: SpecExamScore, *, run_id: str, engine: str, arm: str,
         "proposals": score.attempts, "rejections": len(score.retry_reasons),
         "golden_lemmas": 0,
         "height": score.height, "golden_height": score.golden_height,
-        "mutants_total": score.mutants_total,
+        # `mutants_total` is the SCORED denominator (golden's panel), so an
+        # invalid or refuted answer counts 0/N rather than vanishing.
+        "mutants_total": score.scored_total,
+        "engine_panel_total": score.mutants_total,
         "mutants_killed": score.mutants_killed,
+        "mutants_crashed": score.mutants_crashed,
         "golden_mutants_total": score.golden_mutants_total,
         "golden_mutants_killed": score.golden_mutants_killed,
         "survivors": score.survivors, "clause_counts": score.clause_counts,
@@ -376,7 +380,9 @@ def summarize_ledger(ledger: Path) -> str:
             f"spec strength: engine {_rate(spec_rows, 'mutants_killed', 'mutants_total')}"
             f" vs golden "
             f"{_rate(spec_rows, 'golden_mutants_killed', 'golden_mutants_total')}"
-            f"   (valid trials only; an invalid answer contributes no panel)")
+            f"   (refutations only — crashes never credited; every attempted "
+            f"task scored over GOLDEN's panel, so a failed answer is 0/N, "
+            f"not excluded)")
     if rules:
         breakdown = ", ".join(f"{r}: {c}" for r, c in sorted(rules.items()))
         lines.append(f"whitelist rejections by rule: {breakdown}")

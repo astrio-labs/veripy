@@ -345,9 +345,14 @@ def test_spec_writing_matrix_records_strength(tmp_path, monkeypatch):
         not in completed_cells(ledger)
 
 
-def test_invalid_spec_answer_is_not_counted_as_zero_kills(tmp_path, monkeypatch):
-    # "No panel run" must never be pooled as "killed nothing" — that would
-    # understate every engine that occasionally returns a malformed answer.
+def test_failed_spec_answer_scores_zero_against_goldens_panel(tmp_path,
+                                                              monkeypatch):
+    """A malformed or refuted answer must score 0/N, never vanish.
+
+    Dropping it from the engine's denominator while golden keeps its full
+    panel makes FAILING the profitable move: an engine that answers only
+    the tasks it is sure of would outscore one that attempts them all.
+    """
     import lemmapy.benchmark.experiment as exp_mod
     from lemmapy.benchmark.specexam import SpecExamScore
 
@@ -368,10 +373,13 @@ def test_invalid_spec_answer_is_not_counted_as_zero_kills(tmp_path, monkeypatch)
     ledger = tmp_path / "ledger.jsonl"
     empty = tmp_path / "empty"
     empty.mkdir()
-    run_experiment(corpus, tmp_path / "cells", [f"file:{empty}"], ["one-shot"],
-                   1, ledger, exam="spec-writing")
+    written = run_experiment(corpus, tmp_path / "cells", [f"file:{empty}"],
+                             ["one-shot"], 1, ledger, exam="spec-writing")
+    # The failed task carries golden's panel as its denominator.
+    beta = next(r for r in written if r["task"] == "beta")
+    assert beta["mutants_total"] == 4 and beta["mutants_killed"] == 0
     table = summarize_ledger(ledger)
-    assert "spec strength: engine 100%" in table  # not 50%
+    assert "spec strength: engine 50%" in table   # 4 refuted of 8 attempted
     assert "ok (restored/valid): 1/2" in table    # validity reported separately
 
 

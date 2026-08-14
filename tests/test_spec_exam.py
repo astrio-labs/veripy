@@ -394,6 +394,88 @@ def test_weak_spec_scores_low_kill_rate(tmp_path, monkeypatch):
     assert "0/3" in report and "3/3" in report
 
 
+def test_unsound_spec_scores_zero_not_one_hundred(tmp_path, monkeypatch):
+    """Writing a FALSE spec must never beat writing a true-but-weak one.
+
+    A spec refuted at R1 short-circuits before the mutant panel, so the
+    engine's own panel is 0/0. Scoring against that denominator drops the
+    task from the engine's aggregate while golden still contributes its
+    full panel — inverting the incentive. The denominator is golden's panel
+    on every row.
+    """
+    import lemmapy.benchmark.specexam as spec_mod
+    from lemmapy.benchmark.runner import FAIL, PASS, Rung, TaskScore
+
+    def fake(task_dir, workdir, **kwargs):
+        score = TaskScore(task_id="t")
+        if "golden" in str(task_dir):
+            score.rungs = [Rung(n, PASS) for n in
+                           ["gate", "hunt", "mutants", "encode", "prove",
+                            "fidelity"]]
+            score.mutants_total = 4
+            score.mutants_killed = 4
+            return score
+        # The engine's spec is refuted by CrossHair at R1: no panel runs.
+        score.rungs = [Rung("gate", PASS), Rung("hunt", FAIL, "false when …")]
+        score.mutants_total = 0
+        score.mutants_killed = 0
+        return score
+
+    monkeypatch.setattr(spec_mod, "run_task", fake)
+    corpus = _mini_corpus(tmp_path)
+    (score,) = run_spec_exam(corpus, tmp_path / "work",
+                             lambda: _engine_replaying(MINI))
+    assert score.valid              # mechanically well-formed…
+    assert score.mutants_total == 0  # …but its own panel never ran
+    assert score.scored_total == 4   # scored against GOLDEN's panel
+    assert score.kill_rate == 0.0    # not None, and emphatically not 1.0
+    report = render_spec_exam_report([score])
+    assert "0/4" in report
+    assert "engine 0/4" in report
+
+
+def test_invalid_answer_also_scores_against_golden_panel(tmp_path, monkeypatch):
+    import lemmapy.benchmark.specexam as spec_mod
+
+    monkeypatch.setattr(spec_mod, "run_task", _fake_run_task(6, 4, 4))
+    corpus = _mini_corpus(tmp_path)
+    (score,) = run_spec_exam(corpus, tmp_path / "work",
+                             lambda: _engine_replaying("def broken(:\n"),
+                             retries=0)
+    assert not score.valid
+    assert score.scored_total == 4 and score.mutants_killed == 0
+    assert "0/4" in render_spec_exam_report([score])
+
+
+def test_crashes_are_not_credited_as_spec_strength(tmp_path, monkeypatch):
+    # A mutant the INTERPRETER catches is caught equally by `ensures True`,
+    # so it carries no information about the specification and is reported
+    # separately rather than counted.
+    import lemmapy.benchmark.specexam as spec_mod
+    from lemmapy.benchmark.runner import PASS, Rung, TaskScore
+
+    def fake(task_dir, workdir, **kwargs):
+        score = TaskScore(task_id="t")
+        score.rungs = [Rung(n, PASS) for n in ["gate", "hunt", "mutants"]]
+        score.mutants_total = 4
+        if "golden" in str(task_dir):
+            score.mutants_killed = 4
+        else:
+            score.mutants_killed = 0
+            score.mutants_crashed = 3   # all "kills" were crashes
+            score.survivors = ["line 4: `<` -> `<=`"]
+        return score
+
+    monkeypatch.setattr(spec_mod, "run_task", fake)
+    corpus = _mini_corpus(tmp_path)
+    (score,) = run_spec_exam(corpus, tmp_path / "work",
+                             lambda: _engine_replaying(MINI))
+    assert score.kill_rate == 0.0 and score.mutants_crashed == 3
+    report = render_spec_exam_report([score])
+    assert "engine 0/4" in report
+    assert "crashed" in report and "never credited" in report
+
+
 def test_no_sidecar_is_staged_for_scoring(tmp_path, monkeypatch):
     # A stale sidecar in the scored dir would hand the run lemmas nobody
     # earned; assert on what run_task actually sees.

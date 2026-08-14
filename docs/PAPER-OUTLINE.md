@@ -34,17 +34,29 @@ Working title: *Measuring Specification Strength, Not Just Proof Success.*
 ### 1. Introduction (~0.75pp)
 The hook is the measured anti-gaming result, stated early:
 
-> ⬛ Two worthless specifications — a tautological postcondition and a
-> vacuous precondition satisfied by no input — clear the type gate, the
-> runtime-contract hunt, the encoder, and the SMT prover. Every automated
-> check in the toolchain accepts them. Only the mutant panel reports them
-> as empty (0/3 each), naming in its survivor list each fault they cannot
-> see.
->
-> `lemmapy benchmark --tasks <vacuity-corpus> --quick`
+> ⬛ Replace every specification in the corpus with `#@ ensures True`. All
+> twelve tautologies clear the type gate, the runtime-contract hunt, the
+> encoder, and the SMT prover — every automated check the toolchain has.
+> The mutant panel scores them **0/39**, against **26/39** for the
+> hand-written specifications.
 
 That is the paper in one experiment: *passing a verifier says nothing about
 whether the property proved was worth proving.*
+
+**And the second-order result is the methodological one.** Getting that
+number right required separating two things the obvious implementation
+conflates. CrossHair exits non-zero both when a postcondition is violated
+and when the mutant simply *crashes*, and crediting both gave the tautology
+**38%** — with `max_element` and `gcd` scoring *identically to golden*. The
+metric's zero point was 38%, and nobody reading "kill rate" would know.
+Counting only refutations moves the floor to a true 0% and honestly lowers
+the golden baseline from a flattering 39/39 to 26/39, because 13 of
+golden's own kills were crashes. Narrower claim, real dynamic range.
+
+Worth stating plainly in the paper: this class of error is invisible to
+every check except an adversarial arm that *should* score zero. Any
+mutation-based spec-quality metric that does not report its trivial-spec
+floor is not interpretable, and we did not find one that does.
 
 ### 2. Substrate (~1.5pp)
 Annotated production Python (`#@` comments) → typed fragment → Dafny.
@@ -59,8 +71,8 @@ no RNG) and why determinism is what makes cross-condition comparison legal.
 Adjudication protocol for equivalent mutants (raw *and* adjudicated rates
 reported).
 
-⬛ Golden baseline: 12 tasks, 12/12 full ladder, 39/39 mutants killed.
-`lemmapy benchmark`
+⬛ Golden baseline: 12 tasks, 12/12 full ladder, **26/39 mutants refuted
+(67%)**, 13 crashed and not credited. `lemmapy benchmark`
 
 ### 4. Derived exams (~1.5pp)
 - **Proof-repair**: strip `.proofs.dfy`, restore R4 under frozen specs.
