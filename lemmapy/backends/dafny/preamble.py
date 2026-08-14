@@ -8,11 +8,11 @@ The divisibility lemma pack (needed for e.g. gcd's maximality ensures, which
 times out without it) is designated future preamble work — see ROADMAP.
 """
 
-PREAMBLE_VERSION = "0.5"
+PREAMBLE_VERSION = "0.6"
 
 PREAMBLE = """\
-// LemmaPy Dafny preamble v0.5 -- Python-exact arithmetic, indexing,
-// slicing, Optionals, folds, powers (ARCHITECTURE §7.1, §7 catalog).
+// LemmaPy Dafny preamble v0.6 -- Python-exact arithmetic, indexing,
+// slicing, Optionals, folds, powers, outcomes (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int
   requires b != 0
@@ -84,5 +84,30 @@ function PyPow(b: int, e: int): int
   decreases e
 {
   if e == 0 then 1 else b * PyPow(b, e - 1)
+}
+
+// Exceptions as VALUES (ARCHITECTURE §7.4). A function that can raise
+// returns PyOutcome<T> instead of T, so "this call can fail" is visible in
+// the type and provable in a postcondition:
+//     ensures b == 0 ==> result == PyErr(ZeroDivisionError)
+// The hierarchy is explicit and finite on purpose: `except` matches
+// against these constructors, and a bare `except`/`BaseException` would
+// claim to catch failures the model does not represent.
+datatype PyExn = ValueError | IndexError | ZeroDivisionError | TypeError | KeyError
+
+// IsFailure/PropagateFailure/Extract must be MEMBERS, not free functions:
+// that is exactly what makes the datatype failure-compatible, so a caller
+// can write `var x :- f(a);` and get Python's propagate-on-raise for free.
+// Declared free, every `:-` site fails resolution with an error pointing
+// at the call rather than the declaration.
+datatype PyOutcome<T> = PyOk(value: T) | PyErr(exn: PyExn)
+{
+  predicate IsFailure() { this.PyErr? }
+  function PropagateFailure<U>(): PyOutcome<U>
+    requires IsFailure()
+  { PyErr(this.exn) }
+  function Extract(): T
+    requires !IsFailure()
+  { this.value }
 }
 """
