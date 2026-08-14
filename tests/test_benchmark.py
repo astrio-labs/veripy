@@ -64,7 +64,7 @@ def test_errored_mutant_analysis_blocks_the_rung(tmp_path, monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_hunt(source, name, workdir, timeout):
+    def fake_hunt(source, name, workdir, timeout, wall=None):
         calls["n"] += 1
         if calls["n"] == 1:
             return "clean", ""  # R1 on the original passes
@@ -97,7 +97,7 @@ def test_mixed_survivor_and_error_panel_reports_error(tmp_path, monkeypatch):
 
     verdicts = iter(["clean", "counterexample", "clean", "error-sentinel"])
 
-    def fake_hunt(source, name, workdir, timeout):
+    def fake_hunt(source, name, workdir, timeout, wall=None):
         v = next(verdicts, "error-sentinel")
         if v == "error-sentinel":
             return runner_mod.ERROR, "crosshair exited 2"
@@ -110,6 +110,298 @@ def test_mixed_survivor_and_error_panel_reports_error(tmp_path, monkeypatch):
     mutants = next(r for r in score.rungs if r.name == "mutants")
     assert mutants.status == runner_mod.ERROR
     assert "survivor" in mutants.detail and "analysis error" in mutants.detail
+
+
+def test_unadjudicated_timeout_fails_the_rung(tmp_path, monkeypatch):
+    # A wall exhaustion is inconclusive (R4 proves the ORIGINAL terminates,
+    # not the mutant): without human adjudication it fails the rung, like a
+    # survivor, with guidance pointing at meta.json.
+    from lemmapy.benchmark import runner as runner_mod
+
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(
+        "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    )
+    (task_dir / "meta.json").write_text('{"id": "t"}')
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "clean", ""  # R1 on the original
+        if calls["n"] == 2:
+            return "timeout", "hunt wall exceeded"
+        return "counterexample", ""
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=4)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == "fail"
+    assert "unadjudicated timeout" in mutants.detail
+    assert "timeout_kills" in mutants.detail
+    assert len(score.timeouts) == 1
+
+
+def test_adjudicated_timeout_counts_as_visible_kill(tmp_path, monkeypatch):
+    # With the divergence adjudicated in meta.json, the timeout is a kill,
+    # visibly labeled in the passing rung.
+    import json as json_mod
+
+    from lemmapy.benchmark import runner as runner_mod
+    from lemmapy.benchmark.mutate import generate_mutations
+
+    src = "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    first_desc = generate_mutations(src, max_mutants=4)[0][0]
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(src)
+    (task_dir / "meta.json").write_text(
+        json_mod.dumps({"id": "t", "timeout_kills": [first_desc]}))
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "clean", ""
+        if calls["n"] == 2:
+            return "timeout", "hunt wall exceeded"
+        return "counterexample", ""
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=4)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == "pass"
+    assert "adjudicated timeout kill" in mutants.detail
+    assert score.adjudicated_timeouts == 1
+    assert score.mutants_killed == score.mutants_total
+
+
+def test_mutant_descriptions_are_unique_within_a_panel():
+    # The adjudication channels key on the description, so a collision
+    # would let ONE human ruling apply to several mutants (a ruling about
+    # an equivalent mutant could erase a real spec weakness from the
+    # denominator). Descriptions carry the column for exactly this reason.
+    from collections import Counter
+    from pathlib import Path
+
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int, c: int) -> int:\n"
+        "    if a + b + c > 0:\n"
+        "        return 1\n"
+        "    return 0\n"
+    )
+    descs = [d for d, _ in generate_mutations(src, max_mutants=16)]
+    assert len(descs) >= 2
+    assert not [k for k, v in Counter(descs).items() if v > 1]
+
+    # ...and across the shipped corpus, whose panels the published
+    # scorecard rests on.
+    tasks = Path(__file__).resolve().parent.parent / "benchmark" / "tasks"
+    for task_dir in sorted(tasks.iterdir()):
+        task_py = task_dir / "task.py"
+        if not task_py.exists():
+            continue
+        panel = [d for d, _ in generate_mutations(task_py.read_text(), 8)]
+        dups = [k for k, v in Counter(panel).items() if v > 1]
+        assert not dups, f"{task_dir.name}: colliding descriptions {dups}"
+
+
+def test_stale_or_ambiguous_adjudication_errors_the_rung(tmp_path, monkeypatch):
+    # A ruling that matches no mutant is stale (a source edit shifted the
+    # site) or a typo; scoring the panel anyway would publish a number
+    # whose meaning is unknown.
+    import json as json_mod
+
+    from lemmapy.benchmark import runner as runner_mod
+
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(
+        "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    )
+    (task_dir / "meta.json").write_text(json_mod.dumps(
+        {"id": "t", "timeout_kills": ["line 999 col 1: `+` -> `-`"]}))
+
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        calls["n"] += 1
+        return ("clean", "") if calls["n"] == 1 else ("counterexample", "")
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=4)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == runner_mod.ERROR
+    assert "matches 0 mutants" in mutants.detail
+    # The panel never scored: no kills were counted despite every hunt
+    # being a counterexample.
+    assert score.mutants_killed == 0
+    assert score.height == 2  # gate + hunt only; the panel never scored
+
+
+def test_contradictory_adjudications_error_the_rung(tmp_path, monkeypatch):
+    # A mutant ruled BOTH equivalent (exclude from the denominator) and a
+    # timeout kill (count as killed) is a contradiction. Each entry passes
+    # validation alone, and the equivalence filter would silently win,
+    # dropping the mutant and overstating spec strength.
+    import json as json_mod
+
+    from lemmapy.benchmark import runner as runner_mod
+
+    src = "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    first = generate_mutations(src, max_mutants=4)[0][0]
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(src)
+    (task_dir / "meta.json").write_text(json_mod.dumps(
+        {"id": "t", "equivalent_mutants": [first], "timeout_kills": [first]}))
+
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        calls["n"] += 1
+        return ("clean", "") if calls["n"] == 1 else ("counterexample", "")
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=4)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == runner_mod.ERROR
+    assert "contradictory" in mutants.detail
+    assert score.adjudicated == 0  # nothing was excluded on a contradiction
+    assert score.height == 2
+
+
+def test_adjudication_outside_the_capped_panel_is_not_stale(tmp_path, monkeypatch):
+    # --quick truncates the panel. A ruling about a mutant the truncated
+    # run never hunts is OUT OF SCOPE, not stale — validating against the
+    # capped panel instead of the complete one made `lemmapy benchmark
+    # --quick` error on modp in CI.
+    import json as json_mod
+
+    from lemmapy.benchmark import runner as runner_mod
+
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(n: int) -> int:\n"
+        "    s = 0\n"
+        "    for i in range(n):\n"
+        "        if i < n - 1:\n"
+        "            s = s + 1\n"
+        "    return s\n"
+    )
+    full = [d for d, _ in generate_mutations(src, max_mutants=10**6)]
+    assert len(full) > 2, full
+    beyond_cap = full[-1]  # exists in the full panel, not in a cap-2 run
+
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(src)
+    (task_dir / "meta.json").write_text(json_mod.dumps(
+        {"id": "t", "timeout_kills": [beyond_cap]}))
+
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        calls["n"] += 1
+        return ("clean", "") if calls["n"] == 1 else ("counterexample", "")
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=2)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == "pass", mutants.detail
+    assert score.mutants_total == 2
+
+
+def test_panel_emptied_by_adjudication_fails_not_skips(tmp_path, monkeypatch):
+    # SKIP counts toward ladder height: a panel whose every mutant was
+    # ruled equivalent measured NOTHING and must not read as "no mutation
+    # sites".
+    import json as json_mod
+
+    from lemmapy.benchmark import runner as runner_mod
+
+    src = "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    all_descs = [d for d, _ in generate_mutations(src, max_mutants=8)]
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(src)
+    (task_dir / "meta.json").write_text(json_mod.dumps(
+        {"id": "t", "equivalent_mutants": all_descs}))
+
+    monkeypatch.setattr(runner_mod, "_hunt", lambda *a, **k: ("clean", ""))
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=8)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == "fail"
+    assert "emptied by adjudication" in mutants.detail
+    assert score.height == 2  # the rung blocks the climb
+
+
+def test_error_census_names_timeouts_too(tmp_path, monkeypatch):
+    # With an errored analysis AND an unadjudicated timeout, the printed
+    # decomposition must still add up to the panel, and the remedy pointer
+    # must not vanish behind the error precedence.
+    from lemmapy.benchmark import runner as runner_mod
+
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(
+        "#@ ensures result >= 0 or result < 0\n"
+        "def f(x: int) -> int:\n"
+        "    if x > 0:\n"
+        "        return x + 1\n"
+        "    return x - 2\n"
+    )
+    (task_dir / "meta.json").write_text('{"id": "t"}')
+    verdicts = iter(["clean", "counterexample", "timeout", "sentinel"])
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        v = next(verdicts, "sentinel")
+        if v == "sentinel":
+            return runner_mod.ERROR, "crosshair exited 2"
+        return v, ""
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=3)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == runner_mod.ERROR
+    assert "unadjudicated timeout(s)" in mutants.detail
+    assert "timeout_kills" in mutants.detail
+    # killed + survivors + timeouts + errors == panel
+    assert (score.mutants_killed + len(score.survivors) + len(score.timeouts)
+            + 1) == score.mutants_total
+
+
+def test_report_marks_and_footnotes_adjudicated_panels():
+    # The headline must not pass human judgement off as measurement.
+    from lemmapy.benchmark.runner import PASS, Rung, TaskScore, render_report
+
+    s = TaskScore(task_id="t")
+    s.mutants_total, s.mutants_killed = 3, 3
+    s.adjudicated_timeouts = 1
+    s.adjudicated = 2
+    s.rungs.extend([Rung(n, PASS, "") for n in
+                    ("gate", "hunt", "mutants", "encode", "prove", "fidelity")])
+    report = render_report([s])
+    row = next(l for l in report.splitlines() if l.startswith("t "))
+    assert "3/3*" in row
+    assert "human-adjudicated" in report
+    assert "adjudicated equivalent" in report
 
 
 def test_report_shows_err_not_ratio_for_incomplete_panel():
@@ -167,23 +459,28 @@ def test_run_benchmark_survives_task_staging_failure(tmp_path):
     assert scores[0].height == 0
 
 
-def test_hunt_subprocess_exception_degrades_to_error(tmp_path, monkeypatch):
-    # A stuck CrossHair must not abort the whole run before the scorecard.
+def test_hunt_subprocess_exceptions_have_distinct_verdicts(tmp_path, monkeypatch):
+    # Neither a stuck nor an unlaunchable CrossHair may abort the run:
+    # wall exhaustion is its own verdict (a diverging mutant is a kill),
+    # launch failure stays an analysis error.
     import subprocess as sp
 
     from lemmapy.benchmark import runner as runner_mod
 
-    def raising_run(cmd, **kwargs):
-        raise sp.TimeoutExpired(cmd, 1)
-
-    monkeypatch.setattr(runner_mod.subprocess, "run", raising_run)
+    src = "#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n"
     monkeypatch.setattr(runner_mod, "_find_crosshair", lambda: "crosshair")
-    verdict, detail = runner_mod._hunt(
-        "#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n",
-        "t", tmp_path, per_condition_timeout=1,
-    )
+
+    monkeypatch.setattr(runner_mod.subprocess, "run",
+                        lambda cmd, **kw: (_ for _ in ()).throw(sp.TimeoutExpired(cmd, 1)))
+    verdict, detail = runner_mod._hunt(src, "t", tmp_path, per_condition_timeout=1)
+    assert verdict == "timeout"
+    assert "wall exceeded" in detail
+
+    monkeypatch.setattr(runner_mod.subprocess, "run",
+                        lambda cmd, **kw: (_ for _ in ()).throw(OSError("boom")))
+    verdict, detail = runner_mod._hunt(src, "t2", tmp_path, per_condition_timeout=1)
     assert verdict == runner_mod.ERROR
-    assert "TimeoutExpired" in detail
+    assert "OSError" in detail
 
 
 def _full_stack_available() -> bool:

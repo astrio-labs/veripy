@@ -76,7 +76,7 @@ def generate_mutations(source: str, max_mutants: int = 16) -> list[tuple[str, st
                     new = _CMP_TEXT[_CMP_SWAPS[type(op)]]
                     mutations.append(Mutation(
                         span[0], span[1], span[2], new,
-                        f"line {span[0]}: `{token}` -> `{new}`",
+                        f"line {span[0]} col {span[1]}: `{token}` -> `{new}`",
                     ))
             case ast.BinOp(left=left, op=op, right=right) \
                     if type(op) in _ARITH_SWAPS:
@@ -86,20 +86,21 @@ def generate_mutations(source: str, max_mutants: int = 16) -> list[tuple[str, st
                     new = _ARITH_SWAPS[type(op)]
                     mutations.append(Mutation(
                         span[0], span[1], span[2], new,
-                        f"line {span[0]}: `{token}` -> `{new}`",
+                        f"line {span[0]} col {span[1]}: `{token}` -> `{new}`",
                     ))
             case ast.Constant(value=int() as v) if not isinstance(v, bool) \
                     and node.lineno == node.end_lineno and -100 <= v <= 100:
                 mutations.append(Mutation(
                     node.lineno, node.col_offset, node.end_col_offset,
-                    str(v + 1), f"line {node.lineno}: `{v}` -> `{v + 1}`",
+                    str(v + 1),
+                    f"line {node.lineno} col {node.col_offset}: `{v}` -> `{v + 1}`",
                 ))
             case ast.Call(func=ast.Name(id=("min" | "max") as fname) as func) \
                     if func.lineno == func.end_lineno:
                 other = "max" if fname == "min" else "min"
                 mutations.append(Mutation(
                     func.lineno, func.col_offset, func.end_col_offset, other,
-                    f"line {func.lineno}: `{fname}` -> `{other}`",
+                    f"line {func.lineno} col {func.col_offset}: `{fname}` -> `{other}`",
                 ))
             case ast.BoolOp(op=op, values=[first, second, *_]) :
                 token = "and" if isinstance(op, ast.And) else "or"
@@ -108,7 +109,7 @@ def generate_mutations(source: str, max_mutants: int = 16) -> list[tuple[str, st
                     new = "or" if token == "and" else "and"
                     mutations.append(Mutation(
                         span[0], span[1], span[2], new,
-                        f"line {span[0]}: `{token}` -> `{new}`",
+                        f"line {span[0]} col {span[1]}: `{token}` -> `{new}`",
                     ))
             case _:
                 pass

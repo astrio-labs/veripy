@@ -606,6 +606,13 @@ class _MethodEncoder:
                         return f"PyFloorDiv({l}, {r})"
                     case ast.Mod():
                         return f"PyMod({l}, {r})"
+                    case ast.Pow():
+                        # Python int ** negative-int yields float -- outside
+                        # the int fragment; PyPow's requires (e >= 0) is
+                        # exactly that domain condition, replayed as a VC.
+                        if self._eff_type(left) != "int" or self._eff_type(right) != "int":
+                            raise _err(node, "`**` on non-int operands is outside the fragment")
+                        return f"PyPow({l}, {r})"
                     case _:
                         raise _err(node, f"operator {type(op).__name__} is outside the slice-1 encoder")
             case ast.Compare(left=left, ops=ops, comparators=comps):

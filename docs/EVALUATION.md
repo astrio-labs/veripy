@@ -74,43 +74,60 @@ Per cost-ladder rung ([ARCHITECTURE.md §4.4](ARCHITECTURE.md)): micro-benchmark
 4. **Append-only ledgers:** every trial recorded (model, prompt version, tokens, wall-clock, outcome), following the LemmaScript runner's practice.
 5. **Contamination is assumed for public sets** and stated wherever their numbers appear.
 
-## First measured proof-repair run (August 2026) — the M2 exit metric
+## Measured proof-repair runs (August 2026) — the M2 exit metric
 
 **Setup.** `lemmapy benchmark --exam proof-repair --engine claude` over the
-sidecar-bearing golden corpus (roster: `gcd`, whose maximality ensures needs
-an 8-lemma divisibility pack). Engine: headless `claude -p` (claude CLI
+sidecar-bearing golden corpus. Engine: headless `claude -p` (claude CLI
 2.1.193, default model configuration), **all tools denied and an isolated
-empty working directory**; budget 4 iterations, 60 s verify per attempt;
-Dafny 4.11.0. Exit criterion measured: proof-completion rate with no human
-edits, restoration re-earned through the sidecar whitelist and the prover.
+empty working directory** (invocation pinned by unit tests, including the
+argument ordering); budget 4 iterations, 60 s verify per attempt; Dafny
+4.11.0. The metric: proof-completion rate with no human edits, restoration
+re-earned through the sidecar whitelist and the prover.
 
-**Result.** **1/1 restored (100%), 2 iterations, no human edits.** The
-engine-authored pack is **independent of the golden proof**: eight lemmas
-under a different decomposition (`DivModRel`, `MulMono`, `MulDivZero`,
-`MulMod`, `AddMod`, `SubMod`, `EuclidStepOne`, `EuclidStepAll`; 130 lines
-vs the golden 115), sharing only the `EuclidStepAll` entry point that the
-frozen `#@ proof` clause names. The first proposal failed verification and
-the structured-failure feedback produced the verified pack on the second
-attempt — the loop, not one-shot recall, did the work. The artifact is
-preserved at [exam-artifacts/gcd-engine-pack-2026-08.dfy](exam-artifacts/gcd-engine-pack-2026-08.dfy).
-Caveat stated plainly: the roster is n=1 today (`gcd` is the corpus's
-hardest proof, but one task is one task) — the number's statistical power
-grows with every sidecar-bearing task the corpus gains.
+### Run 1 — roster n=1 (gcd)
 
-**Methodology notes — two invalid runs preceded the measurement, in
+**1/1 restored, 2 iterations.** The engine-authored pack was independent
+of the golden proof: eight lemmas under a different decomposition
+(`DivModRel`/`MulMono`/`MulDivZero`/`MulMod`/`AddMod`/`SubMod`/
+`EuclidStepOne`), sharing only the `EuclidStepAll` entry point the frozen
+`#@ proof` clause names. Artifact:
+[exam-artifacts/gcd-engine-pack-2026-08.dfy](exam-artifacts/gcd-engine-pack-2026-08.dfy).
+
+### Run 2 — roster n=2 (gcd, modp), after slice 7 grew the corpus
+
+**1/2 restored (50%) at the default 4-iteration budget.**
+
+| task | restored | iterations | note |
+| --- | --- | --- | --- |
+| gcd | yes | 1 | independent **5-lemma** pack — *smaller than the golden 8* ([artifact](exam-artifacts/gcd-engine-pack-2026-08b.dfy)) |
+| modp | no | 4 (budget) | independent near-miss: a `ModIdentity`/`ModPeriodic` grounding whose own sidecar postconditions did not prove ([unverified attempt](exam-artifacts/modp-engine-unverified-attempt-2026-08.dfy)) |
+
+A follow-up probe at an 8-iteration budget was **inconclusive for a
+measured reason**: the repair request embeds the attempt history, and by
+iteration 3 the prompt had grown enough that the engine call exceeded its
+own 600 s wall. History capping/summarization in the loop is recorded as
+follow-on work; until then, reported numbers are at the default budget.
+
+The two-task roster already discriminates: gcd's divisibility argument
+(inductive, linear steps) restores easily — twice, via two different
+proofs, once smaller than the human one — while modp's nonlinear
+mod-multiplication congruence does not restore within budget. Roster
+growth remains the highest-leverage improvement to this metric.
+
+**Methodology notes — two invalid runs preceded the first measurement, in
 opposite directions, and both are part of the record:**
 
-1. **Retrieval contamination (score too good).** The first run used the
-   engine's default configuration: headless `claude -p` with tool access,
-   working directory at the repository root. The agent *found the answer
-   key* — the identical golden pack at
+1. **Retrieval contamination (score too good).** The first attempt used
+   the engine's default configuration: headless `claude -p` with tool
+   access, working directory at the repository root. The agent *found the
+   answer key* — the identical golden pack at
    `examples/contact/he_humaneval_13.proofs.dfy` — and returned it
    verbatim (comment-for-comment identical; caught because all eight
    helper-lemma names matched, which independent derivation would not
    produce). A perfect score measuring retrieval, not proof completion.
-   Consequence: the engine now denies all tools and runs from an isolated
-   empty directory, and a unit test pins the invocation. Any exam whose
-   engine is agentic must assume it will look for the answer key.
+   Consequence: the engine denies all tools and runs from an isolated
+   empty directory, pinned by unit tests. Any exam whose engine is
+   agentic must assume it will look for the answer key.
 2. **Broken invocation (score too bad).** The first hardening attempt put
    the prompt after `--disallowedTools`, a variadic flag that swallowed
    the prompt text as tool-name rules; every iteration errored, scoring
