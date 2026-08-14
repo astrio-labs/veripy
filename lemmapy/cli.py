@@ -754,7 +754,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "lsp",
         help="run the LSP server over stdio: instant conformance "
-             "diagnostics + per-function status for editors",
+             "diagnostics + per-function status, and proof status on "
+             "explicit request (docs/EDITOR.md)",
     )
 
     p_survey = sub.add_parser(
