@@ -124,11 +124,25 @@ six-task roster.
 
 Each was **screened before adoption**: the strengthened spec had to fail
 to prove *without* its pack. A task Z3 proves from its invariants alone
-makes an exam row that measures nothing, and the screen is now permanent
-as `test_sidecar_is_load_bearing`, parameterized over the roster — it also
-tripwires against preamble growth silently making a sidecar vacuous. (For
-the same reason the divisibility family is deliberately **not** promoted
-into the preamble while the exam depends on those lemmas being absent.)
+makes an exam row that measures nothing, so the screen is permanent, as
+`test_sidecar_is_load_bearing` over the roster and as `lemmapy benchmark
+--screen` for candidates. (For the same reason the divisibility family is
+deliberately **not** promoted into the preamble while the exam depends on
+those lemmas being absent.)
+
+**Correction (2026-08-14): the automated screen was vacuous until now, and
+this paragraph overstated it.** It dropped the sidecar and asserted the
+task no longer verified — but it left the `#@ proof` clauses in the source,
+so the *encoder* rejected the file (`unknown lemma 'X'`) before the prover
+ran. That happens for every task, load-bearing or not, so the assertion
+could not fail. The screen now strips the clauses too and requires a
+genuine **prover** failure, with a third verdict — `inconclusive` — for
+exactly the state the old one was silently reporting as a pass. Re-run
+against the roster on the corrected screen: **6/6 load-bearing**
+(`postcondition` for below_zero, is_prime, rolling_max, sum_squares;
+`timeout` for gcd and modp), so the numbers above stand. The manual
+pre-adoption screening was real; it was the standing tripwire that was
+not.
 
 Runs are now driven by `lemmapy experiment`, which executes an exam as a
 (task × engine × arm × trial) matrix against an append-only JSONL ledger:

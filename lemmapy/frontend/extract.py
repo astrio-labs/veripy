@@ -90,6 +90,19 @@ def _split_kind(text: str) -> tuple[str, str]:
     return kind, rest
 
 
+def spec_comment_sites(source: str, kind: str) -> dict[int, int]:
+    """line -> column of every spec comment this extractor reads as `kind`.
+
+    Anything that REMOVES clauses (the exam screen strips `proof`) has to
+    agree with the tokenizer that reads them, or it edits a different
+    language than the parser does: `#@proof`, `#@  proof` and a trailing
+    `y = x  #@ proof L()` are all clauses of kind `proof`, while a line
+    reading `#@ proof ...` inside a string literal is not one at all.
+    """
+    return {line: col for line, (col, text) in _spec_comments(source).items()
+            if _split_kind(text)[0] == kind}
+
+
 def parse_source(source: str, filename: str = "<string>") -> ModuleSpecs:
     module = ast.parse(source, filename=filename)
     comments = _spec_comments(source)
