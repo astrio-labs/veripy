@@ -94,3 +94,49 @@ def test_negative_indexing_verifies_python_exactly(tmp_path, capsys):
     status = cmd_verify([src], tmp_path / "out", time_limit=30, types=False)
     assert status == 0
     assert "VERIFIED" in capsys.readouterr().out
+
+
+BAD_PACK_SRC = (
+    "#@ ensures result == x\n"
+    "def f(x: int) -> int:\n"
+    "    #@ proof Bogus(x)\n"
+    "    return x\n"
+)
+# Has a body, so it clears the whitelist (a bodiless lemma is an axiom and
+# is rejected); the body simply cannot prove the ensures.
+BAD_PACK = "lemma Bogus(x: int)\n  ensures x != x\n{\n}\n"
+
+
+def test_sidecar_failure_names_the_sidecar_not_a_python_line(tmp_path, capsys):
+    # The driver maps every Dafny line back through the line map, so a
+    # failure in the APPENDED sidecar region came out as `f.py:<line>` --
+    # a line that has nothing to do with the failing lemma, sending the
+    # reader to the wrong file. The structured payload always said
+    # `region: "sidecar"`; the printed line disagreed with it.
+    src = tmp_path / "f.py"
+    src.write_text(BAD_PACK_SRC)
+    (tmp_path / "f.proofs.dfy").write_text(BAD_PACK)
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 1
+    out = capsys.readouterr().out
+    assert "f.proofs.dfy:" in out
+    assert "f.py:" not in out.replace(str(src), "")  # only the header names f.py
+
+
+def test_sidecar_line_is_the_files_own_line(tmp_path, capsys):
+    # Not merely "some line in the sidecar": the number must index the file
+    # the reader opens, past the generated header the stub prepends.
+    src = tmp_path / "g.py"
+    src.write_text(BAD_PACK_SRC.replace("Bogus", "Deep"))
+    pack = ("lemma Filler(x: int)\n  ensures x == x\n{\n}\n\n"
+            "lemma Deep(x: int)\n  ensures x != x\n{\n}\n")
+    (tmp_path / "g.proofs.dfy").write_text(pack)
+    cmd_verify([src], tmp_path / "out", time_limit=30, types=False)
+    out = capsys.readouterr().out
+    reported = [int(part.split(":")[0])
+                for part in out.split("g.proofs.dfy:")[1:]]
+    assert reported, out
+    lines = pack.split("\n")
+    # Every reported line lands inside `Deep`, which starts at line 6.
+    assert all(6 <= n <= len(lines) for n in reported), (reported, out)
+    assert any("Deep" in lines[n - 1] or "x != x" in lines[n - 1] or
+               lines[n - 1].strip() in ("{", "}") for n in reported), out

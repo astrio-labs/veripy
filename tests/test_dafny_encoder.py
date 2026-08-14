@@ -1223,3 +1223,26 @@ def test_sequential_loops_reuse_index():
     )
     dfy = _encode(src)
     assert dfy.count("var i :=") == 1  # second loop reuses, no duplicate local
+
+
+# --- sidecar line mapping ------------------------------------------------------
+
+def test_sidecar_locate_maps_stub_lines_to_the_files_own_lines(tmp_path):
+    from lemmapy.backends.dafny.encoder import ProofSidecar, load_proof_sidecar
+
+    src = tmp_path / "m.py"
+    src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (tmp_path / "m.proofs.dfy").write_text(
+        "lemma A(x: int)\n  ensures x == x\n{\n}\n")
+    sidecar = load_proof_sidecar(src)
+    extent = 100  # pretend the generated stub ends here
+    # The wrapper prepends a blank line and a header comment, so the file's
+    # own line 1 sits at extent + header_lines. Derived, not assumed:
+    assert sidecar.header_lines == 2
+    assert sidecar.locate(extent + 2, extent) == (str(tmp_path / "m.proofs.dfy"), 1)
+    assert sidecar.locate(extent + 3, extent) == (str(tmp_path / "m.proofs.dfy"), 2)
+    # Lines at or before the stub's end are NOT the sidecar's.
+    assert sidecar.locate(extent, extent) is None
+    assert sidecar.locate(1, extent) is None
+    # A file with no sidecar can never claim a line.
+    assert ProofSidecar.empty().locate(extent + 5, extent) is None
