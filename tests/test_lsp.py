@@ -9,6 +9,7 @@ import pytest
 
 from lemmapy.backends.dafny.driver import find_dafny
 from lemmapy.lsp import (
+    _CONTENT_MODIFIED,
     _MAX_PROVERS,
     Server,
     analyze,
@@ -37,6 +38,16 @@ def _frame(payload: dict) -> bytes:
 
 
 def _decode(out: bytes) -> list[dict]:
+    replies = []
+    while out:
+        header, _, rest = out.partition(b"\r\n\r\n")
+        length = int(header.split(b":")[1])
+        replies.append(json.loads(rest[:length]))
+        out = rest[length:]
+    return replies
+
+
+def _parse(out: bytes) -> list[dict]:
     replies = []
     while out:
         header, _, rest = out.partition(b"\r\n\r\n")
@@ -576,6 +587,74 @@ def test_superseded_requests_do_not_queue_for_a_prover(monkeypatch):
         w.join(timeout=5)
         assert not w.is_alive(), "a superseded worker queued for a prover slot"
     assert superseded[-1].is_alive()  # the newest legitimately waits
+    release.set()
+    for w in server._workers:
+        w.join(timeout=5)
+
+
+def test_an_edit_supersedes_a_running_proof(monkeypatch):
+    # An edit invalidates a running proof as surely as a newer request does,
+    # and only the newer request used to say so. The cache refused the stale
+    # verdict (its digest no longer matched) but the REPLY still reached the
+    # client, so `lemmapy/verify` answered about text the user had changed.
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_prove(text, filename, time_limit=20):
+        entered.set()
+        release.wait(timeout=5)
+        return _proof_payload("ok", ["bump"])
+
+    monkeypatch.setattr("lemmapy.lsp.prove", slow_prove)
+    out = io.BytesIO()
+    server = Server(io.BytesIO(), out)
+    uri = "file:///m.py"
+    server.documents[uri] = GOOD
+    server.handle({"jsonrpc": "2.0", "id": 1, "method": "lemmapy/verify",
+                   "params": {"textDocument": {"uri": uri}}})
+    assert entered.wait(timeout=5)
+    server.handle({"jsonrpc": "2.0", "method": "textDocument/didChange",
+                   "params": {"textDocument": {"uri": uri},
+                              "contentChanges": [{"text": GOOD + "\n# edit\n"}]}})
+    release.set()
+    for w in server._workers:
+        w.join(timeout=5)
+    replies = _parse(out.getvalue())
+    answer = [r for r in replies if r.get("id") == 1][0]
+    assert "error" in answer, "a verdict for the pre-edit buffer was returned"
+    assert answer["error"]["code"] == _CONTENT_MODIFIED
+    assert uri not in server.proofs
+
+
+def test_the_server_refuses_rather_than_queueing_unboundedly(monkeypatch):
+    # Per-document supersession bounds a burst on ONE file. A save-all hook
+    # over many open files supersedes nothing -- every request is the newest
+    # for its own URI, so each keeps a thread waiting behind the single
+    # prover. Past the ceiling the server says so.
+    import threading
+
+    from lemmapy.lsp import _MAX_INFLIGHT, _REQUEST_FAILED
+
+    release = threading.Event()
+
+    def slow_prove(text, filename, time_limit=20):
+        release.wait(timeout=5)
+        return _proof_payload("ok", ["bump"])
+
+    monkeypatch.setattr("lemmapy.lsp.prove", slow_prove)
+    out = io.BytesIO()
+    server = Server(io.BytesIO(), out)
+    for i in range(_MAX_INFLIGHT + 2):
+        uri = f"file:///m{i}.py"          # a DIFFERENT document each time
+        server.documents[uri] = GOOD
+        server.handle({"jsonrpc": "2.0", "id": i, "method": "lemmapy/verify",
+                       "params": {"textDocument": {"uri": uri}}})
+    refusals = [r for r in _parse(out.getvalue())
+                if r.get("error", {}).get("code") == _REQUEST_FAILED]
+    assert len(refusals) == 2, "requests past the ceiling were queued anyway"
+    assert "already in flight" in refusals[0]["error"]["message"]
     release.set()
     for w in server._workers:
         w.join(timeout=5)

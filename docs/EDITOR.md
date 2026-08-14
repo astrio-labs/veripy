@@ -67,6 +67,13 @@ Runs the real prover over the current buffer.
   legal LSP.
 - `timeLimit` is clamped to 1–300 seconds. A client typo cannot park a
   prover for the session.
+- One prover runs at a time. A newer request for the same document
+  supersedes the older one, which is answered `ContentModified` (-32801)
+  rather than left waiting — and **an edit supersedes a running proof too**,
+  so a verdict is never returned for text the user has already changed.
+- Past 8 proof requests in flight the server answers `RequestFailed`
+  (-32803) instead of accepting work it cannot start soon. Retry once one
+  finishes.
 - **The newest request for a document wins.** A request still in flight
   when a later one arrives for the same document is *superseded*: it is
   answered with `-32801 ContentModified` and never writes the proof cache.

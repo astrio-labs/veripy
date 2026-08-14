@@ -66,9 +66,21 @@ _MAX_PROVERS = 1
 # leaves promptly; long enough not to spin.
 _QUEUE_POLL_S = 0.05
 
+# Ceiling on proof workers ALIVE at once, across all documents. Per-document
+# supersession bounds a burst on one file, but a save-all hook over many open
+# files supersedes nothing — each request is the newest for its own URI, so
+# each keeps a thread waiting its turn behind the single prover. Past this
+# many, the server says so instead of accepting work it has no intention of
+# starting soon.
+_MAX_INFLIGHT = 8
+
 # LSP's ContentModified. Not an error in the user's code and not a verdict:
 # the request was overtaken by a newer one for the same document.
 _CONTENT_MODIFIED = -32801
+# LSP's RequestFailed: the request was well-formed and the server
+# declined it, which is what a client should retry rather than treat
+# as a protocol error.
+_REQUEST_FAILED = -32803
 
 
 def _diagnostic(line: int, message: str, severity: int = 1) -> dict[str, Any]:
@@ -346,6 +358,21 @@ class Server:
             self._latest[uri] = self._seq
             return self._seq
 
+    def _invalidate(self, uri: str) -> None:
+        """Supersede every in-flight proof request for `uri`.
+
+        An EDIT invalidates a running proof as surely as a newer request
+        does, and only the newer request used to say so. Without this a
+        worker that started before the edit still replied with a verdict for
+        the pre-edit snapshot: the cache refused it (its digest no longer
+        matched) but the REPLY reached the client anyway, so `lemmapy/verify`
+        answered a question about text the user had already changed.
+        """
+        with self._state:
+            if uri in self._latest:
+                self._seq += 1
+                self._latest[uri] = self._seq
+
     def _superseded(self, uri: str, seq: int) -> bool:
         with self._state:
             return self._latest.get(uri) != seq
@@ -446,6 +473,7 @@ class Server:
             changes = params.get("contentChanges") or []
             if changes:
                 self.documents[uri] = changes[-1]["text"]  # full sync
+                self._invalidate(uri)  # a proof of the old text is moot
             self._publish(uri)
         elif method == "textDocument/didSave":
             self._publish(params["textDocument"]["uri"])
@@ -489,11 +517,22 @@ class Server:
             # prover runs; the result is pinned to what was actually proved.
             text = self.documents[uri]
             filename = unquote(urlparse(uri).path) or uri
+            self._workers = [w for w in self._workers if w.is_alive()]
+            if len(self._workers) >= _MAX_INFLIGHT:
+                # Refused, not queued. Accepting it would add a thread that
+                # cannot start for a long time, and an editor is better told
+                # to ask again than left believing a proof is under way.
+                self._send({"jsonrpc": "2.0", "id": msg_id,
+                            "error": {"code": _REQUEST_FAILED,
+                                      "message": f"{len(self._workers)} proof "
+                                                 f"request(s) already in "
+                                                 f"flight; try again once one "
+                                                 f"finishes"}})
+                return
             seq = self._claim(uri)
             worker = threading.Thread(
                 target=self._prove_and_reply,
                 args=(msg_id, uri, text, filename, limit, seq), daemon=True)
-            self._workers = [w for w in self._workers if w.is_alive()]
             self._workers.append(worker)
             worker.start()
         elif msg_id is not None:
