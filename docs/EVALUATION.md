@@ -84,6 +84,16 @@ argument ordering); budget 4 iterations, 60 s verify per attempt; Dafny
 4.11.0. The metric: proof-completion rate with no human edits, restoration
 re-earned through the sidecar whitelist and the prover.
 
+The **engine wall** — how long a single engine call may take before the
+harness gives up on it — is part of the invocation, not an implementation
+detail, because exceeding it produces an *unmeasured* task rather than a
+failed one. Runs 1–3 used the 600 s default; Run 4 (the current figure)
+used `--engine-wall 1800`:
+
+```
+lemmapy benchmark --exam proof-repair --engine claude --engine-wall 1800
+```
+
 ### Run 1 — roster n=1 (gcd)
 
 **1/1 restored, 2 iterations.** The engine-authored pack was independent
@@ -138,7 +148,7 @@ contributes from what the model already knows, and per-proposal
 whitelist-rejection telemetry. Rates are reported with Wilson intervals —
 k/n at these trial counts is not a defensible point estimate on its own.
 
-### Run 3 — roster n=6 (2026-08-14), the current figure
+### Run 3 — roster n=6 (2026-08-14), superseded by Run 4
 
 **4/6 restored at the default 4-iteration budget** — but the denominator
 needs reading, because one task never produced a measurement at all:
@@ -156,15 +166,8 @@ So: **4/5 = 80% (95% Wilson CI 38–96%) of tasks that produced a
 measurement**, or 4/6 = 67% (95% Wilson CI 30–90%) if the harness failure
 is counted against the engine. Both are stated because silently choosing
 the flattering denominator is exactly the kind of thing the trivial-spec
-floor exists to prevent elsewhere. `rolling_max` should be re-run before
-either number is quoted.
-
-Read the intervals, not the point estimates: at n=6 the data is compatible
-with a true rate anywhere from ~a third to ~all, so this run **cannot**
-distinguish a good repair loop from a mediocre one. It is a floor showing
-the loop works end-to-end on real proofs, not a rate. Narrowing it needs
-roster growth and repeated trials (the matrix arms above), not a better
-sentence about six tasks.
+floor exists to prevent elsewhere. `rolling_max` was re-run — see Run 4,
+which supersedes this one and which no number here should be quoted over.
 
 Note the prompt-budget fix was already in effect for this run (prior
 proposals digested, the duplicate sidecar copy removed), so it reduced
@@ -182,6 +185,59 @@ did not typecheck, so the proof was never attempted and strengthening it
 is wrong. It gets its own `resolution` kind in the failure taxonomy —
 shipping separately in the taxonomy PR, so on this revision the
 classification is not yet available and these still arrive as `unknown`.
+
+### Run 4 — roster n=6 (2026-08-14), the current figure
+
+**5/6 restored = 83% (95% Wilson CI 44–97%)**, and — unlike Run 3 — *every
+task produced a measurement*, so there is only one denominator to report.
+
+Same roster, same engine, same 4-iteration budget. One thing changed:
+`--engine-wall 1800` instead of the default 600 s, which is what Run 3's
+harness failure demanded.
+
+| task | restored | iterations | vs Run 3 |
+| --- | --- | --- | --- |
+| below_zero | yes | 2 | unchanged |
+| gcd | yes | 1 | unchanged |
+| sum_squares | yes | 1 | unchanged |
+| rolling_max | yes | 2 | **was unmeasured** — the wall was the whole problem ([artifact](exam-artifacts/rolling_max-engine-pack-2026-08.dfy)) |
+| modp | yes | 4 | **was a budget failure** — restored on the last iteration ([artifact](exam-artifacts/modp-engine-pack-2026-08c.dfy)) |
+| is_prime | **no** | 4 (budget) | **was restored in 2** ([unverified attempt](exam-artifacts/is_prime-engine-unverified-attempt-2026-08.dfy)) |
+
+**The number is not the finding; `is_prime` is.** A longer wall cannot
+make a task harder, so that row did not flip for any reason the
+configuration explains. Same roster, same engine, same budget, different
+day, opposite outcome. Run-to-run variance is therefore *on the order of
+the effect we are trying to measure* — which means a single run of six
+tasks is not a rate no matter how the denominator is chosen, and the
+narrow-looking improvement from 4/6 to 5/6 is not evidence of anything
+having improved.
+
+For the same reason the two runs are **not pooled**. Pooling assumes
+exchangeable trials; these differ in exactly the parameter that produced
+Run 3's harness failure, so `9/12` would be a number about two different
+experiments.
+
+`modp` is the one genuine advance: the task that failed Run 3 within
+budget restored here on iteration 4, via a pack that grounds Python's
+`PyMod` in Dafny's Euclidean `%` (`PyModIsEuclid`) and then proves
+multiplicative congruence natively — a different derivation from the
+golden pack and from its own Run 3 near-miss, which had tried to reason
+inside `PyMod` throughout. `rolling_max` likewise restored with a
+two-lemma pack (`PyMaxDominates` + a `forall`-lifted corollary) rather
+than the golden `SeqMaxDominates`.
+
+Every archived pack is checked by `tests/test_exam_artifacts.py`, in both
+directions: a pack cited as restored must still verify against its task,
+and one cited as a near-miss must still fail. An artifact that drifts into
+disagreeing with the sentence describing it fails the suite rather than
+sitting in the repository as a false claim with a link pointing at it.
+
+**What to do about it, in order of leverage:** repeated trials at fixed
+configuration (the `lemmapy experiment` matrix already supports this, and
+is the only thing that measures the variance rather than being surprised
+by it), then roster growth — n=7 landed after this run, so this figure is
+already one task stale.
 
 **Methodology notes — two invalid runs preceded the first measurement, in
 opposite directions, and both are part of the record:**
