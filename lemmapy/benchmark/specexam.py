@@ -224,6 +224,25 @@ def check_frozen(stripped: str, annotated: str
     return violations, line_map
 
 
+def golden_to_variant_map(golden: str, stripped: str,
+                          variant: str) -> dict[int, int]:
+    """Compose GOLDEN line -> variant line through the stripped source.
+
+    `equivalent_mutants` are adjudicated against the golden file, but the
+    exam scores a DIFFERENT annotated file. Both share the stripped source
+    as their common coordinate system, so the map is the golden's
+    stripped-line index composed with the variant's inverse.
+    """
+    _, stripped_to_golden = check_frozen(stripped, golden)
+    _, stripped_to_variant = check_frozen(stripped, variant)
+    golden_to_stripped = {v: k for k, v in stripped_to_golden.items()}
+    return {
+        golden_line: stripped_to_variant[stripped_line]
+        for golden_line, stripped_line in golden_to_stripped.items()
+        if stripped_line in stripped_to_variant
+    }
+
+
 def translate_equivalents(meta: dict[str, Any],
                           line_map: dict[int, int]) -> dict[str, Any]:
     """Rewrite line-numbered `equivalent_mutants` descriptions into the
@@ -375,6 +394,13 @@ def _golden_baseline(task_dir: Path, workdir: Path, cache_dir: Path,
     meta_path = task_dir / "meta.json"
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
     exam_source = strip_specs(golden_source, mode=STRIP_PROOF)
+    # Dropping `#@ proof` lines shifts the golden's own line numbers, so the
+    # adjudicated equivalents must be translated here too — otherwise the
+    # BASELINE silently loses its exclusion and the comparison tilts the
+    # other way.
+    meta = translate_equivalents(
+        meta, golden_to_variant_map(golden_source,
+                                    strip_specs(golden_source), exam_source))
     key = hashlib.sha256(
         (exam_source + repr(sorted(ladder_kwargs.items()))).encode()
     ).hexdigest()[:16]
@@ -459,7 +485,7 @@ def run_spec_exam(tasks_root: Path, workdir: Path,
                 retry_reasons=retry_reasons, wall_ms=wall_ms, usage=usage))
             continue
 
-        _, line_map = check_frozen(stripped, proposal)
+        line_map = golden_to_variant_map(golden_source, stripped, proposal)
         staged = _stage_scored_task(exam_dir / "scored", proposal,
                                     translate_equivalents(meta, line_map))
         scored = run_task(staged, exam_dir / "ladder", **ladder_kwargs)

@@ -10,6 +10,7 @@ from lemmapy.benchmark.mutate import generate_mutations
 from lemmapy.benchmark.specexam import (
     SpecExamError,
     check_frozen,
+    golden_to_variant_map,
     render_spec_exam_report,
     run_spec_exam,
     strip_specs,
@@ -201,19 +202,54 @@ def test_translate_equivalents_uses_the_line_map():
         == ["line 17: `>` -> `>=`"]
 
 
-def test_translate_equivalents_matches_real_corpus_panel():
-    # The real adjudicated mutant must still be excluded after translation.
-    meta = json.loads((TASKS / "max_element" / "meta.json").read_text())
-    equivalents = meta.get("equivalent_mutants")
-    assert equivalents, "max_element is the corpus's adjudication case"
-    golden = (TASKS / "max_element" / "task.py").read_text()
+EQUIV_TASKS = [
+    t for t in TASK_IDS
+    if json.loads((TASKS / t / "meta.json").read_text()).get("equivalent_mutants")
+]
+
+
+def test_corpus_still_has_an_adjudication_case():
+    assert EQUIV_TASKS, (
+        "no task carries equivalent_mutants — the translation path would be "
+        "untested; keep at least one adjudicated mutant in the corpus")
+
+
+@pytest.mark.parametrize("task_id", EQUIV_TASKS)
+@pytest.mark.parametrize("variant_name", ["golden", "reannotated", "stripped"])
+def test_equivalents_translate_into_every_variant_panel(task_id, variant_name):
+    """The exclusion must LAND, not merely be rewritten.
+
+    `equivalent_mutants` are adjudicated against the golden file, but the
+    exam scores differently-numbered variants. An untranslated (or
+    half-translated) description silently fails to exclude, and the engine
+    is charged for a mutant the golden run was forgiven — the comparison
+    breaks quietly. This caught exactly that: a stripped->proposal map was
+    applied to golden-numbered descriptions.
+    """
+    meta = json.loads((TASKS / task_id / "meta.json").read_text())
+    golden = (TASKS / task_id / "task.py").read_text()
     stripped = strip_specs(golden)
-    _, line_map = check_frozen(stripped, golden)
-    golden_to_stripped = {v: k for k, v in line_map.items()}
-    in_stripped = translate_equivalents(meta, golden_to_stripped)
-    panel = {d for d, _ in generate_mutations(stripped, max_mutants=8)}
-    assert set(in_stripped["equivalent_mutants"]) <= panel, (
-        "translated equivalents must name mutants that exist in the panel")
+    variants = {
+        "golden": golden,
+        "stripped": stripped,
+        # A plausible engine answer: same code, differently placed specs.
+        "reannotated": "#@ ensures True\n" + stripped,
+    }
+    variant = variants[variant_name]
+    line_map = golden_to_variant_map(golden, stripped, variant)
+    translated = translate_equivalents(meta, line_map)["equivalent_mutants"]
+    panel = {d for d, _ in generate_mutations(variant, max_mutants=8)}
+    assert set(translated) <= panel, (
+        f"translated equivalents {translated} are not in the {variant_name} "
+        f"panel {sorted(panel)} — the exclusion would silently miss")
+    # And the count matches: every adjudicated mutant is still excluded.
+    assert len(translated) == len(meta["equivalent_mutants"])
+
+
+def test_translate_equivalents_uses_the_map_it_is_given():
+    meta = {"id": "t", "equivalent_mutants": ["line 17: `>` -> `>=`"]}
+    assert translate_equivalents(meta, {17: 21})["equivalent_mutants"] \
+        == ["line 21: `>` -> `>=`"]
 
 
 # --- validity and retries --------------------------------------------------
