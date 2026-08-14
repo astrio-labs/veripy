@@ -9,7 +9,11 @@ agent needs to act without re-parsing human-oriented output.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from tokenize import TokenError
 from typing import Any
@@ -37,9 +41,40 @@ def _attribute(specs: Any, py_line: int | None) -> str | None:
 
 
 def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
-                      hunt_counterexamples: bool = False) -> dict[str, Any]:
+                      hunt_counterexamples: bool = False,
+                      keep_artifacts: bool = False) -> dict[str, Any]:
     """Encode + verify one module; return the structured outcome. Never
-    raises for expected failure modes — every outcome is a payload."""
+    raises for expected failure modes — every outcome is a payload.
+
+    Every invocation stages into a PRIVATE directory under `outdir`. The
+    stub used to be written to `outdir/<stem>.dfy`, so two concurrent
+    verifications of same-stemmed modules sharing an outdir raced on one
+    file: whichever wrote last was the one Dafny actually read. Both
+    directions were silent and well-formed — a module that violates its
+    spec came back `ok` (unverified code reported verified), and a correct
+    module came back `failed` with failures belonging to the other file.
+    An embedding host naturally shares one scratch directory across
+    callers, so this is a soundness break, not a tidiness issue.
+
+    Staging is per-call, so `outdir` must not grow without bound — the old
+    shared path was at least capped by the number of distinct stems. Two
+    lifetimes, each named for how it ends:
+
+    - not kept (the default, and what an embedded backend wants): an
+      ephemeral `mkdtemp`, removed in a `finally`. Unique per thread, which
+      a stem- or PID-derived name is not.
+    - kept: a CONTENT-ADDRESSED directory, so re-verifying the same file
+      overwrites its own artifacts instead of accumulating a directory per
+      run. The digest covers everything that determines the stub, so two
+      calls sharing a directory agree on the final bytes — but agreeing on
+      the destination is NOT the same as being safe to write concurrently,
+      which is why the stub is written atomically (see
+      `atomic_write_text`).
+
+    The artifacts are purely diagnostic (nothing downstream reads the stub;
+    the CLI prints its path for a human), so `payload["stub"]` is None when
+    they are not kept, rather than a path that no longer exists.
+    """
     payload: dict[str, Any] = {
         "schema": SCHEMA,
         "file": str(path),
@@ -58,9 +93,69 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         "functions": [],
         "failures": [],
         "sidecar": None,
+        "stub": None,
+        "artifacts_kept": keep_artifacts,
     }
+    workdir: Path | None = None
     try:
         outdir.mkdir(parents=True, exist_ok=True)
+        if not keep_artifacts:
+            workdir = Path(tempfile.mkdtemp(prefix="verify-", dir=outdir))
+    except OSError as exc:
+        payload["status"] = "tool-error"
+        payload["error"] = f"cannot create work directory: {exc}"
+        return payload
+    try:
+        # When keeping, the directory is derived later from the stub's own
+        # content — it cannot be named before the stub exists.
+        return _verify_into(path, outdir, workdir, payload, time_limit,
+                            hunt_counterexamples, keep_artifacts)
+    finally:
+        if workdir is not None and not keep_artifacts:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+def atomic_write_text(target: Path, text: str) -> None:
+    """Write via a sibling temp file and `os.replace`.
+
+    A plain `write_text` TRUNCATES before writing, so a concurrent reader —
+    here, the Dafny process we are about to launch — can observe an empty
+    or half-written file. Content-addressing makes concurrent writers agree
+    on the final bytes, but agreement about the destination says nothing
+    about what a reader sees mid-write. `os.replace` is atomic on POSIX, so
+    a reader gets either the whole old file or the whole new one.
+    """
+    tmp = tempfile.NamedTemporaryFile(
+        "w", dir=target.parent, prefix=target.name + ".", suffix=".tmp",
+        delete=False)
+    try:
+        with tmp:
+            tmp.write(text)
+        os.replace(tmp.name, target)
+    except BaseException:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+
+
+def stub_dir_for(outdir: Path, path: Path, stub_text: str) -> Path:
+    """Content-addressed staging directory for artifacts that are KEPT.
+
+    Stable across re-runs of an unchanged file (so nothing accumulates) and
+    distinct whenever the emitted stub differs — including two same-stemmed
+    modules from different directories, which is the collision that let one
+    verification certify another's code.
+    """
+    digest = hashlib.sha256(
+        (str(path.resolve()) + "\0" + stub_text).encode()
+    ).hexdigest()[:12]
+    return outdir / f"verify-{path.stem}-{digest}"
+
+
+def _verify_into(path: Path, outdir: Path, workdir: Path | None,
+                 payload: dict[str, Any], time_limit: int,
+                 hunt_counterexamples: bool,
+                 keep_artifacts: bool) -> dict[str, Any]:
+    try:
         source = path.read_text()
     except (OSError, UnicodeDecodeError) as exc:
         payload["status"] = "tool-error"
@@ -111,14 +206,18 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         "lemmas": sorted(sidecar.lemmas),
         "text": sidecar.text,
     }
-    stub = outdir / f"{path.stem}.dfy"
+    stub_text = encoded.dafny_source + sidecar.text
     try:
-        stub.write_text(encoded.dafny_source + sidecar.text)
+        if workdir is None:  # keep_artifacts: name it after its content
+            workdir = stub_dir_for(outdir, path, stub_text)
+            workdir.mkdir(parents=True, exist_ok=True)
+        stub = workdir / f"{path.stem}.dfy"
+        atomic_write_text(stub, stub_text)
     except OSError as exc:
         payload["status"] = "tool-error"
         payload["error"] = f"cannot write stub: {exc}"
         return payload
-    payload["stub"] = str(stub)
+    payload["stub"] = str(stub) if keep_artifacts else None
     stub_extent = encoded.dafny_source.count("\n") + 1
     payload["toolchain"]["dafny_version"] = dafny_version()  # cached per process
     result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
@@ -156,27 +255,26 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     if hunt_counterexamples and payload["failures"]:
         from .benchmark.runner import _hunt
 
-        verdict, detail = _hunt(source, path.stem, outdir / "hunt", 5)
+        # Also private: _hunt stages `<stem>_checked.py`, which collides on
+        # exactly the same stems the stub did.
+        verdict, detail = _hunt(source, path.stem, workdir / "hunt", 5)
         if verdict == "counterexample":
             payload["counterexample"] = detail
     return payload
 
 
 def verify_structured_many(paths: list[Path], outdir: Path, time_limit: int = 30,
-                           hunt_counterexamples: bool = False) -> list[dict[str, Any]]:
-    # Same-stem inputs from different directories would overwrite each
-    # other's stub; give every path a distinct subdirectory when stems
-    # collide so each payload's stub reference stays valid.
-    stems: dict[str, int] = {}
-    outdirs: list[Path] = []
-    for p in paths:
-        n = stems.get(p.stem, 0)
-        stems[p.stem] = n + 1
-        outdirs.append(outdir if n == 0 else outdir / f"dup{n}")
+                           hunt_counterexamples: bool = False,
+                           keep_artifacts: bool = False) -> list[dict[str, Any]]:
+    """Same-stem inputs no longer need special handling: `verify_structured`
+    stages each invocation privately, so stub paths are unique by
+    construction — across calls, threads and processes, not just within
+    one batch as the old `dup{n}` scheme managed."""
     return [
-        verify_structured(p, o, time_limit=time_limit,
-                          hunt_counterexamples=hunt_counterexamples)
-        for p, o in zip(paths, outdirs)
+        verify_structured(p, outdir, time_limit=time_limit,
+                          hunt_counterexamples=hunt_counterexamples,
+                          keep_artifacts=keep_artifacts)
+        for p in paths
     ]
 
 

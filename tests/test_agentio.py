@@ -211,9 +211,194 @@ def test_same_stem_files_get_distinct_stubs(tmp_path):
     (a_dir / "m.py").write_text(GOOD)
     (b_dir / "m.py").write_text(BROKEN_CLAMP)
     payloads = verify_structured_many(
-        [a_dir / "m.py", b_dir / "m.py"], tmp_path / "out")
+        [a_dir / "m.py", b_dir / "m.py"], tmp_path / "out",
+        keep_artifacts=True)
     assert payloads[0]["stub"] != payloads[1]["stub"]
     assert payloads[0]["status"] == "ok" and payloads[1]["status"] == "failed"
+
+
+def test_artifacts_are_cleaned_unless_requested(tmp_path):
+    """Private staging must not grow `outdir` without bound.
+
+    Per-invocation directories fixed a soundness race, but a backend
+    verifying continuously would accumulate one directory per call — where
+    the old shared path was at least capped by the number of distinct
+    stems. Artifacts are diagnostic only, so they are cleaned by default.
+    """
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    out = tmp_path / "out"
+
+    for _ in range(3):
+        payload = verify_structured(src, out)
+        assert payload["artifacts_kept"] is False
+        # No dangling path is advertised when the directory is gone.
+        assert payload["stub"] is None
+    assert list(out.iterdir()) == [], "scratch directories accumulated"
+
+    kept = verify_structured(src, out, keep_artifacts=True)
+    assert kept["artifacts_kept"] is True
+    assert kept["stub"] is not None and Path(kept["stub"]).exists()
+    assert len(list(out.iterdir())) == 1
+
+
+def test_kept_artifacts_are_content_addressed_not_per_run(tmp_path):
+    """Retention must not mean accumulation.
+
+    The CLI keeps artifacts so a human can open the printed stub path, but
+    a per-run directory name would leave one behind every invocation. The
+    name is derived from the stub's content instead: re-running an
+    unchanged file overwrites its own directory, while a different file
+    (including a same-stemmed one from elsewhere) still gets its own — the
+    collision that let one verification certify another's code.
+    """
+    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+    a_dir.mkdir(), b_dir.mkdir()
+    (a_dir / "m.py").write_text(GOOD)
+    (b_dir / "m.py").write_text(BROKEN_CLAMP)
+    out = tmp_path / "out"
+
+    first = verify_structured(a_dir / "m.py", out, keep_artifacts=True)
+    for _ in range(4):
+        again = verify_structured(a_dir / "m.py", out, keep_artifacts=True)
+        assert again["stub"] == first["stub"], "re-run moved to a new directory"
+    assert len(list(out.iterdir())) == 1, "re-runs accumulated directories"
+
+    other = verify_structured(b_dir / "m.py", out, keep_artifacts=True)
+    assert other["stub"] != first["stub"]
+    assert len(list(out.iterdir())) == 2
+
+    # Editing the file re-addresses it, so a stale stub is never reused.
+    (a_dir / "m.py").write_text(GOOD.replace("x + 1", "x + 2"))
+    edited = verify_structured(a_dir / "m.py", out, keep_artifacts=True)
+    assert edited["stub"] != first["stub"]
+
+
+def test_plain_write_text_has_an_observable_truncation_window(tmp_path):
+    """Why the stub is written atomically, demonstrated rather than asserted.
+
+    Opening for write truncates IMMEDIATELY, before any content is
+    produced. A concurrent reader — the Dafny process we launch on the
+    stub — can therefore observe an empty file. Content-addressing makes
+    two writers agree on the final bytes, but says nothing about what a
+    reader sees in between.
+    """
+    target = tmp_path / "stub.dfy"
+    target.write_text("method Complete() { }\n")
+    handle = open(target, "w")          # what write_text does first
+    try:
+        assert target.read_text() == "", (
+            "expected an observable truncation window; if this ever fails, "
+            "the atomicity argument for atomic_write_text needs revisiting")
+    finally:
+        handle.close()
+
+
+def test_atomic_write_never_leaves_a_partial_target(tmp_path, monkeypatch):
+    """The property the fix actually provides.
+
+    A concurrency test cannot reliably schedule itself into a
+    sub-millisecond window, so the guarantee is pinned directly: a write
+    that dies partway must leave the target untouched and no debris
+    behind — never a truncated stub for Dafny to read.
+    """
+    import lemmapy.agentio as mod
+    from lemmapy.agentio import atomic_write_text
+
+    target = tmp_path / "stub.dfy"
+    target.write_text("method Complete() { }\n")
+
+    class Boom(Exception):
+        pass
+
+    real_named_temp = mod.tempfile.NamedTemporaryFile
+
+    def exploding(*args, **kwargs):
+        handle = real_named_temp(*args, **kwargs)
+        original_write = handle.write
+
+        def half_then_fail(text):
+            original_write(text[: len(text) // 2])
+            raise Boom("disk full mid-write")
+
+        handle.write = half_then_fail
+        return handle
+
+    monkeypatch.setattr(mod.tempfile, "NamedTemporaryFile", exploding)
+    with pytest.raises(Boom):
+        atomic_write_text(target, "method Replacement() { }\n" * 50)
+
+    assert target.read_text() == "method Complete() { }\n", (
+        "a failed write corrupted the target")
+    assert not [f for f in tmp_path.iterdir() if f.name.endswith(".tmp")], (
+        "a failed write left a temp file behind")
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_concurrent_retained_verifications_share_one_directory(tmp_path):
+    # A smoke test, not a race reproduction: four retained verifications of
+    # one module must all succeed, address the same content-addressed
+    # directory, and leave no temp debris.
+    import concurrent.futures
+
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    out = tmp_path / "out"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        payloads = list(pool.map(
+            lambda _i: verify_structured(src, out, time_limit=60,
+                                         keep_artifacts=True),
+            range(4)))
+    for p in payloads:
+        assert p["status"] == "ok", (
+            f"a verifying module reported {p['status']} "
+            f"({p.get('error') or p['failures']})")
+    assert len({p["stub"] for p in payloads}) == 1
+    assert len(list(out.iterdir())) == 1
+    stub_dir = Path(payloads[0]["stub"]).parent
+    assert not [f for f in stub_dir.iterdir() if f.name.endswith(".tmp")]
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_concurrent_same_stem_verifications_do_not_swap_verdicts(tmp_path):
+    """The soundness case: a shared outdir must not let one verification
+    certify another's code.
+
+    The stub used to be written to `outdir/<stem>.dfy`, so two concurrent
+    verifications of same-stemmed modules raced on one file and Dafny read
+    whichever was written last. Both directions were silent and produced
+    well-formed payloads: the BROKEN module came back `ok`, and the correct
+    module came back `failed` carrying the other file's failures. An
+    embedding host shares one scratch directory across callers by nature,
+    so this is a soundness break rather than untidiness.
+    """
+    import concurrent.futures
+
+    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+    a_dir.mkdir(), b_dir.mkdir()
+    (a_dir / "m.py").write_text(GOOD)          # verifies
+    (b_dir / "m.py").write_text(BROKEN_CLAMP)  # violates its ensures
+    shared = tmp_path / "shared-out"
+
+    # Repeat: the race is timing-dependent and one pass can pass by luck.
+    for _ in range(4):
+        # keep_artifacts so the stub paths survive to be compared — that
+        # uniqueness is what the race violated.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(verify_structured, d / "m.py", shared,
+                                   time_limit=60, keep_artifacts=True)
+                       for d in (a_dir, b_dir)]
+            good, broken = (f.result() for f in futures)
+        assert good["status"] == "ok", (
+            f"correct module reported {good['status']} with failures "
+            f"{good['failures']} — verdict came from the other file's stub")
+        assert broken["status"] == "failed", (
+            "a module that violates its postcondition was reported "
+            f"{broken['status']} — unverified code certified")
+        # Stub paths must be unique, or the payload's own reference is stale.
+        assert good["stub"] != broken["stub"]
+        assert all(f["function"] == "clamp" for f in broken["failures"])
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")

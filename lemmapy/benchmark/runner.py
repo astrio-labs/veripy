@@ -30,6 +30,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..agentio import atomic_write_text
 from ..backends.dafny.driver import find_dafny, verify_dafny_file
 from ..backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from ..backends.runtime.emit import emit_checked
@@ -104,7 +105,8 @@ def _hunt(source: str, name: str, workdir: Path, per_condition_timeout: int,
     checked = workdir / f"{name}_checked.py"
     try:
         checked.parent.mkdir(parents=True, exist_ok=True)
-        checked.write_text(emit_checked(source, specs, src_name=f"{name}.py"))
+        atomic_write_text(checked,
+                          emit_checked(source, specs, src_name=f"{name}.py"))
     except OSError as exc:
         # Unwritable workdir degrades to a per-item ERROR, same as a
         # stuck analysis — never abort the run mid-scorecard.

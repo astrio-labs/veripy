@@ -7,11 +7,13 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from .frontend.conformance import RULES, aggregate, survey_paths
 from .frontend.extract import parse_source
 from .frontend.typegate import run_type_gate
+from .agentio import atomic_write_text, stub_dir_for
 from .backends.dafny.driver import verify_dafny_file
 from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from .backends.runtime.emit import emit_checked
@@ -299,8 +301,18 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             continue
         if sidecar.lemmas:
             sidecar_lemmas[str(path)] = sorted(sidecar.lemmas)
-        stub = outdir / f"{path.stem}.dfy"
-        stub.write_text(encoded.dafny_source + sidecar.text)
+        # Private staging per file: `outdir/<stem>.dfy` made two concurrent
+        # verifications of same-stemmed modules race on one path, and the
+        # loser's verdict was reported against the winner's stub — silently,
+        # in both directions. See verify_structured for the full note.
+        # Content-addressed because this path KEEPS its artifacts (the paths
+        # below are printed for a human to open), so re-running the same
+        # file must overwrite rather than leave a directory per run.
+        stub_text = encoded.dafny_source + sidecar.text
+        stub_dir = stub_dir_for(outdir, path, stub_text)
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        stub = stub_dir / f"{path.stem}.dfy"
+        atomic_write_text(stub, stub_text)
         result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
         if result.error is not None:
             print(f"{path}: dafny trouble: {result.error}", file=sys.stderr)
@@ -703,9 +715,13 @@ def main(argv: list[str] | None = None) -> int:
                           f"{args.json_out}; fix types or pass --no-types",
                           file=sys.stderr)
                     return 2
+            # The CLI is a human-facing surface: keep the emitted stub so
+            # the payload's `stub` path can actually be opened. A library
+            # caller gets the cleaning default instead.
             payloads = verify_structured_many(
                 args.files, args.outdir, time_limit=args.time_limit,
-                hunt_counterexamples=args.hunt_counterexamples)
+                hunt_counterexamples=args.hunt_counterexamples,
+                keep_artifacts=True)
             try:
                 dump(payloads, args.json_out)
             except OSError as exc:
