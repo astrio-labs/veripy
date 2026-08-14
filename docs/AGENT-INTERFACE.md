@@ -142,6 +142,49 @@ group.
 | --- | --- |
 | `unknown` | The producer could not classify this failure; the raw message is always attached. Origin is undetermined — use `status` (a `failed` run means the prover ran) and `region` to decide whether proof repair applies. A NULL `region` means even that could not be attributed: treat it as diagnostic output for a human, not as a repair target. Do not assume it is harness-only. |
 
+## Rejection `rule` ids
+
+`kind` says *what sort* of failure it is; **`rule` says which specific rule
+rejected the module**, for `conformance` records. Messages are prose and may
+be reworded — `rule` is the stable id an embedding host keys on.
+
+Every encoder rejection carries one. Specific ids are added over time; a
+caller that does not recognise an id should fall back on the
+`unsupported-*` prefix, which is stable.
+
+| id | meaning |
+| --- | --- |
+| `indexed-assignment` | `xs[i] = ...` — rebuild the list instead |
+| `attribute-assignment` | `obj.field = ...` — the fragment has value semantics |
+| `chained-assignment` | `a = b = ...` |
+| `unsupported-type` | a type outside int/bool/str/list[T]/Optional[T] |
+| `unsupported-call` | a call the encoder has no model for |
+| `unsupported-assignment`, `unsupported-attribute`, `unsupported-subscript` | — |
+| `unsupported-operator`, `unsupported-comparison` | — |
+| `unsupported-loop`, `unsupported-control-flow`, `unsupported-return` | — |
+| `unsupported-comprehension`, `unsupported-class`, `unsupported-function` | — |
+| `unsupported-statement`, `unsupported-expression`, `unsupported-construct` | fallbacks |
+
+Sidecar-whitelist rejections use a separate family through the same field —
+`bodiless`, `forbidden-token`, `attribute`, `lambda`, `spec-literal`,
+`malformed-ghost`, `non-declaration`.
+
+## Retrying
+
+**`tool-error` is the only retryable status.** It means the environment is
+broken — prover missing, unreadable file — not that anything was decided
+about the code. Every other non-`ok` status is a verdict, and retrying it
+changes nothing.
+
+## Concurrency and artifacts
+
+`verify_structured` is safe to call concurrently against a shared `outdir`:
+each invocation stages privately and writes its stub atomically. Artifacts
+are removed unless `keep_artifacts=True`, in which case the directory is
+content-addressed, so re-verifying an unchanged file overwrites rather than
+accumulates. `payload["stub"]` is `None` whenever artifacts were not kept —
+never a path that no longer exists.
+
 ## Stability contract
 
 - Fields are **added**, never repurposed; `schema` bumps if one is removed
@@ -150,3 +193,5 @@ group.
   reaching a caller without appearing there is a bug — a test scans the
   package for kind literals and fails on an undocumented one.
 - Adding a kind bumps `taxonomy_version` and updates this file.
+- `rule` ids follow the same discipline: added, never repurposed,
+  and a caller may always fall back on the `unsupported-*` prefix.

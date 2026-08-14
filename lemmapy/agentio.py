@@ -27,6 +27,22 @@ from .frontend.extract import parse_source
 SCHEMA = "lemmapy-failures/1"
 
 
+def _record(kind: str, *, message: str, rule: str | None = None,
+            function: str | None = None, region: str | None = "source",
+            py_line: int | None = None,
+            dafny_line: int | None = None) -> dict[str, Any]:
+    """One failure-record shape for every status.
+
+    The shape used to vary — `encode-error` and `spec-error` records
+    omitted the `function`/`region`/`dafny_line` keys that `failed` records
+    carry — so a consumer written against one status raised KeyError on
+    another. Every record now has every key; absent information is None.
+    """
+    return {"kind": kind, "rule": rule, "function": function,
+            "region": region, "py_line": py_line, "dafny_line": dafny_line,
+            "message": message}
+
+
 def _attribute(specs: Any, py_line: int | None) -> str | None:
     """Enclosing function by source span (functions are module-level and
     non-overlapping — enforced by the encoder)."""
@@ -172,7 +188,7 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
     except SyntaxError as exc:
         payload["status"] = "spec-error"
         payload["failures"] = [
-            {"kind": "syntax", "py_line": exc.lineno, "message": exc.msg}
+            _record("syntax", py_line=exc.lineno, message=exc.msg)
         ]
         return payload
     except (ValueError, TokenError) as exc:
@@ -180,14 +196,14 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
         # tokenizer raises TokenError on some malformed buffers.
         payload["status"] = "spec-error"
         payload["failures"] = [
-            {"kind": "syntax", "py_line": None, "message": str(exc)}
+            _record("syntax", py_line=None, message=str(exc))
         ]
         return payload
     payload["functions"] = [fn.name for fn in specs.functions]
     if specs.errors or specs.orphans:
         payload["status"] = "spec-error"
         payload["failures"] = [
-            {"kind": "spec", "py_line": c.line, "message": c.error}
+            _record("spec", py_line=c.line, message=c.error)
             for c in [*specs.errors, *specs.orphans] if c.error
         ]
         return payload
@@ -197,9 +213,18 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
                                 proof_lemmas=sidecar.lemmas)
     except EncodeError as exc:
         payload["status"] = "encode-error"
-        payload["failures"] = [
-            {"kind": "conformance", "py_line": exc.line, "message": exc.message}
-        ]
+        # Same record shape as a `failed` failure: a consumer written
+        # against one status must not KeyError on another. `rule` is the
+        # stable id to route on — the message is prose and may be reworded.
+        payload["failures"] = [{
+            "kind": "conformance",
+            "rule": exc.rule,
+            "function": _attribute(specs, exc.line),
+            "region": "source",
+            "py_line": exc.line,
+            "dafny_line": None,
+            "message": exc.message,
+        }]
         return payload
     except (OSError, UnicodeDecodeError) as exc:
         payload["status"] = "tool-error"
@@ -241,6 +266,7 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
         in_sidecar = d.dafny_line > stub_extent
         failure: dict[str, Any] = {
             "kind": d.obligation,
+            "rule": None,
             "function": None if in_sidecar else _attribute(specs, d.py_line),
             "region": "sidecar" if in_sidecar else "source",
             "py_line": None if in_sidecar else d.py_line,
@@ -257,12 +283,10 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
         # tells hosts to route `unknown` by region — so a fabricated
         # attribution would send a repair agent after the wrong file, or
         # after a repair that cannot apply at all.
-        payload["failures"].append({
-            "kind": "unknown", "function": None, "region": None,
-            "py_line": None, "dafny_line": None,
-            "message": (result.summary or result.raw[:400]
-                        or "verifier failed without diagnostics"),
-        })
+        payload["failures"].append(_record(
+            "unknown", region=None,
+            message=(result.summary or result.raw[:400]
+                     or "verifier failed without diagnostics")))
     if hunt_counterexamples and payload["failures"]:
         from .benchmark.runner import _hunt
 

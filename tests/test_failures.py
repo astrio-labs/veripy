@@ -128,7 +128,11 @@ def test_doc_lists_exactly_the_published_kinds():
     # (or vice versa) is the same broken promise as an undocumented kind.
     doc = (Path(__file__).resolve().parent.parent
            / "docs" / "AGENT-INTERFACE.md").read_text()
-    documented = set(re.findall(r"^\| `([a-z-]+)` \|", doc, re.M))
+    # Scope to the taxonomy section: the document also tabulates rejection
+    # `rule` ids, which are a DIFFERENT namespace in the same table shape,
+    # and scanning the whole file would conflate the two.
+    section = doc.split("## The failure taxonomy", 1)[1].split("\n## ", 1)[0]
+    documented = set(re.findall(r"^\| `([a-z-]+)` \|", section, re.M))
     assert documented == set(FAILURE_KINDS), {
         "in code only": sorted(set(FAILURE_KINDS) - documented),
         "in doc only": sorted(documented - set(FAILURE_KINDS)),
