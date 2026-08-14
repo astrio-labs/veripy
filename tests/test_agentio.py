@@ -210,6 +210,38 @@ def test_artifacts_are_cleaned_unless_requested(tmp_path):
     assert len(list(out.iterdir())) == 1
 
 
+def test_kept_artifacts_are_content_addressed_not_per_run(tmp_path):
+    """Retention must not mean accumulation.
+
+    The CLI keeps artifacts so a human can open the printed stub path, but
+    a per-run directory name would leave one behind every invocation. The
+    name is derived from the stub's content instead: re-running an
+    unchanged file overwrites its own directory, while a different file
+    (including a same-stemmed one from elsewhere) still gets its own — the
+    collision that let one verification certify another's code.
+    """
+    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+    a_dir.mkdir(), b_dir.mkdir()
+    (a_dir / "m.py").write_text(GOOD)
+    (b_dir / "m.py").write_text(BROKEN_CLAMP)
+    out = tmp_path / "out"
+
+    first = verify_structured(a_dir / "m.py", out, keep_artifacts=True)
+    for _ in range(4):
+        again = verify_structured(a_dir / "m.py", out, keep_artifacts=True)
+        assert again["stub"] == first["stub"], "re-run moved to a new directory"
+    assert len(list(out.iterdir())) == 1, "re-runs accumulated directories"
+
+    other = verify_structured(b_dir / "m.py", out, keep_artifacts=True)
+    assert other["stub"] != first["stub"]
+    assert len(list(out.iterdir())) == 2
+
+    # Editing the file re-addresses it, so a stale stub is never reused.
+    (a_dir / "m.py").write_text(GOOD.replace("x + 1", "x + 2"))
+    edited = verify_structured(a_dir / "m.py", out, keep_artifacts=True)
+    assert edited["stub"] != first["stub"]
+
+
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_concurrent_same_stem_verifications_do_not_swap_verdicts(tmp_path):
     """The soundness case: a shared outdir must not let one verification

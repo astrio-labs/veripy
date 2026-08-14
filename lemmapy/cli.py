@@ -13,6 +13,7 @@ from pathlib import Path
 from .frontend.conformance import RULES, aggregate, survey_paths
 from .frontend.extract import parse_source
 from .frontend.typegate import run_type_gate
+from .agentio import stub_dir_for
 from .backends.dafny.driver import verify_dafny_file
 from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from .backends.runtime.emit import emit_checked
@@ -304,9 +305,14 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
         # verifications of same-stemmed modules race on one path, and the
         # loser's verdict was reported against the winner's stub — silently,
         # in both directions. See verify_structured for the full note.
-        stub_dir = Path(tempfile.mkdtemp(prefix="verify-", dir=outdir))
+        # Content-addressed because this path KEEPS its artifacts (the paths
+        # below are printed for a human to open), so re-running the same
+        # file must overwrite rather than leave a directory per run.
+        stub_text = encoded.dafny_source + sidecar.text
+        stub_dir = stub_dir_for(outdir, path, stub_text)
+        stub_dir.mkdir(parents=True, exist_ok=True)
         stub = stub_dir / f"{path.stem}.dfy"
-        stub.write_text(encoded.dafny_source + sidecar.text)
+        stub.write_text(stub_text)
         result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
         if result.error is not None:
             print(f"{path}: dafny trouble: {result.error}", file=sys.stderr)

@@ -9,6 +9,7 @@ agent needs to act without re-parsing human-oriented output.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -53,14 +54,22 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     An embedding host naturally shares one scratch directory across
     callers, so this is a soundness break, not a tidiness issue.
 
-    Private staging costs one directory per call, so it is removed again
-    unless `keep_artifacts` — an embedded backend verifying continuously
-    would otherwise grow `outdir` without bound, where the old shared path
-    was at least capped by the number of distinct stems. The artifacts are
-    purely diagnostic (nothing downstream reads the stub; the CLI prints
-    its path for a human), so cleaning is the right default and
-    `payload["stub"]` is None when they are not kept, rather than a path
-    that no longer exists.
+    Staging is per-call, so `outdir` must not grow without bound — the old
+    shared path was at least capped by the number of distinct stems. Two
+    lifetimes, each named for how it ends:
+
+    - not kept (the default, and what an embedded backend wants): an
+      ephemeral `mkdtemp`, removed in a `finally`. Unique per thread, which
+      a stem- or PID-derived name is not.
+    - kept: a CONTENT-ADDRESSED directory, so re-verifying the same file
+      overwrites its own artifacts instead of accumulating a directory per
+      run. The digest covers everything that determines the stub, so two
+      calls sharing a directory necessarily write identical bytes — the
+      race cannot come back through the stable name.
+
+    The artifacts are purely diagnostic (nothing downstream reads the stub;
+    the CLI prints its path for a human), so `payload["stub"]` is None when
+    they are not kept, rather than a path that no longer exists.
     """
     payload: dict[str, Any] = {
         "schema": SCHEMA,
@@ -72,25 +81,42 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         "stub": None,
         "artifacts_kept": keep_artifacts,
     }
+    workdir: Path | None = None
     try:
         outdir.mkdir(parents=True, exist_ok=True)
-        # mkdtemp is atomic and unique per process AND per thread, which a
-        # stem- or PID-derived name is not.
-        workdir = Path(tempfile.mkdtemp(prefix="verify-", dir=outdir))
+        if not keep_artifacts:
+            workdir = Path(tempfile.mkdtemp(prefix="verify-", dir=outdir))
     except OSError as exc:
         payload["status"] = "tool-error"
         payload["error"] = f"cannot create work directory: {exc}"
         return payload
     try:
-        return _verify_into(path, workdir, payload, time_limit,
+        # When keeping, the directory is derived later from the stub's own
+        # content — it cannot be named before the stub exists.
+        return _verify_into(path, outdir, workdir, payload, time_limit,
                             hunt_counterexamples, keep_artifacts)
     finally:
-        if not keep_artifacts:
+        if workdir is not None and not keep_artifacts:
             shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _verify_into(path: Path, workdir: Path, payload: dict[str, Any],
-                 time_limit: int, hunt_counterexamples: bool,
+def stub_dir_for(outdir: Path, path: Path, stub_text: str) -> Path:
+    """Content-addressed staging directory for artifacts that are KEPT.
+
+    Stable across re-runs of an unchanged file (so nothing accumulates) and
+    distinct whenever the emitted stub differs — including two same-stemmed
+    modules from different directories, which is the collision that let one
+    verification certify another's code.
+    """
+    digest = hashlib.sha256(
+        (str(path.resolve()) + "\0" + stub_text).encode()
+    ).hexdigest()[:12]
+    return outdir / f"verify-{path.stem}-{digest}"
+
+
+def _verify_into(path: Path, outdir: Path, workdir: Path | None,
+                 payload: dict[str, Any], time_limit: int,
+                 hunt_counterexamples: bool,
                  keep_artifacts: bool) -> dict[str, Any]:
     try:
         source = path.read_text()
@@ -143,9 +169,13 @@ def _verify_into(path: Path, workdir: Path, payload: dict[str, Any],
         "lemmas": sorted(sidecar.lemmas),
         "text": sidecar.text,
     }
-    stub = workdir / f"{path.stem}.dfy"
+    stub_text = encoded.dafny_source + sidecar.text
     try:
-        stub.write_text(encoded.dafny_source + sidecar.text)
+        if workdir is None:  # keep_artifacts: name it after its content
+            workdir = stub_dir_for(outdir, path, stub_text)
+            workdir.mkdir(parents=True, exist_ok=True)
+        stub = workdir / f"{path.stem}.dfy"
+        stub.write_text(stub_text)
     except OSError as exc:
         payload["status"] = "tool-error"
         payload["error"] = f"cannot write stub: {exc}"
