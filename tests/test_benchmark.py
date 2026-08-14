@@ -632,6 +632,48 @@ def test_bump_climbs_the_full_ladder(tmp_path):
     assert score.mutants_killed == score.mutants_total
 
 
+def test_thin_panels_are_marked_not_presented_as_comparable():
+    """A rate over one mutant is one bit; it must not read like 8/8.
+
+    Small panels are a real limit of mutation-based scoring on short
+    functions. They still pool into the corpus total, but the per-task cell
+    is marked so a reader does not compare `1/1` with `8/8` as equals.
+    """
+    from lemmapy.benchmark.runner import (
+        LOW_RESOLUTION_PANEL,
+        PASS,
+        Rung,
+        TaskScore,
+        render_report,
+    )
+
+    def scored(task_id, killed, total):
+        s = TaskScore(task_id=task_id)
+        s.rungs = [Rung(n, PASS) for n in
+                   ["gate", "hunt", "mutants", "encode", "prove", "fidelity"]]
+        s.mutants_killed, s.mutants_total = killed, total
+        return s
+
+    thin, thick = scored("thin", 1, 1), scored("thick", 8, 8)
+    report = render_report([thin, thick])
+    assert "1/1?" in report, "a one-mutant panel must be marked"
+    assert "8/8?" not in report and "8/8" in report
+    assert LOW_RESOLUTION_PANEL == 3
+
+    # The profile must report the median it computed. `[1, 8]` has median
+    # 4.5, and a `.0f` format rounded it to "4" — an inaccurate statistic
+    # inside the line whose whole job is to state the instrument's
+    # precision. (Banker's rounding makes it read LOW, understating the
+    # resolution rather than overstating it, which is the less obvious
+    # direction to notice.)
+    assert "median 4.5" in report, report
+    assert "min 1" in report and "max 8" in report
+    assert "1 task(s) marked ?" in report
+
+    # A whole-number median must not gain a spurious decimal.
+    even = render_report([scored("a", 4, 4), scored("b", 4, 4)])
+    assert "median 4 " in even, even
+
 def test_adjudicated_timeout_is_not_credited_as_spec_strength(tmp_path,
                                                               monkeypatch):
     """Divergence is caught by the wall, not by the specification.
