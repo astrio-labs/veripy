@@ -56,18 +56,33 @@ def _run(artifact: Path, tmp_path: Path) -> dict:
     return verify_structured(src, tmp_path / "out", time_limit=60)
 
 
+# In PROVER_KINDS, but NOT evidence that an obligation went undischarged.
+# `resolution` means the sidecar did not typecheck, so — by its own entry in
+# lemmapy/failures.py — the proof was never ATTEMPTED. An archived near-miss
+# that fails this way says nothing about whether the prover rejected it.
+_NOT_A_PROOF_VERDICT = frozenset({"resolution"})
+
+
 def _the_prover_rejected_it(payload: dict) -> bool:
     """Evidence that the prover ran and turned this pack down.
 
-    Not the same as `status != "ok"`: a missing Dafny, a subprocess
-    timeout, an unreadable sidecar and a spec that no longer encodes all
-    report a non-ok status without ever putting a proof obligation to the
-    prover, so `!= "ok"` is satisfied by a toolchain that never worked —
-    the archive's negative claim would then be "checked" by nothing. Only
-    `failed` means obligations were tried and not discharged, and a
-    `failed` carrying no records is a verdict with nothing readable in it.
+    Three things have to be true, and each was separately satisfiable by a
+    run that established nothing:
+
+    - `status != "ok"` alone is satisfied by a missing Dafny, a subprocess
+      timeout, or a spec that no longer encodes — a toolchain that never
+      worked would have "checked" the archive's negative claim.
+    - a `failed` run with no records is a verdict with nothing readable in
+      it.
+    - a `failed` run whose only records are `resolution` errors means the
+      sidecar did not typecheck, so no obligation was ever put to the
+      prover. EVALUATION.md describes these artifacts as attempts whose own
+      postconditions did not prove; a typecheck error is a different claim.
     """
-    return payload["status"] == "failed" and bool(payload["failures"])
+    if payload["status"] != "failed":
+        return False
+    kinds = {f.get("kind") for f in (payload.get("failures") or [])}
+    return bool(kinds - _NOT_A_PROOF_VERDICT)
 
 
 def test_the_archive_is_not_empty():
@@ -158,3 +173,27 @@ def test_the_structural_checks_survive_a_prover_free_tier(tmp_path):
     assert "skipped" not in proc.stdout, (
         "the archive's structural checks are skipped when Dafny is absent, "
         f"so a prover-free CI tier checks nothing:\n{proc.stdout}")
+
+
+@pytest.mark.parametrize("payload,accepted", [
+    # The prover ran and could not discharge an obligation: the claim holds.
+    ({"status": "failed",
+      "failures": [{"kind": "postcondition"}]}, True),
+    # The sidecar did not typecheck, so nothing was ever put to the prover.
+    ({"status": "failed", "failures": [{"kind": "resolution"}]}, False),
+    # Mixed: something real was attempted alongside the typecheck noise.
+    ({"status": "failed",
+      "failures": [{"kind": "resolution"}, {"kind": "assertion"}]}, True),
+    # A toolchain that never worked must not "confirm" the archive.
+    ({"status": "tool-error", "failures": []}, False),
+    ({"status": "encode-error",
+      "failures": [{"kind": "conformance"}]}, False),
+    # A verdict with nothing readable in it.
+    ({"status": "failed", "failures": []}, False),
+    ({"status": "ok", "failures": []}, False),
+])
+def test_only_a_real_proof_verdict_confirms_a_near_miss(payload, accepted):
+    # Every row here except the first two was, at some point, accepted as
+    # evidence that an archived attempt still fails to verify. The published
+    # claim is specifically that the prover turned the pack down.
+    assert _the_prover_rejected_it(payload) is accepted
