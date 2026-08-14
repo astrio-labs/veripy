@@ -94,8 +94,8 @@ Two properties fall out of this design that no static benchmark has:
    ```
 
    *(Both figures predate the operand-replacement family and the modp/
-   triples tasks; the golden baseline on the current 14-task panel is
-   49/63 = 78%.)*
+   triples tasks; the golden baseline on the current 15-task panel is
+   54/69 = 78%.)*
 
    All twelve tautologies clear the type gate, the runtime-contract hunt,
    the encoder, and the SMT prover — *every automated check the toolchain
@@ -189,23 +189,25 @@ Full run (defaults: 12-mutant cap, 5s hunt budget, 60s prove budget,
 
 ```
 task                   gate     hunt     mutants  encode   prove    fidelity height
-below_threshold        pass     pass     1/1      pass     pass     pass     6/6
+below_threshold        pass     pass     1/1?     pass     pass     pass     6/6
 below_zero             pass     pass     3/3      pass     pass     pass     6/6
-bump                   pass     pass     2/2      pass     pass     pass     6/6
+bump                   pass     pass     2/2?     pass     pass     pass     6/6
 clamp                  pass     pass     8/8      pass     pass     pass     6/6
 gcd                    pass     pass     4/4      pass     pass     pass     6/6
-incr_list              pass     pass     2/2      pass     pass     pass     6/6
+incr_list              pass     pass     2/2?     pass     pass     pass     6/6
 intersperse            pass     pass     1/3      pass     pass     pass     6/6
 is_palindrome          pass     pass     2/4      pass     pass     pass     6/6
 is_prime               pass     pass     8/8      pass     pass     pass     6/6
-max_element            pass     pass     0/1*     pass     pass     pass     6/6
-modp                   pass     pass     8/8*     pass     pass     pass     6/6
+max_element            pass     pass     0/1*?    pass     pass     pass     6/6
+modp                   pass     pass     7/8*     pass     pass     pass     6/6
 rolling_max            pass     pass     1/5      pass     pass     pass     6/6
 sum_squares            pass     pass     2/6      pass     pass     pass     6/6
+sum_to_n               pass     pass     5/6*     pass     pass     pass     6/6
 triples_sum_to_zero    pass     pass     8/8      pass     pass     pass     6/6
 -----------------------------------------------------------------------------------
-tasks: 14   full-ladder: 14   spec strength: 49/63 mutants REFUTED by the specs (78%); 13 crashed (caught by the interpreter, not the spec — never credited); 1 diverged (adjudicated nontermination — caught by the wall, not the spec, so never credited)
-* 1 mutant(s) human-adjudicated as divergent; counted separately, NOT as spec strength; 1 mutant(s) excluded as adjudicated equivalent
+tasks: 15   full-ladder: 15   spec strength: 54/69 mutants REFUTED by the specs (78%); 13 crashed (caught by the interpreter, not the spec — never credited); 2 diverged (adjudicated nontermination — caught by the wall, not the spec, so never credited)
+panel resolution: median 4 mutants/task, min 1, max 8; 4 task(s) marked ? — panel too small for a per-task rate to be comparable
+* 2 mutant(s) human-adjudicated as divergent; counted separately, NOT as spec strength; 1 mutant(s) excluded as adjudicated equivalent
 ```
 
 The benchmark's first run also exercised its adjudication path: the raw run
