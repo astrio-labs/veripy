@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 
 from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.lsp import Server, analyze, digest, proof_view, prove
+from lemmapy.lsp import (
+    _MAX_PROVERS,
+    Server,
+    analyze,
+    digest,
+    proof_view,
+    prove,
+)
 
 GOOD = (
     "#@ verified\n"
@@ -492,3 +499,83 @@ def test_prove_names_the_users_sidecar_not_the_staging_copy(tmp_path):
     # is gone by then.
     assert payload["sidecar"]["path"] == str(sidecar)
     assert Path(payload["file"]).exists() and Path(payload["sidecar"]["path"]).exists()
+
+
+def test_a_sidecar_that_is_not_a_readable_file_is_an_environment_failure(tmp_path):
+    # `is_file()` follows symlinks, so a BROKEN one reads as "no sidecar
+    # here" and takes the no-sidecar path -- which verifies the buffer
+    # against an empty lemma set and returns every valid `#@ proof` clause
+    # as `unknown lemma`. That is the staging manufacturing a conformance
+    # rejection against the user's source, which is precisely what staging
+    # the sidecar exists to prevent.
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    (tmp_path / "m.proofs.dfy").symlink_to(tmp_path / "gone.dfy")
+    payload = prove(GOOD, str(src), time_limit=5)
+    assert payload["status"] == "tool-error"
+    assert "proof sidecar" in payload["error"]
+    # And it is reported as an environment failure, claiming nothing about
+    # the code.
+    diags, view = proof_view(payload)
+    assert diags[0]["severity"] == 3
+    assert all(p == "unknown" for p in view.values())
+
+
+def test_a_directory_wearing_the_sidecar_name_is_also_refused(tmp_path):
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    (tmp_path / "m.proofs.dfy").mkdir()
+    payload = prove(GOOD, str(src), time_limit=5)
+    assert payload["status"] == "tool-error"
+
+
+def test_a_genuinely_absent_sidecar_still_proves_normally(tmp_path, monkeypatch):
+    # The control: most modules have no sidecar, and that must stay the
+    # ordinary path rather than becoming an environment failure.
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+    monkeypatch.setattr("lemmapy.agentio.verify_structured",
+                        lambda path, outdir, **kw: {"status": "ok",
+                                                    "failures": [],
+                                                    "functions": ["bump"],
+                                                    "sidecar": None})
+    assert prove(GOOD, str(src), time_limit=5)["status"] == "ok"
+
+
+def test_superseded_requests_do_not_queue_for_a_prover(monkeypatch):
+    # The prover cap alone did not bound anything: superseded workers still
+    # parked on the semaphore until a slot freed, so a client that kept
+    # asking kept adding waiting threads. What has to be true is that they
+    # leave AT THE GATE -- while the first proof is still running.
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_prove(text, filename, time_limit=20):
+        entered.set()
+        release.wait(timeout=5)
+        return _proof_payload("ok", ["bump"])
+
+    monkeypatch.setattr("lemmapy.lsp.prove", slow_prove)
+    server = Server(io.BytesIO(), io.BytesIO())
+    uri = "file:///m.py"
+    server.documents[uri] = GOOD
+    server.handle({"jsonrpc": "2.0", "id": 1, "method": "lemmapy/verify",
+                   "params": {"textDocument": {"uri": uri}}})
+    assert entered.wait(timeout=5)  # the first request holds the prover
+    superseded = []
+    for i in range(2, 6):
+        server.handle({"jsonrpc": "2.0", "id": i, "method": "lemmapy/verify",
+                       "params": {"textDocument": {"uri": uri}}})
+        superseded.append(server._workers[-1])
+    # Each earlier request is superseded by the one after it, so every
+    # worker but the newest must finish WITHOUT waiting for the prover the
+    # first request is still holding.
+    for w in superseded[:-1]:
+        w.join(timeout=5)
+        assert not w.is_alive(), "a superseded worker queued for a prover slot"
+    assert superseded[-1].is_alive()  # the newest legitimately waits
+    release.set()
+    for w in server._workers:
+        w.join(timeout=5)

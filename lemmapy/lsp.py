@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -59,6 +60,11 @@ _SHUTDOWN_JOIN_S = 60.0
 # behind it (and superseded requests dropped at the gate, see
 # `_prove_and_reply`), makes the editor's load on the machine a constant.
 _MAX_PROVERS = 1
+
+# How long a queued worker waits before re-asking whether it is still the
+# newest request for its document. Short enough that a superseded worker
+# leaves promptly; long enough not to spin.
+_QUEUE_POLL_S = 0.05
 
 # LSP's ContentModified. Not an error in the user's code and not a verdict:
 # the request was overtaken by a newer one for the same document.
@@ -167,6 +173,14 @@ def prove(text: str, filename: str, time_limit: int = 20) -> dict[str, Any]:
         try:
             if sidecar.is_file():
                 shutil.copyfile(sidecar, staged.with_name(f"{stem}.proofs.dfy"))
+            elif os.path.lexists(sidecar):
+                # Present as a directory entry but not a readable regular
+                # file — a broken symlink, or a directory wearing the name.
+                # `is_file()` alone reports these as ABSENT, which silently
+                # takes the no-sidecar path and lands in the same
+                # manufactured `unknown lemma` rejection the OSError branch
+                # below exists to prevent.
+                raise OSError("not a readable regular file")
         except OSError as exc:
             # A sidecar that is there but cannot be copied is an ENVIRONMENT
             # failure, and it must be said as one. Carrying on would verify
@@ -357,15 +371,28 @@ class Server:
     def _prove_and_reply(self, msg_id: Any, uri: str, text: str,
                          filename: str, time_limit: int, seq: int) -> None:
         """Worker body: prove the SNAPSHOT taken when the request arrived."""
-        with self._provers:
-            # Re-checked here, holding a prover slot: a burst on one
-            # document queues up behind the running proof and then collapses
-            # — everything but the newest request leaves without ever
+        # The prover cap bounds Dafny processes, not THREADS. A worker that
+        # blocked outright on the semaphore stayed blocked until a slot
+        # freed, so a client firing faster than the prover answers kept
+        # adding parked threads — and a request superseded a millisecond
+        # later still held its place in the queue. Waiting in short steps
+        # with a supersession re-check between them lets a worker leave as
+        # soon as it is obsolete, so at most one request per document is
+        # ever genuinely waiting.
+        while not self._provers.acquire(timeout=_QUEUE_POLL_S):
+            if self._superseded(uri, seq):
+                self._content_modified(msg_id, uri)
+                return
+        try:
+            # Re-checked holding the slot: a burst on one document collapses
+            # here too — everything but the newest leaves without ever
             # starting Dafny.
             if self._superseded(uri, seq):
                 self._content_modified(msg_id, uri)
                 return
             payload = prove(text, filename, time_limit=time_limit)
+        finally:
+            self._provers.release()
         diagnostics, view = proof_view(payload)
         with self._state:
             if self._latest.get(uri) != seq:
