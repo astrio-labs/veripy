@@ -529,3 +529,69 @@ def test_full_matrix_with_prover_restores_and_resumes(tmp_path):
     assert run_experiment(corpus, tmp_path / "cells", [spec],
                           ["full", "one-shot"], 1, ledger,
                           time_limit=30) == []
+
+
+def _spec_ledger(path, rows):
+    """Write spec-writing trial rows straight into a ledger."""
+    import json
+
+    from lemmapy.benchmark.experiment import TRIAL_SCHEMA
+
+    with path.open("w") as fh:
+        for i, extra in enumerate(rows):
+            row = {
+                "schema": TRIAL_SCHEMA, "run_id": "r", "exam": "spec-writing",
+                # Distinct trials: `_rows` keeps only the newest row per
+                # (exam, task, engine, arm, trial) cell.
+                "task": f"t{i}", "engine": "e", "arm": "one-shot", "trial": i,
+                "restored": True, "iterations": 1, "reason": "scored",
+                "attempts": [], "proposals": 1, "rejections": 0,
+                "golden_lemmas": 0, "height": 3, "golden_height": 6,
+                "mutants_total": 4, "engine_panel_total": 4,
+                "mutants_killed": 1, "mutants_crashed": 0,
+                "golden_mutants_total": 4, "golden_mutants_killed": 4,
+                "survivors": [], "clause_counts": {}, "retry_reasons": [],
+                "rules_version": 1, "usage": [],
+                "usage_total": {"input_tokens": 0, "output_tokens": 0,
+                                "cost_usd": 0},
+                "wall_ms": 1, "max_iterations": 1, "time_limit": 60, "ts": 0,
+            }
+            row.update(extra)
+            fh.write(json.dumps(row) + "\n")
+
+
+def test_ledger_excludes_timeout_biased_rows_from_spec_strength(tmp_path):
+    # The exam report refuses to quote a row whose two arms went
+    # inconclusive on different mutants. The ledger pooled every row anyway
+    # — the same defect one level up, where the `!` marking does not travel
+    # with the row.
+    ledger = tmp_path / "l.jsonl"
+    _spec_ledger(ledger, [
+        {"task": "t", "comparable": True, "mutants_killed": 1},
+        {"task": "t", "comparable": False, "mutants_killed": 4},  # would flatter it
+    ])
+    table = summarize_ledger(ledger)
+    assert "spec strength: engine 25% vs golden 100%" in table
+    assert "1/2 trial(s)" in table and "not a whole-matrix rate" in table
+    # The per-task row is marked too, so the exclusion is visible where the
+    # number is read, not only in the footer.
+    assert "25%!" in table
+
+
+def test_ledger_rows_predating_the_check_are_not_assumed_comparable(tmp_path):
+    # Absent is not the same as comparable: defaulting a legacy row to True
+    # restores the biased rate on exactly the historical data nobody can
+    # re-examine.
+    ledger = tmp_path / "l.jsonl"
+    _spec_ledger(ledger, [{"mutants_killed": 4}])  # no `comparable` key
+    table = summarize_ledger(ledger)
+    assert "spec strength: NOT AGGREGATED" in table
+
+
+def test_ledger_still_pools_when_every_row_is_comparable(tmp_path):
+    ledger = tmp_path / "l.jsonl"
+    _spec_ledger(ledger, [{"comparable": True}, {"comparable": True}])
+    table = summarize_ledger(ledger)
+    assert "spec strength: engine 25% vs golden 100%" in table
+    assert "not a whole-matrix rate" not in table
+    assert "25%!" not in table
