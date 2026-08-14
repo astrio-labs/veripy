@@ -56,7 +56,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...frontend.parse import Clause, FunctionSpec, ModuleSpecs
-from .preamble import PREAMBLE
+from .preamble import PREAMBLE, PREAMBLE_NAMES
 
 
 @dataclass(frozen=True)
@@ -393,6 +393,20 @@ _ENCODED_BUILTINS = frozenset({
 })
 
 
+def _preamble_clash(name: str) -> str | None:
+    """The message for a Python name that lands on a preamble declaration,
+    or None if it does not. Every encoded name shares one Dafny scope with
+    the inlined preamble: a def becomes a duplicate top-level declaration,
+    a local or binder shadows the function the encoder calls for `sum`,
+    `%`, slicing and the rest. Both surface as a resolver error against
+    generated Dafny that no Python line explains, so the encoder rejects
+    the name in the fragment instead."""
+    if name in PREAMBLE_NAMES:
+        return (f"{name!r} collides with a declaration of the same name in "
+                f"the Dafny preamble the stub inlines — rename it")
+    return None
+
+
 class _MethodEncoder:
     def __init__(self, node: ast.FunctionDef, spec: FunctionSpec,
                  proof_lemmas: frozenset[str] = frozenset(),
@@ -412,6 +426,8 @@ class _MethodEncoder:
             raise EncodeError(
                 f"parameter {p!r} shadows a builtin the encoder gives meaning "
                 f"to — rename it", node.lineno)
+        for p in sorted(self.params & PREAMBLE_NAMES):
+            raise EncodeError(f"parameter {_preamble_clash(p)}", node.lineno)
         for n in ast.walk(node):
             bound: list[str] = []
             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
@@ -428,6 +444,9 @@ class _MethodEncoder:
                         f"binding {name!r} shadows a builtin the encoder gives "
                         f"meaning to — rename it"
                     ))
+                clash = _preamble_clash(name)
+                if clash:
+                    raise _err(n, f"binding {clash}")
             if isinstance(n, (ast.Global, ast.Nonlocal)) \
                     and set(n.names) & _ENCODED_BUILTINS:
                 raise _err(n, "global/nonlocal on a builtin name is outside the fragment")
@@ -736,6 +755,9 @@ class _MethodEncoder:
                 f"comprehension binder {raw!r} shadows an existing name — "
                 f"rename the binder"
             ))
+        clash = _preamble_clash(raw)
+        if clash:
+            raise _err(node, f"comprehension binder {clash}")
         it = comp.iter
         idx = self._fresh(f"{raw}_c")
         if isinstance(it, ast.Call) and isinstance(it.func, ast.Name) \
@@ -961,6 +983,9 @@ class _MethodEncoder:
                         f"evaluates the domain in the enclosing scope, the Dafny binder "
                         f"would capture it; rename the binder"
                     ))
+                clash = _preamble_clash(raw)
+                if clash:
+                    raise _err(gen, f"quantifier binder {clash}")
                 var = self._mangle(raw)
                 domain = comp.iter
                 if isinstance(domain, ast.Call) and isinstance(domain.func, ast.Name) \
@@ -1587,6 +1612,9 @@ def _module_shadow_check(module: ast.Module) -> None:
             raise EncodeError(
                 f"module-level binding of {name!r} shadows a builtin the "
                 f"encoder gives meaning to — rename it", line)
+        clash = _preamble_clash(name)
+        if clash:
+            raise EncodeError(f"module-level binding of {clash}", line)
 
     def scan(stmts: list[ast.stmt]) -> None:
         for stmt in stmts:

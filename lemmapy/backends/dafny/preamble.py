@@ -8,11 +8,13 @@ The divisibility lemma pack (needed for e.g. gcd's maximality ensures, which
 times out without it) is designated future preamble work — see ROADMAP.
 """
 
-PREAMBLE_VERSION = "0.5"
+import re
+
+PREAMBLE_VERSION = "0.6"
 
 PREAMBLE = """\
-// LemmaPy Dafny preamble v0.5 -- Python-exact arithmetic, indexing,
-// slicing, Optionals, folds, powers (ARCHITECTURE §7.1, §7 catalog).
+// LemmaPy Dafny preamble v0.6 -- Python-exact arithmetic, indexing,
+// slicing, Optionals, folds, powers, outcomes (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int
   requires b != 0
@@ -85,4 +87,65 @@ function PyPow(b: int, e: int): int
 {
   if e == 0 then 1 else b * PyPow(b, e - 1)
 }
+
+// Exceptions as VALUES (ARCHITECTURE §7.4). A function that can raise
+// returns PyOutcome<T> instead of T, so "this call can fail" is visible in
+// the type and provable in a postcondition:
+//     ensures b == 0 ==> result == PyErr(ZeroDivisionError)
+// The hierarchy is explicit and finite on purpose: `except` matches
+// against these constructors, and a bare `except`/`BaseException` would
+// claim to catch failures the model does not represent.
+datatype PyExn = ValueError | IndexError | ZeroDivisionError | TypeError | KeyError
+
+// IsFailure/PropagateFailure/Extract must be MEMBERS, not free functions:
+// that is exactly what makes the datatype failure-compatible, so a caller
+// can write `var x :- f(a);` and get Python's propagate-on-raise for free.
+// Declared free, every `:-` site fails resolution with an error pointing
+// at the call rather than the declaration.
+datatype PyOutcome<T> = PyOk(value: T) | PyErr(exn: PyExn)
+{
+  predicate IsFailure() { this.PyErr? }
+  function PropagateFailure<U>(): PyOutcome<U>
+    requires IsFailure()
+  { PyErr(this.exn) }
+  function Extract(): T
+    requires !IsFailure()
+  { this.value }
+}
 """
+
+
+# Names the preamble occupies in the emitted stub's top-level scope: every
+# column-0 declaration, plus the constructors a datatype injects into the
+# enclosing scope. An encoded Python name that lands on one of these is a
+# duplicate Dafny declaration (or, for a local or binder, a use that
+# resolves to the wrong thing), and the user sees a resolver error against
+# generated Dafny instead of a fragment rejection -- so the encoder reserves
+# this set. Derived from the preamble TEXT, not restated by hand: a
+# declaration added to a later preamble is reserved the moment it is
+# written, and cannot reopen the hole by being forgotten here.
+# Datatype members (IsFailure/PropagateFailure/Extract) are deliberately not
+# in the set -- they are reached only through a receiver, so a Python name
+# equal to one of them cannot collide.
+_DECL = re.compile(
+    r"^(?:function|predicate|method|lemma|datatype|codatatype|newtype|type"
+    r"|const|class|trait|iterator)\s+(?:\{:[^}]*\}\s*)*"
+    r"([A-Za-z_?'][A-Za-z0-9_?']*)",
+    re.MULTILINE,
+)
+_DATATYPE_RHS = re.compile(
+    r"^(?:co)?datatype\s+\w+(?:<[^>]*>)?\s*=\s*(.*)$", re.MULTILINE)
+_CTOR = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _top_level_names(text: str) -> frozenset[str]:
+    names = set(_DECL.findall(text))
+    for rhs in _DATATYPE_RHS.findall(text):
+        for alternative in rhs.split("|"):
+            ctor = _CTOR.match(alternative)
+            if ctor:
+                names.add(ctor.group(1))
+    return frozenset(names)
+
+
+PREAMBLE_NAMES = _top_level_names(PREAMBLE)

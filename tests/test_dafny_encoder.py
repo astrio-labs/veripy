@@ -1,6 +1,7 @@
 import pytest
 
 from lemmapy.backends.dafny.encoder import EncodeError, encode_module
+from lemmapy.backends.dafny.preamble import PREAMBLE_NAMES
 from lemmapy.frontend.extract import parse_source
 
 
@@ -515,6 +516,74 @@ def test_quantifier_binder_capture_by_genexp_binder_rejected():
     )
     with pytest.raises(EncodeError, match="shadows an existing name"):
         _encode(src)
+
+
+def test_preamble_names_are_exactly_the_globally_visible_declarations():
+    # The reserved set is scraped out of the preamble TEXT so a declaration
+    # added later is reserved without anyone remembering to. The cost is
+    # that a preamble rewritten in a shape the scraper cannot parse would
+    # leave the set empty and reopen the hole with every test still green,
+    # so v0.6's globally visible names are pinned here: growing the
+    # preamble has to be a deliberate edit in this test too.
+    assert PREAMBLE_NAMES == {
+        "PyMod", "PyFloorDiv", "PyMin", "PyMax", "PyAbs", "PyIndex",
+        "PySlice", "PySeqMax", "PySeqMin", "PySum", "PyPow",
+        "PyOpt", "PyNone", "PySome",
+        "PyExn", "ValueError", "IndexError", "ZeroDivisionError",
+        "TypeError", "KeyError",
+        "PyOutcome", "PyOk", "PyErr",
+    }
+    # Datatype members are reached only through a receiver, so they are not
+    # in the top-level scope and a Python name equal to one cannot collide.
+    assert not ({"IsFailure", "PropagateFailure", "Extract"} & PREAMBLE_NAMES)
+
+
+def test_module_name_colliding_with_preamble_declaration_rejected():
+    # The preamble is inlined into the same Dafny scope as the encoded
+    # module, so `def PyExn` emitted a second top-level PyExn and Dafny
+    # answered "duplicate name of top-level declaration" against generated
+    # code — a resolver error on a file the user never wrote.
+    for name in sorted(PREAMBLE_NAMES):
+        src = (
+            "#@ ensures result == x\n"
+            f"def {name}(x: int) -> int:\n"
+            "    return x\n"
+        )
+        with pytest.raises(EncodeError, match="collides with a declaration"):
+            _encode(src)
+    # Module-level bindings that are not defs land in the same scope.
+    for line in ("PySum = 5\n", "from math import prod as PyMax\n"):
+        src = line + "#@ ensures result == 0\ndef f() -> int:\n    return 0\n"
+        with pytest.raises(EncodeError, match="collides with a declaration"):
+            _encode(src)
+
+
+def test_local_param_and_binder_colliding_with_preamble_rejected():
+    # `sum(...)` in a spec encodes to a CALL of the preamble's PySum; a
+    # local, parameter or binder of that name shadows the function at the
+    # call site and Dafny reports "non-function expression is called with
+    # parameters" — again against generated Dafny, not the Python line.
+    cases = (
+        "#@ ensures result == sum(xs)\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    PySum = 0\n"
+        "    return PySum\n",
+
+        "#@ ensures result == 0\n"
+        "def g(PyMod: int) -> int:\n"
+        "    return 0\n",
+
+        "#@ ensures forall PySum in range(len(xs)) :: sum(xs[:PySum]) >= 0\n"
+        "def h(xs: list[int]) -> int:\n"
+        "    return 0\n",
+
+        "#@ ensures result == sum(PyAbs for PyAbs in xs)\n"
+        "def k(xs: list[int]) -> int:\n"
+        "    return 0\n",
+    )
+    for src in cases:
+        with pytest.raises(EncodeError, match="collides with a declaration"):
+            _encode(src)
 
 
 def test_range_keywords_rejected_everywhere():
