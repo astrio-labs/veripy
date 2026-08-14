@@ -395,6 +395,20 @@ def cmd_difftest(paths: list[Path], outdir: Path, examples: int) -> int:
     return 2 if trouble else 0
 
 
+def cmd_screen(tasks: Path, time_limit: int = 60) -> int:
+    """Report whether each task's proof pack is load-bearing — the gate a
+    candidate must clear before joining the exam roster."""
+    from .benchmark.exam import exam_tasks, render_screen_report, screen_sidecar
+
+    results = [screen_sidecar(d, time_limit=time_limit)
+               for d in exam_tasks(tasks)]
+    print(render_screen_report(results))
+    if not results:
+        print(f"no sidecar-bearing tasks under {tasks}", file=sys.stderr)
+        return 2
+    return 0 if all(r.adoptable for r in results) else 1
+
+
 def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
                  mutant_cap: int, quick: bool) -> int:
     from .benchmark.runner import ERROR, FAIL, render_report, run_benchmark, scores_to_json
@@ -591,6 +605,11 @@ def main(argv: list[str] | None = None) -> int:
         help="with --exam spec-writing: retries allowed for a MECHANICALLY "
              "invalid answer (unparseable, freeze violation, bad clause)",
     )
+    p_benchmark.add_argument(
+        "--screen", action="store_true",
+        help="report whether each task's proof pack is LOAD-BEARING (the "
+             "gate for joining the exam roster) instead of running the "
+             "ladder; exits 1 if any pack is vacuous or unscreenable")
     p_benchmark.add_argument("--quick", action="store_true",
                             help="small mutant panels and example counts (CI mode)")
     p_benchmark.add_argument("--max-iterations", type=int, default=4,
@@ -747,6 +766,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "difftest":
         return cmd_difftest(args.files, args.outdir, args.examples)
     if args.command == "benchmark":
+        if args.screen:
+            return cmd_screen(args.tasks, time_limit=args.time_limit)
         if args.exam == "proof-repair":
             from .benchmark.exam import render_exam_report, run_repair_exam
             from .repair import make_engine
