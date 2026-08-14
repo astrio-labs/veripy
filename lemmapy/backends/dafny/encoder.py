@@ -295,13 +295,57 @@ class EncodeError(Exception):
         super().__init__(message)
         self.message = message
         self.line = line
-        # Machine-readable classification for sidecar-whitelist rejections
-        # (telemetry: which rule an engine proposal tripped); None elsewhere.
+        # Machine-readable classification. ALWAYS set for encoder
+        # rejections: an embedding host must route on a stable id, not on
+        # English prose that is neither versioned nor documented.
         self.rule = rule
 
 
-def _err(node: ast.AST, message: str) -> EncodeError:
-    return EncodeError(message, getattr(node, "lineno", None))
+# Node class -> coarse rule id, used when a site does not name a finer one.
+# Deriving a default means every rejection carries *some* stable id without
+# 60-odd hand edits, and a caller can rely on the field being present.
+_NODE_RULES: dict[type, str] = {
+    ast.Assign: "unsupported-assignment",
+    ast.AugAssign: "unsupported-assignment",
+    ast.AnnAssign: "unsupported-assignment",
+    ast.Call: "unsupported-call",
+    ast.Attribute: "unsupported-attribute",
+    ast.Subscript: "unsupported-subscript",
+    ast.Compare: "unsupported-comparison",
+    ast.BinOp: "unsupported-operator",
+    ast.UnaryOp: "unsupported-operator",
+    ast.BoolOp: "unsupported-operator",
+    ast.For: "unsupported-loop",
+    ast.While: "unsupported-loop",
+    ast.Break: "unsupported-control-flow",
+    ast.Continue: "unsupported-control-flow",
+    ast.Try: "unsupported-control-flow",
+    ast.Raise: "unsupported-control-flow",
+    ast.Return: "unsupported-return",
+    ast.Lambda: "unsupported-expression",
+    ast.ListComp: "unsupported-comprehension",
+    ast.SetComp: "unsupported-comprehension",
+    ast.DictComp: "unsupported-comprehension",
+    ast.GeneratorExp: "unsupported-comprehension",
+    ast.ClassDef: "unsupported-class",
+    ast.FunctionDef: "unsupported-function",
+}
+
+
+def _default_rule(node: ast.AST) -> str:
+    for cls in type(node).__mro__:
+        if cls in _NODE_RULES:
+            return _NODE_RULES[cls]
+    if isinstance(node, ast.stmt):
+        return "unsupported-statement"
+    if isinstance(node, ast.expr):
+        return "unsupported-expression"
+    return "unsupported-construct"
+
+
+def _err(node: ast.AST, message: str, rule: str | None = None) -> EncodeError:
+    return EncodeError(message, getattr(node, "lineno", None),
+                       rule=rule or _default_rule(node))
 
 
 def _dafny_type(ann: ast.expr | None, where: ast.AST) -> str:
@@ -1336,6 +1380,32 @@ class _MethodEncoder:
                     self._for_range(stmt, indent)
                 else:
                     self._for_each(stmt, indent)
+            case ast.Assign(targets=[ast.Subscript()]):
+                # Reached only because the supported Assign shapes did not
+                # match. Saying "Assign is unsupported" while listing
+                # assignment as admitted is what a repair agent loops on.
+                raise _err(stmt,
+                           "indexed assignment (`xs[i] = ...`) is outside the "
+                           "slice-1 encoder -- rebuild the list instead (e.g. "
+                           "a comprehension or append); see docs/SEMANTICS.md",
+                           rule="indexed-assignment")
+            case ast.Assign(targets=[ast.Attribute()]):
+                raise _err(stmt,
+                           "attribute assignment (`obj.field = ...`) is outside "
+                           "the slice-1 encoder -- the fragment has value "
+                           "semantics and no object mutation",
+                           rule="attribute-assignment")
+            case ast.Assign(targets=targets) if len(targets) > 1:
+                raise _err(stmt,
+                           "chained assignment (`a = b = ...`) is outside the "
+                           "slice-1 encoder -- assign one target at a time",
+                           rule="chained-assignment")
+            case ast.Assign():
+                raise _err(stmt,
+                           "this assignment form is outside the slice-1 "
+                           "encoder -- admitted targets: a single name, or a "
+                           "tuple of names for a parallel swap",
+                           rule="unsupported-assignment")
             case _:
                 raise _err(stmt, f"statement {type(stmt).__name__} is outside the slice-1 encoder "
                                  f"-- admitted: assignment, if/else, while, for over "

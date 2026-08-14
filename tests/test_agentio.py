@@ -409,3 +409,88 @@ def test_sidecar_state_travels_with_the_payload(tmp_path):
     assert payload["sidecar"]["exists"] is True
     assert payload["sidecar"]["lemmas"] == ["Trivial"]
     assert "Trivial" in payload["sidecar"]["text"]
+
+
+RECORD_KEYS = {"kind", "rule", "function", "region", "py_line", "dafny_line",
+               "message"}
+
+
+def _statuses_with_records(tmp_path):
+    """One payload per status that produces failure records."""
+    out = tmp_path / "out"
+    cases = {}
+
+    syntax = tmp_path / "syn.py"
+    syntax.write_text("def f(:\n")
+    cases["spec-error/syntax"] = verify_structured(syntax, out)
+
+    bad_clause = tmp_path / "cl.py"
+    bad_clause.write_text("#@ ensures ???\ndef f() -> int:\n    return 0\n")
+    cases["spec-error/spec"] = verify_structured(bad_clause, out)
+
+    outside = tmp_path / "frag.py"
+    outside.write_text(
+        "#@ ensures result >= 0\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    xs[0] = 1\n"
+        "    return xs[0]\n")
+    cases["encode-error"] = verify_structured(outside, out)
+    return cases
+
+
+def test_every_failure_record_has_the_same_shape(tmp_path):
+    """A consumer written against one status must not break on another.
+
+    `encode-error` and `spec-error` records used to omit the
+    `function`/`region`/`dafny_line` keys that `failed` records carry, so a
+    client reading `record["function"]` raised KeyError depending on which
+    way verification went.
+    """
+    for label, payload in _statuses_with_records(tmp_path).items():
+        assert payload["failures"], f"{label} produced no actionable record"
+        for record in payload["failures"]:
+            assert set(record) == RECORD_KEYS, f"{label} record shape differs"
+
+
+def test_fragment_rejections_carry_a_machine_readable_rule(tmp_path):
+    """Routing must not require regexing English.
+
+    Rejection messages are prose and may be reworded; `rule` is the stable
+    id an embedding host keys on.
+    """
+    out = tmp_path / "out"
+    src = tmp_path / "m.py"
+    src.write_text(
+        "#@ ensures result >= 0\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    xs[0] = 1\n"
+        "    return xs[0]\n")
+    payload = verify_structured(src, out)
+    assert payload["status"] == "encode-error"
+    (record,) = payload["failures"]
+    assert record["rule"] == "indexed-assignment"
+    # The message must not contradict itself by listing the construct it
+    # has just rejected as admitted.
+    assert "indexed assignment" in record["message"]
+    assert "-- admitted: assignment" not in record["message"]
+
+
+def test_unsupported_type_and_call_get_distinct_rules(tmp_path):
+    out = tmp_path / "out"
+    dict_src = tmp_path / "d.py"
+    dict_src.write_text(
+        "#@ ensures result >= 0\n"
+        "def f(d: dict[str, int]) -> int:\n"
+        "    return 0\n")
+    dict_payload = verify_structured(dict_src, out)
+    assert dict_payload["status"] == "encode-error"
+    assert dict_payload["failures"][0]["rule"] is not None
+
+    call_src = tmp_path / "c.py"
+    call_src.write_text(
+        "#@ ensures result >= 0\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    return len(sorted(xs))\n")
+    call_payload = verify_structured(call_src, out)
+    assert call_payload["status"] == "encode-error"
+    assert call_payload["failures"][0]["rule"] is not None

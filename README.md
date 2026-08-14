@@ -94,5 +94,6 @@ The result is a precise, honest guarantee: *verified properties hold for every e
 | [SPEC-GRAMMAR.md](docs/SPEC-GRAMMAR.md) | The `#@` spec language: clauses, expression syntax, desugaring rules, decisions | ✅ (v0.2, frozen) |
 | [GRAMMAR-CONTACT.md](docs/GRAMMAR-CONTACT.md) | The M0 exit exercise: 20 annotated HumanEval/MBPP tasks, mutation-tested; friction findings and the freeze decision | ✅ |
 | [CORPUS-RESULTS.md](docs/CORPUS-RESULTS.md) | Fragment-coverage numbers: nine OSS repos + the HumanEval/MBPP greenfield contrast | ✅ |
+| [AGENT-API.md](docs/AGENT-API.md) | The machine contract (`lemmapy-failures/1`): statuses, failure-record shape, rejection `rule` ids, concurrency and artifact guarantees | ✅ |
 | [BENCHMARK.md](docs/BENCHMARK.md) | lemmapy-benchmark: assurance-ladder scoring over annotated-Python tasks, mutant-panel spec strength | ✅ (v0) |
 | [EVALUATION.md](docs/EVALUATION.md) | Research questions, the proof-completion benchmark family, measurement plan | ✅ (partial draft) |
