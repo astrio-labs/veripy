@@ -181,6 +181,152 @@ def test_adjudicated_timeout_counts_as_visible_kill(tmp_path, monkeypatch):
     assert score.mutants_killed == score.mutants_total
 
 
+def test_mutant_descriptions_are_unique_within_a_panel():
+    # The adjudication channels key on the description, so a collision
+    # would let ONE human ruling apply to several mutants (a ruling about
+    # an equivalent mutant could erase a real spec weakness from the
+    # denominator). Descriptions carry the column for exactly this reason.
+    from collections import Counter
+    from pathlib import Path
+
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int, c: int) -> int:\n"
+        "    if a + b + c > 0:\n"
+        "        return 1\n"
+        "    return 0\n"
+    )
+    descs = [d for d, _ in generate_mutations(src, max_mutants=16)]
+    assert len(descs) >= 2
+    assert not [k for k, v in Counter(descs).items() if v > 1]
+
+    # ...and across the shipped corpus, whose panels the published
+    # scorecard rests on.
+    tasks = Path(__file__).resolve().parent.parent / "benchmark" / "tasks"
+    for task_dir in sorted(tasks.iterdir()):
+        task_py = task_dir / "task.py"
+        if not task_py.exists():
+            continue
+        panel = [d for d, _ in generate_mutations(task_py.read_text(), 8)]
+        dups = [k for k, v in Counter(panel).items() if v > 1]
+        assert not dups, f"{task_dir.name}: colliding descriptions {dups}"
+
+
+def test_stale_or_ambiguous_adjudication_errors_the_rung(tmp_path, monkeypatch):
+    # A ruling that matches no mutant is stale (a source edit shifted the
+    # site) or a typo; scoring the panel anyway would publish a number
+    # whose meaning is unknown.
+    import json as json_mod
+
+    from lemmapy.benchmark import runner as runner_mod
+
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(
+        "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    )
+    (task_dir / "meta.json").write_text(json_mod.dumps(
+        {"id": "t", "timeout_kills": ["line 999 col 1: `+` -> `-`"]}))
+
+    calls = {"n": 0}
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        calls["n"] += 1
+        return ("clean", "") if calls["n"] == 1 else ("counterexample", "")
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=4)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == runner_mod.ERROR
+    assert "matches 0 mutants" in mutants.detail
+    # The panel never scored: no kills were counted despite every hunt
+    # being a counterexample.
+    assert score.mutants_killed == 0
+    assert score.height == 2  # gate + hunt only; the panel never scored
+
+
+def test_panel_emptied_by_adjudication_fails_not_skips(tmp_path, monkeypatch):
+    # SKIP counts toward ladder height: a panel whose every mutant was
+    # ruled equivalent measured NOTHING and must not read as "no mutation
+    # sites".
+    import json as json_mod
+
+    from lemmapy.benchmark import runner as runner_mod
+
+    src = "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
+    all_descs = [d for d, _ in generate_mutations(src, max_mutants=8)]
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(src)
+    (task_dir / "meta.json").write_text(json_mod.dumps(
+        {"id": "t", "equivalent_mutants": all_descs}))
+
+    monkeypatch.setattr(runner_mod, "_hunt", lambda *a, **k: ("clean", ""))
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=8)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == "fail"
+    assert "emptied by adjudication" in mutants.detail
+    assert score.height == 2  # the rung blocks the climb
+
+
+def test_error_census_names_timeouts_too(tmp_path, monkeypatch):
+    # With an errored analysis AND an unadjudicated timeout, the printed
+    # decomposition must still add up to the panel, and the remedy pointer
+    # must not vanish behind the error precedence.
+    from lemmapy.benchmark import runner as runner_mod
+
+    task_dir = tmp_path / "t"
+    task_dir.mkdir()
+    (task_dir / "task.py").write_text(
+        "#@ ensures result >= 0 or result < 0\n"
+        "def f(x: int) -> int:\n"
+        "    if x > 0:\n"
+        "        return x + 1\n"
+        "    return x - 2\n"
+    )
+    (task_dir / "meta.json").write_text('{"id": "t"}')
+    verdicts = iter(["clean", "counterexample", "timeout", "sentinel"])
+
+    def fake_hunt(source, name, workdir, timeout, wall=None):
+        v = next(verdicts, "sentinel")
+        if v == "sentinel":
+            return runner_mod.ERROR, "crosshair exited 2"
+        return v, ""
+
+    monkeypatch.setattr(runner_mod, "_hunt", fake_hunt)
+    monkeypatch.setattr(runner_mod, "run_type_gate",
+                        lambda paths: type("G", (), {"available": True, "errors": []})())
+    score = runner_mod.run_task(task_dir, tmp_path / "w", mutant_cap=3)
+    mutants = next(r for r in score.rungs if r.name == "mutants")
+    assert mutants.status == runner_mod.ERROR
+    assert "unadjudicated timeout(s)" in mutants.detail
+    assert "timeout_kills" in mutants.detail
+    # killed + survivors + timeouts + errors == panel
+    assert (score.mutants_killed + len(score.survivors) + len(score.timeouts)
+            + 1) == score.mutants_total
+
+
+def test_report_marks_and_footnotes_adjudicated_panels():
+    # The headline must not pass human judgement off as measurement.
+    from lemmapy.benchmark.runner import PASS, Rung, TaskScore, render_report
+
+    s = TaskScore(task_id="t")
+    s.mutants_total, s.mutants_killed = 3, 3
+    s.adjudicated_timeouts = 1
+    s.adjudicated = 2
+    s.rungs.extend([Rung(n, PASS, "") for n in
+                    ("gate", "hunt", "mutants", "encode", "prove", "fidelity")])
+    report = render_report([s])
+    row = next(l for l in report.splitlines() if l.startswith("t "))
+    assert "3/3*" in row
+    assert "human-adjudicated" in report
+    assert "adjudicated equivalent" in report
+
+
 def test_report_shows_err_not_ratio_for_incomplete_panel():
     # An errored panel's kill count is a lower bound, not a mutation
     # score — the scorecard must say `err`, not render 1/3 like a

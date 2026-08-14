@@ -1,1 +1,1 @@
-{"id": "modp", "origin": "HumanEval/49", "license": "MIT", "timeout_kills": ["line 27: `+` -> `-`"]}
+{"id": "modp", "origin": "HumanEval/49", "license": "MIT", "timeout_kills": ["line 27 col 14: `+` -> `-`"]}

@@ -96,15 +96,15 @@ incr_list              pass  pass  2/2      pass    pass   pass      6/6
 intersperse            pass  pass  3/3      pass    pass   pass      6/6
 is_palindrome          pass  pass  4/4      pass    pass   pass      6/6
 is_prime               pass  pass  7/7      pass    pass   pass      6/6
-max_element            pass  pass  1/1      pass    pass   pass      6/6
-modp                   pass  pass  6/6      pass    pass   pass      6/6
+max_element            pass  pass  1/1*     pass    pass   pass      6/6
+modp                   pass  pass  6/6*     pass    pass   pass      6/6
 rolling_max            pass  pass  5/5      pass    pass   pass      6/6
 sum_squares            pass  pass  6/6      pass    pass   pass      6/6
 triples_sum_to_zero    pass  pass  8/8      pass    pass   pass      6/6
 
-tasks: 14   full-ladder: 14   spec strength: 56/56 killed (+1 equivalent
-adjudicated; modp's panel includes 1 adjudicated timeout kill — the
-diverging `+` -> `-` loop mutant)
+tasks: 14   full-ladder: 14   spec strength: 56/56 mutants killed (100%)
+* 1 kill(s) human-adjudicated (timeout), not refuted by the hunter;
+  1 mutant(s) excluded as adjudicated equivalent
 ```
 
 The benchmark's first run also exercised its adjudication path: the raw run
@@ -131,6 +131,29 @@ counts as a kill and is labeled distinctly in the rung detail (`k/N killed
 (m adjudicated timeout kill(s))`). Mutants also run under a tighter wall
 than the original so one diverging mutant cannot stall a panel, and a
 launch failure remains an analysis ERROR that blocks the rung.
+
+### Adjudications are identified, validated, and never laundered
+
+Both channels key on the mutant's **description**, which names the exact
+site (`line 27 col 14: `+` -> `-``). The column is load-bearing: without
+it two mutations on one line share a description, and a single human
+ruling would silently apply to both — an adversarial review demonstrated
+a ruling about a genuinely *equivalent* mutant erasing a genuinely
+*behavior-changing* one from the denominator and republishing the panel
+as 100% spec strength.
+
+Every adjudication entry must therefore match **exactly one** mutant in
+the generated panel. An entry matching zero (a typo, or a stale ruling
+after a source edit shifted the site) or several makes the panel's
+meaning unknown, so the rung ERRORs and names the offending entry rather
+than scoring. A panel whose every mutant was ruled equivalent measured
+nothing and FAILs — it must not read as a skipped-because-absent rung,
+which would count toward ladder height.
+
+Finally, the scorecard never passes human judgement off as measurement:
+a panel containing adjudicated kills or exclusions is starred (`6/6*`)
+and footnoted with the exact counts, so `6/6*` is visibly not the same
+claim as `6/6`.
 
 ## Scoring and reproducibility
 

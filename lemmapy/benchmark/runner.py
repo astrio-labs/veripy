@@ -165,7 +165,27 @@ def run_task(
         equivalents = set(meta.get("equivalent_mutants", []))
         timeout_adjudicated = set(meta.get("timeout_kills", []))
     mutants = generate_mutations(source, max_mutants=mutant_cap)
-    score.adjudicated = sum(1 for d, _ in mutants if d in equivalents)
+    # Every adjudication must name EXACTLY ONE mutant in the generated
+    # panel. A ruling that matches nothing is stale (a source edit shifted
+    # the site) or a typo; one that matches several would apply a single
+    # human judgement to several mutants. Either way the panel's meaning is
+    # unknown, so the rung errors instead of scoring.
+    panel_descriptions = [d for d, _ in mutants]
+    stale: list[str] = []
+    for key, entries in (("equivalent_mutants", equivalents),
+                         ("timeout_kills", timeout_adjudicated)):
+        for entry in sorted(entries):
+            hits = panel_descriptions.count(entry)
+            if hits != 1:
+                stale.append(
+                    f"{key} entry {entry!r} matches {hits} mutants (expected 1)")
+    if stale:
+        score.mutants_total = len(mutants)
+        score.rungs.append(Rung(
+            "mutants", ERROR,
+            "adjudication does not match the panel: " + "; ".join(stale[:3])))
+        return score
+    score.adjudicated = sum(1 for d in panel_descriptions if d in equivalents)
     mutants = [(d, m) for d, m in mutants if d not in equivalents]
     score.mutants_total = len(mutants)
     for i, (description, mutated) in enumerate(mutants):
@@ -191,19 +211,31 @@ def run_task(
         # errors excluded from both counts
     analysis_errors = (score.mutants_total - score.mutants_killed
                        - len(score.survivors) - len(score.timeouts))
-    if score.mutants_total == 0:
+    if score.mutants_total == 0 and score.adjudicated:
+        # The panel existed but adjudication emptied it: nothing was
+        # measured, so this must not read as a skipped-because-absent rung
+        # (SKIP counts toward ladder height).
+        score.rungs.append(Rung(
+            "mutants", FAIL,
+            f"panel emptied by adjudication: all {score.adjudicated} mutant(s) "
+            f"ruled equivalent — spec strength unmeasured"))
+    elif score.mutants_total == 0:
         score.rungs.append(Rung("mutants", SKIP, "no mutation sites"))
     elif analysis_errors:
         # An incomplete panel outranks an ordinary failure: errored mutants
         # are untested, and hiding them behind a survivor report would
-        # misstate what was actually measured.
-        score.rungs.append(Rung(
-            "mutants", ERROR,
-            f"{score.mutants_killed}/{score.mutants_total} killed; "
-            f"{len(score.survivors)} survivor(s); "
-            f"{analysis_errors} analysis error(s)"
-            + (f"; survivors: {'; '.join(score.survivors[:3])}" if score.survivors else ""),
-        ))
+        # misstate what was actually measured. The census names every
+        # bucket so the printed numbers add up to the panel.
+        detail = (f"{score.mutants_killed}/{score.mutants_total} killed; "
+                  f"{len(score.survivors)} survivor(s); "
+                  f"{len(score.timeouts)} unadjudicated timeout(s); "
+                  f"{analysis_errors} analysis error(s)")
+        if score.survivors:
+            detail += f"; survivors: {'; '.join(score.survivors[:3])}"
+        if score.timeouts:
+            detail += (f"; timeouts: {'; '.join(score.timeouts[:3])} "
+                       f"-- adjudicate divergence via meta.json \"timeout_kills\"")
+        score.rungs.append(Rung("mutants", ERROR, detail))
     elif score.survivors or score.timeouts:
         parts = [f"{score.mutants_killed}/{score.mutants_total} killed"]
         if score.survivors:
@@ -295,20 +327,36 @@ def render_report(scores: list[TaskScore]) -> str:
                 cells.append(f"{'-':<8}")
             elif n == "mutants" and s.mutants_total and r.status != ERROR:
                 # Ratio only for completed panels; an errored panel's kill
-                # count is a lower bound, not a mutation score.
-                cells.append(f"{f'{s.mutants_killed}/{s.mutants_total}':<8}")
+                # count is a lower bound, not a mutation score. A panel
+                # containing human-asserted kills is starred so the table
+                # never passes adjudication off as measurement.
+                star = "*" if s.adjudicated_timeouts or s.adjudicated else ""
+                ratio = f"{s.mutants_killed}/{s.mutants_total}{star}"
+                cells.append(f"{ratio:<8}")
             else:
                 cells.append(f"{mark[r.status]:<8}")
         lines.append(f"{s.task_id:<22} " + " ".join(cells) + f" {s.height}/6")
     full = sum(1 for s in scores if s.height == 6)
     killed = sum(s.mutants_killed for s in scores)
     total = sum(s.mutants_total for s in scores)
+    asserted = sum(s.adjudicated_timeouts for s in scores)
+    excluded = sum(s.adjudicated for s in scores)
     lines.append("-" * len(header))
     lines.append(
         f"tasks: {len(scores)}   full-ladder: {full}   "
         f"spec strength: {killed}/{total} mutants killed"
         + (f" ({100 * killed / total:.0f}%)" if total else "")
     )
+    if asserted or excluded:
+        # The headline must not launder human judgement as measurement: say
+        # exactly how much of it the panel rests on.
+        notes = []
+        if asserted:
+            notes.append(f"{asserted} kill(s) human-adjudicated (timeout), "
+                         f"not refuted by the hunter")
+        if excluded:
+            notes.append(f"{excluded} mutant(s) excluded as adjudicated equivalent")
+        lines.append("* " + "; ".join(notes))
     return "\n".join(lines)
 
 
