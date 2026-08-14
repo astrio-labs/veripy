@@ -779,3 +779,25 @@ def test_cli_spec_writing_exit_codes(tmp_path, capsys):
                    "--quick"])
     assert status == 1  # engine exhausted -> invalid, not a crash
     assert "valid: 0/1" in capsys.readouterr().out
+
+
+def test_an_invalid_answer_keeps_its_zero_even_when_golden_timed_out():
+    # An invalid row's 0/N is true by construction: the engine produced no
+    # specification, so there is no engine hunt whose cost could bias the
+    # comparison. Judging it by its empty timeout list against golden's
+    # marked it incomparable whenever golden had a single inconclusive hunt,
+    # which dropped a guaranteed zero out of the aggregate and nudged the
+    # rate UP -- the flattering denominator this whole check exists to stop.
+    invalid = SpecExamScore(
+        task_id="t", valid=False, attempts=1, reason="unparseable",
+        golden_mutants_total=4, golden_mutants_killed=4,
+        golden_timeout_mutants=["line 4 col 7: `<` -> `<=`"])
+    assert invalid.comparable
+    assert invalid.scored_total == 4 and invalid.mutants_killed == 0
+    # A VALID row with the same asymmetry is still marked.
+    valid = SpecExamScore(
+        task_id="t", valid=True, attempts=1, reason="scored",
+        mutants_total=4, mutants_killed=4,
+        golden_mutants_total=4, golden_mutants_killed=4,
+        golden_timeout_mutants=["line 4 col 7: `<` -> `<=`"])
+    assert not valid.comparable

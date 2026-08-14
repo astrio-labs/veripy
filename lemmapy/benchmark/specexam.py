@@ -386,7 +386,18 @@ class SpecExamScore:
         COST exactly as an unequal count does. Reporting it as a strength
         gap would be a timeout bias, so the row is marked and excluded
         from the aggregate instead.
+
+        An INVALID row is always comparable. The engine never produced a
+        scorable specification, so there was no engine hunt whose cost could
+        bias anything: its 0/N is true by construction, not a measurement
+        under question. Judging it by its empty engine timeout list against
+        golden's would mark it whenever golden had a single inconclusive
+        hunt — dropping a guaranteed zero out of the aggregate and nudging
+        the rate UP, which is the flattering-denominator move the
+        trivial-spec floor exists to prevent elsewhere.
         """
+        if not self.valid:
+            return True
         return sorted(self.timeout_mutants) == sorted(self.golden_timeout_mutants)
 
     @property
