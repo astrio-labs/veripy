@@ -95,7 +95,7 @@ Two properties fall out of this design that no static benchmark has:
 
    *(Both figures predate the operand-replacement family and the modp/
    triples tasks; the golden baseline on the current 14-task panel is
-   50/63 = 79%.)*
+   49/63 = 78%.)*
 
    All twelve tautologies clear the type gate, the runtime-contract hunt,
    the encoder, and the SMT prover — *every automated check the toolchain
@@ -204,8 +204,8 @@ rolling_max            pass     pass     1/5      pass     pass     pass     6/6
 sum_squares            pass     pass     2/6      pass     pass     pass     6/6
 triples_sum_to_zero    pass     pass     8/8      pass     pass     pass     6/6
 -----------------------------------------------------------------------------------
-tasks: 14   full-ladder: 14   spec strength: 50/63 mutants REFUTED by the specs (79%); 13 crashed (caught by the interpreter, not the spec — never credited)
-* 1 kill(s) human-adjudicated (timeout), not refuted by the hunter; 1 mutant(s) excluded as adjudicated equivalent
+tasks: 14   full-ladder: 14   spec strength: 49/63 mutants REFUTED by the specs (78%); 13 crashed (caught by the interpreter, not the spec — never credited); 1 diverged (adjudicated nontermination — caught by the wall, not the spec, so never credited)
+* 1 mutant(s) human-adjudicated as divergent; counted separately, NOT as spec strength; 1 mutant(s) excluded as adjudicated equivalent
 ```
 
 The benchmark's first run also exercised its adjudication path: the raw run
