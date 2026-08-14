@@ -1,6 +1,7 @@
 """The proof-repair loop, driven by the scripted file engine — verifies the
 loop mechanics (feedback, validation, apply) without an LLM."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -256,6 +257,32 @@ def test_history_digests_proposals_and_reports_drops():
     kept, dropped = history_for_prompt(hist, budget_chars=1)
     assert len(kept) == 1 and kept[0]["attempt"] == 5
     assert dropped == 5
+
+    # The budget must measure what the prompt EMITS. Indented JSON is much
+    # larger than compact, so measuring the wrong one let entries near the
+    # threshold render over budget.
+    from lemmapy.repair import _history_json
+
+    nested = [{"attempt": i,
+               "failures": [{"kind": "postcondition", "region": "sidecar",
+                             "message": "a postcondition could not be proved",
+                             "py_line": None, "dafny_line": 108}
+                            for _ in range(4)],
+               "proposal": "lemma L() {}"} for i in range(3)]
+    trimmed = [{k: v for k, v in h.items() if k != "proposal"} for h in nested]
+    for t in trimmed:
+        t["proposal_digest"] = "1 lines; declares: L"
+    # A budget that fits exactly two rendered entries but not three, so the
+    # loop must actually trim — and derived from the real serialization
+    # rather than guessed.
+    budget = len(_history_json(trimmed[-2:]))
+    assert budget < len(_history_json(trimmed))
+    kept, dropped = history_for_prompt(nested, budget_chars=budget)
+    assert len(kept) == 2 and dropped == 1
+    assert len(_history_json(kept)) <= budget
+    # The bug this pins: compact JSON is much smaller, so measuring it would
+    # have let three entries "fit" a budget they exceed when rendered.
+    assert len(json.dumps(kept)) < budget
 
     # Schema-agnostic: an entry with no `proposal` keeps its own keys and
     # gains no digest (the spec-writing exam's history has `errors`, not

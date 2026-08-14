@@ -110,7 +110,7 @@ def _render_prompt(request: dict[str, Any]) -> str:
                          "is shown in full above")
         suffix = f"; {'; '.join(notes)}" if notes else ""
         parts.append(f"\n## Prior attempts (most recent last{suffix})\n"
-                     + json.dumps(entries, indent=1))
+                     + _history_json(entries))
     parts.append("\n" + request.get(
         "reply_with", "Reply with the complete new sidecar content only."))
     return "\n".join(parts)
@@ -126,6 +126,13 @@ _HISTORY_ATTEMPTS = 3
 _HISTORY_BUDGET_CHARS = 8000
 _DECL_RE = re.compile(
     r"^\s*(?:lemma|ghost\s+function|function)\s+([A-Za-z_]\w*)", re.M)
+
+
+def _history_json(entries: list[dict[str, Any]]) -> str:
+    """The ONE serialization of history. The budget must measure exactly
+    what the prompt emits: measuring compact JSON while rendering indented
+    JSON let entries near the threshold render well over budget."""
+    return json.dumps(entries, indent=1)
 
 
 def _proposal_digest(text: str) -> str:
@@ -155,7 +162,7 @@ def history_for_prompt(
             entry["proposal_digest"] = _proposal_digest(h["proposal"] or "")
         kept.append(entry)
     dropped = len(history) - len(kept)
-    while len(kept) > 1 and len(json.dumps(kept)) > budget_chars:
+    while len(kept) > 1 and len(_history_json(kept)) > budget_chars:
         kept.pop(0)
         dropped += 1
     return kept, dropped
