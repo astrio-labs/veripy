@@ -8,12 +8,19 @@ the repository with a link pointing at it.
 
 The naming convention IS the claim, and both directions are pinned:
 
-    <task>-engine-pack-<tag>.dfy                 -> verifies with that task
-    <task>-engine-unverified-attempt-<tag>.dfy   -> must NOT verify
+    <task>-engine-pack-<tag>.dfy                    -> verifies with that task
+    <task>-engine-unverified-attempt-<tag>.dfy      -> the prover DISPROVED it
+    <task>-engine-inconclusive-attempt-<tag>.dfy    -> the prover ran out of time
 
 The second direction matters as much as the first: a near-miss that
 quietly starts verifying is no longer a near-miss, and the sentence in
 EVALUATION.md describing why it failed becomes wrong.
+
+The third bucket exists because "did not verify" is not one claim. A pack
+whose postcondition the prover DISPROVED and a pack the prover simply
+never finished are different facts, and the write-up says different things
+about them — so a timeout must not be allowed to stand in for a
+disproof, in either direction.
 """
 
 import os
@@ -56,39 +63,54 @@ def _run(artifact: Path, tmp_path: Path) -> dict:
     return verify_structured(src, tmp_path / "out", time_limit=60)
 
 
-# In PROVER_KINDS, but NOT evidence that an obligation went undischarged.
-# `resolution` means the sidecar did not typecheck, so — by its own entry in
-# lemmapy/failures.py — the proof was never ATTEMPTED. An archived near-miss
-# that fails this way says nothing about whether the prover rejected it.
-_NOT_A_PROOF_VERDICT = frozenset({"resolution"})
+# In PROVER_KINDS, but NOT evidence that an obligation was DISPROVED.
+# `resolution`: the sidecar did not typecheck, so — by its own entry in
+# lemmapy/failures.py — the proof was never attempted.
+# `timeout`: that entry is explicit that it is "NOT a disproof: the property
+# may still hold". A pack the prover never finished has not been turned
+# down by it.
+_NOT_A_DISPROOF = frozenset({"resolution", "timeout"})
 
 
-def _the_prover_rejected_it(payload: dict) -> bool:
-    """Evidence that the prover ran and turned this pack down.
+def _prover_verdict(payload: dict) -> str:
+    """What an archived attempt's run actually establishes.
 
-    Three things have to be true, and each was separately satisfiable by a
-    run that established nothing:
+    "did not verify" is not one claim, and every weaker way of satisfying it
+    has at some point been accepted as if it were the strong one:
 
     - `status != "ok"` alone is satisfied by a missing Dafny, a subprocess
-      timeout, or a spec that no longer encodes — a toolchain that never
+      failure, or a spec that no longer encodes — a toolchain that never
       worked would have "checked" the archive's negative claim.
     - a `failed` run with no records is a verdict with nothing readable in
       it.
-    - a `failed` run whose only records are `resolution` errors means the
-      sidecar did not typecheck, so no obligation was ever put to the
-      prover. EVALUATION.md describes these artifacts as attempts whose own
-      postconditions did not prove; a typecheck error is a different claim.
+    - `resolution` means the sidecar did not typecheck: no obligation ever
+      reached the prover.
+    - `timeout` means the prover never finished. That is a real fact about
+      the attempt, and it is what `is_prime`'s archived attempt produces —
+      but it is not a disproof, and the write-up must not claim one.
+
+    Returns "disproved", "timeout", or "" (nothing established).
     """
     if payload["status"] != "failed":
-        return False
+        return ""
     kinds = {f.get("kind") for f in (payload.get("failures") or [])}
-    return bool(kinds - _NOT_A_PROOF_VERDICT)
+    if kinds - _NOT_A_DISPROOF:
+        return "disproved"
+    return "timeout" if "timeout" in kinds else ""
+
+
+# Every recognised suffix, and the verdict its bucket asserts.
+_BUCKETS = {
+    "-engine-unverified-attempt-": "disproved",
+    "-engine-inconclusive-attempt-": "timeout",
+}
 
 
 def test_the_archive_is_not_empty():
     # A glob that silently matches nothing would make every test below
     # vacuously pass.
-    assert _packs("-engine-pack-") and _packs("-engine-unverified-attempt-")
+    assert _packs("-engine-pack-")
+    assert all(_packs(marker) for marker in _BUCKETS)
 
 
 @needs_dafny
@@ -103,43 +125,37 @@ def test_archived_engine_pack_still_verifies(artifact, tmp_path):
 
 
 @needs_dafny
-@pytest.mark.parametrize("artifact", _packs("-engine-unverified-attempt-"),
-                         ids=lambda p: p.name)
-def test_archived_near_miss_still_misses(artifact, tmp_path):
+@pytest.mark.parametrize(
+    "artifact,expected",
+    [(p, verdict) for marker, verdict in _BUCKETS.items()
+     for p in _packs(marker)],
+    ids=lambda x: x.name if hasattr(x, "name") else x)
+def test_archived_near_miss_still_misses_the_SAME_way(artifact, expected,
+                                                      tmp_path):
+    # Not merely "still fails": still fails for the reason its name and the
+    # write-up claim. An attempt that drifts from disproved to timed out (or
+    # back) makes the sentence describing it wrong, which is the thing this
+    # archive exists to keep true.
     payload = _run(artifact, tmp_path)
-    assert _the_prover_rejected_it(payload), (
-        f"{artifact.name} is cited as an attempt the prover REJECTED, but "
-        f"this run ended as {payload['status']!r} "
+    assert _prover_verdict(payload) == expected, (
+        f"{artifact.name} is cited as an attempt the prover ended by "
+        f"{expected!r}, but this run ended as {payload['status']!r} "
         f"({payload.get('error') or payload['failures'] or 'no records'}) — "
         f"either it now verifies and the write-up's explanation of why it "
         f"failed is stale, or nothing was proved here at all")
 
 
-def test_a_broken_toolchain_is_not_a_near_miss():
-    # The check the near-miss test rests on has to be able to fail for the
-    # right reason. `status != "ok"` accepted every one of these, so a CI
-    # run whose Dafny was missing or timing out would have "confirmed" the
-    # archive's negative claim without the prover reading a single line.
-    assert not _the_prover_rejected_it(
-        {"status": "tool-error", "error": "dafny failed to run",
-         "failures": []})
-    assert not _the_prover_rejected_it(
-        {"status": "encode-error",
-         "failures": [{"kind": "conformance", "rule": "unsupported-stmt"}]})
-    assert not _the_prover_rejected_it({"status": "failed", "failures": []})
-    assert _the_prover_rejected_it(
-        {"status": "failed", "failures": [{"kind": "postcondition"}]})
-
-
 def test_every_artifact_declares_which_way_it_goes():
     # An artifact matching neither convention is tested by nothing.
     known = {p.name for p in _packs("-engine-pack-")}
-    known |= {p.name for p in _packs("-engine-unverified-attempt-")}
+    for marker in _BUCKETS:
+        known |= {p.name for p in _packs(marker)}
     for path in ARTIFACTS.glob("*.dfy"):
         assert path.name in known, (
             f"{path.name} follows neither naming convention, so no test "
-            f"checks it; name it <task>-engine-pack-<tag>.dfy or "
-            f"<task>-engine-unverified-attempt-<tag>.dfy")
+            f"checks it; name it <task>-engine-pack-<tag>.dfy, or "
+            f"<task>-engine-<bucket>-attempt-<tag>.dfy with <bucket> one "
+            f"of {sorted(m.split('-')[2] for m in _BUCKETS)}")
 
 
 @pytest.mark.parametrize("artifact", sorted(ARTIFACTS.glob("*.dfy")),
@@ -175,25 +191,28 @@ def test_the_structural_checks_survive_a_prover_free_tier(tmp_path):
         f"so a prover-free CI tier checks nothing:\n{proc.stdout}")
 
 
-@pytest.mark.parametrize("payload,accepted", [
-    # The prover ran and could not discharge an obligation: the claim holds.
+@pytest.mark.parametrize("payload,verdict", [
+    # The prover ran and could not discharge an obligation.
+    ({"status": "failed", "failures": [{"kind": "postcondition"}]}, "disproved"),
+    ({"status": "failed", "failures": [{"kind": "assertion"}]}, "disproved"),
+    # The prover never finished. A real fact about the attempt, but the
+    # taxonomy is explicit that it is NOT a disproof.
+    ({"status": "failed", "failures": [{"kind": "timeout"}]}, "timeout"),
+    # Mixed: something was genuinely disproved alongside the noise.
     ({"status": "failed",
-      "failures": [{"kind": "postcondition"}]}, True),
-    # The sidecar did not typecheck, so nothing was ever put to the prover.
-    ({"status": "failed", "failures": [{"kind": "resolution"}]}, False),
-    # Mixed: something real was attempted alongside the typecheck noise.
+      "failures": [{"kind": "timeout"}, {"kind": "postcondition"}]}, "disproved"),
     ({"status": "failed",
-      "failures": [{"kind": "resolution"}, {"kind": "assertion"}]}, True),
-    # A toolchain that never worked must not "confirm" the archive.
-    ({"status": "tool-error", "failures": []}, False),
-    ({"status": "encode-error",
-      "failures": [{"kind": "conformance"}]}, False),
+      "failures": [{"kind": "resolution"}, {"kind": "assertion"}]}, "disproved"),
+    # The sidecar did not typecheck: nothing reached the prover.
+    ({"status": "failed", "failures": [{"kind": "resolution"}]}, ""),
+    # A toolchain that never worked must not "confirm" anything.
+    ({"status": "tool-error", "failures": []}, ""),
+    ({"status": "encode-error", "failures": [{"kind": "conformance"}]}, ""),
     # A verdict with nothing readable in it.
-    ({"status": "failed", "failures": []}, False),
-    ({"status": "ok", "failures": []}, False),
+    ({"status": "failed", "failures": []}, ""),
+    ({"status": "ok", "failures": []}, ""),
 ])
-def test_only_a_real_proof_verdict_confirms_a_near_miss(payload, accepted):
-    # Every row here except the first two was, at some point, accepted as
-    # evidence that an archived attempt still fails to verify. The published
-    # claim is specifically that the prover turned the pack down.
-    assert _the_prover_rejected_it(payload) is accepted
+def test_what_a_run_actually_establishes(payload, verdict):
+    # Every row below "disproved" was, at some point in this PR's history,
+    # accepted as evidence that the prover turned an archived pack down.
+    assert _prover_verdict(payload) == verdict

@@ -202,7 +202,7 @@ harness failure demanded.
 | sum_squares | yes | 1 | unchanged |
 | rolling_max | yes | 2 | **was unmeasured** — the wall was the whole problem ([artifact](exam-artifacts/rolling_max-engine-pack-2026-08.dfy)) |
 | modp | yes | 4 | **was a budget failure** — restored on the last iteration ([artifact](exam-artifacts/modp-engine-pack-2026-08c.dfy)) |
-| is_prime | **no** | 4 (budget) | **was restored in 2** ([unverified attempt](exam-artifacts/is_prime-engine-unverified-attempt-2026-08.dfy)) |
+| is_prime | **no** | 4 (budget) | **was restored in 2** — the final pack is not disproved, it never finishes: the prover times out on it ([inconclusive attempt](exam-artifacts/is_prime-engine-inconclusive-attempt-2026-08.dfy)) |
 
 **The number is not the finding; `is_prime` is.** A longer wall cannot
 make a task harder, so that row did not flip for any reason the
@@ -227,11 +227,15 @@ inside `PyMod` throughout. `rolling_max` likewise restored with a
 two-lemma pack (`PyMaxDominates` + a `forall`-lifted corollary) rather
 than the golden `SeqMaxDominates`.
 
-Every archived pack is checked by `tests/test_exam_artifacts.py`, in both
-directions: a pack cited as restored must still verify against its task,
-and one cited as a near-miss must still fail. An artifact that drifts into
-disagreeing with the sentence describing it fails the suite rather than
-sitting in the repository as a false claim with a link pointing at it.
+Every archived pack is checked by `tests/test_exam_artifacts.py`, and
+"still fails" is not one claim. A pack cited as restored must still
+verify; a pack cited as a near-miss must still fail **the same way** —
+`modp`'s postconditions are disproved, `is_prime`'s attempt merely never
+finishes, and those are different facts about different artifacts. The
+naming convention carries which one is claimed, so an attempt that drifts
+from disproved to timed out fails the suite instead of leaving the
+sentence describing it quietly wrong. A timeout is never accepted as a
+disproof — the taxonomy is explicit that the property may still hold.
 
 **What to do about it, in order of leverage:** repeated trials at fixed
 configuration (the `lemmapy experiment` matrix already supports this, and
