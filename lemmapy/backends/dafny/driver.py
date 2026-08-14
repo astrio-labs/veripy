@@ -17,8 +17,9 @@ _SUMMARY_RE = re.compile(r"finished with (?P<ok>\d+) verified, (?P<bad>\d+) erro
 
 
 # Obligation classification: Dafny's message text -> the kind of proof
-# obligation that failed. The agent interface (lemmapy verify --json)
-# keys repair strategies on this.
+# obligation that failed. Every value here must be a member of the
+# published taxonomy (lemmapy/failures.py PROVER_KINDS) — that is what a
+# host branches on, and tests/test_failures.py fails if this drifts.
 _OBLIGATION_KINDS: tuple[tuple[str, str], ...] = (
     ("postcondition", "postcondition"),
     ("loop invariant", "invariant"),

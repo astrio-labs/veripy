@@ -17,6 +17,7 @@ from typing import Any
 from .backends.dafny.driver import dafny_version, verify_dafny_file
 from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from .backends.dafny.preamble import PREAMBLE_VERSION
+from .failures import TAXONOMY_VERSION
 from .frontend.extract import parse_source
 
 SCHEMA = "lemmapy-failures/1"
@@ -53,6 +54,10 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         "toolchain": {
             "preamble_version": PREAMBLE_VERSION,
             "dafny_version": None,
+            # The vocabulary of `kind` values in `failures`. A host pinned
+            # to one taxonomy can detect a change instead of silently
+            # mis-routing an unfamiliar kind (lemmapy/failures.py).
+            "taxonomy_version": TAXONOMY_VERSION,
         },
         "status": None,
         "functions": [],
