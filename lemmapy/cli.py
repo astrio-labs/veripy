@@ -684,16 +684,17 @@ def main(argv: list[str] | None = None) -> int:
                             by_file.setdefault(key, []).append(
                                 {"kind": "type", "py_line": d.line,
                                  "message": d.message})
-                    payloads = [
-                        {"schema": "lemmapy-failures/1", "file": f,
-                         "status": "gate-error", "functions": [],
-                         "failures": fails or (
-                             [] if gate.available else
-                             [{"kind": "type", "py_line": None,
-                               "message": f"type gate unavailable: {gate.error}"}]),
-                         "sidecar": None}
-                        for f, fails in by_file.items()
-                    ]
+                    from .agentio import new_payload
+
+                    payloads = []
+                    for f, fails in by_file.items():
+                        entry = new_payload(f)
+                        entry["status"] = "gate-error"
+                        entry["failures"] = fails or (
+                            [] if gate.available else
+                            [{"kind": "type", "py_line": None,
+                              "message": f"type gate unavailable: {gate.error}"}])
+                        payloads.append(entry)
                     try:
                         dump(payloads, args.json_out)
                     except OSError as exc:

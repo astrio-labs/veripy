@@ -37,26 +37,20 @@ def _attribute(specs: Any, py_line: int | None) -> str | None:
     return best
 
 
-def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
-                      hunt_counterexamples: bool = False) -> dict[str, Any]:
-    """Encode + verify one module; return the structured outcome. Never
-    raises for expected failure modes — every outcome is a payload."""
-    payload: dict[str, Any] = {
+def new_payload(file: str) -> dict[str, Any]:
+    """The documented payload skeleton. EVERY producer must build on this —
+    the contract promises `toolchain` on every outcome, and a hand-built
+    payload elsewhere (the CLI's gate-error path) silently broke that
+    promise until this existed."""
+    return {
         "schema": SCHEMA,
-        "file": str(path),
-        # Provenance travels with the MACHINE payload, not only the human
-        # report: a host embedding this backend must be able to tell whether
-        # two "ok" verdicts meant the same thing. Present on every outcome,
-        # including tool errors.
-        # `dafny_version` is filled in only when the prover is actually
-        # reached: an unreadable source or a conformance rejection never ran
-        # it, and should not wait on a `dafny --version` subprocess to say so.
+        "file": file,
+        # Provenance rides every payload: a host must be able to tell
+        # whether two verdicts meant the same thing. `dafny_version` stays
+        # None until the prover is actually reached.
         "toolchain": {
             "preamble_version": PREAMBLE_VERSION,
             "dafny_version": None,
-            # The vocabulary of `kind` values in `failures`. A host pinned
-            # to one taxonomy can detect a change instead of silently
-            # mis-routing an unfamiliar kind (lemmapy/failures.py).
             "taxonomy_version": TAXONOMY_VERSION,
         },
         "status": None,
@@ -64,6 +58,13 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         "failures": [],
         "sidecar": None,
     }
+
+
+def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
+                      hunt_counterexamples: bool = False) -> dict[str, Any]:
+    """Encode + verify one module; return the structured outcome. Never
+    raises for expected failure modes — every outcome is a payload."""
+    payload = new_payload(str(path))
     try:
         outdir.mkdir(parents=True, exist_ok=True)
         source = path.read_text()

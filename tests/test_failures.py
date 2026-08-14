@@ -67,13 +67,50 @@ def test_prover_and_frontend_kinds_are_disjoint():
     # A kind must have ONE origin: a host distinguishing "the prover could
     # not prove it" from "we refused the input" cannot do that if a label
     # means both.
-    from lemmapy.failures import FRONTEND_KINDS, HARNESS_KINDS
+    import itertools
 
-    assert not (set(PROVER_KINDS) & set(FRONTEND_KINDS))
-    assert not (set(PROVER_KINDS) & set(HARNESS_KINDS))
-    assert not (set(FRONTEND_KINDS) & set(HARNESS_KINDS))
-    assert len(FAILURE_KINDS) == (len(PROVER_KINDS) + len(FRONTEND_KINDS)
-                                 + len(HARNESS_KINDS))
+    from lemmapy.failures import (FRONTEND_KINDS, HARNESS_KINDS,
+                                  UNCLASSIFIED_KINDS)
+
+    groups = [PROVER_KINDS, FRONTEND_KINDS, HARNESS_KINDS, UNCLASSIFIED_KINDS]
+    for a, b in itertools.combinations(groups, 2):
+        assert not (set(a) & set(b)), (sorted(a), sorted(b))
+    assert len(FAILURE_KINDS) == sum(len(g) for g in groups)
+    # `unknown` is its own origin, NOT harness: the prover-message
+    # classifier returns it, so filing it under harness would tell a host
+    # to skip proof repair on a real unclassified proof failure.
+    assert "unknown" in UNCLASSIFIED_KINDS and "unknown" not in HARNESS_KINDS
+    assert classify_obligation("no rule matches this") == "unknown"
+
+
+def test_every_status_carries_provenance(tmp_path, monkeypatch):
+    # The doc promises `toolchain` on EVERY payload. The CLI's gate-error
+    # path built its own dict and omitted it, so hosts reading the
+    # documented field would KeyError on a reachable outcome.
+    import json
+
+    from lemmapy.agentio import new_payload
+    from lemmapy.cli import main
+    from lemmapy.frontend.typegate import find_basedpyright
+
+    skeleton = new_payload("x.py")
+    assert set(skeleton["toolchain"]) == {"preamble_version", "dafny_version",
+                                         "taxonomy_version"}
+
+    if find_basedpyright() is None:
+        return
+    (tmp_path / "pyrightconfig.json").write_text('{"typeCheckingMode": "strict"}\n')
+    (tmp_path / "m.py").write_text(
+        "#@ ensures result >= 0 or result < 0\ndef f(x):\n    return x\n")
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "failures.json"
+    assert main(["verify", "m.py", "-o", str(tmp_path / "o"),
+                 "--json", str(out)]) == 2
+    payloads = json.loads(out.read_text())
+    assert payloads[0]["status"] == "gate-error"
+    assert payloads[0]["toolchain"]["taxonomy_version"] == TAXONOMY_VERSION
+    for f in payloads[0]["failures"]:
+        assert is_known(f["kind"])
 
 
 def test_doc_lists_exactly_the_published_kinds():

@@ -54,7 +54,7 @@ tool or input error.
 `status` is one of `ok`, `failed`, `spec-error`, `encode-error`,
 `gate-error`, `tool-error`.
 
-**Provenance.** `toolchain` rides *every* payload. `preamble_version` and
+**Provenance.** `toolchain` rides *every* payload — including `gate-error`, which the CLI builds from the same `new_payload` skeleton, so a producer cannot omit it. `preamble_version` and
 `taxonomy_version` are always present; `dafny_version` is `null` when the
 prover was never reached (an unreadable source cannot have a prover
 verdict, and asking for one would make an immediate error wait on a
@@ -111,7 +111,19 @@ translation.
 | --- | --- |
 | `engine` | A repair/spec engine call failed (unavailable CLI, API error, wall exceeded). Says nothing about the program. |
 | `freeze` | An exam's frozen region was modified — the attempt is invalid, not wrong. |
-| `unknown` | The producer could not classify this failure. Always accompanied by the raw message; treat as unclassified rather than as any particular kind. |
+
+### Unclassified — origin undetermined
+
+`unknown` is deliberately **not** a harness kind. The prover-message
+classifier returns it for a diagnostic it does not recognize, and a failed
+run with no parsed diagnostics reports it too — so treating it as
+harness-only would make a host skip proof repair on a real (merely
+unclassified) proof failure. Route it by `status` and `region`, not by
+group.
+
+| kind | what it means, and what to do |
+| --- | --- |
+| `unknown` | The producer could not classify this failure; the raw message is always attached. Origin is undetermined — use `status` (a `failed` run means the prover ran) and `region` (`source` vs `sidecar`) to decide whether proof repair applies. Do not assume it is harness-only. |
 
 ## Stability contract
 

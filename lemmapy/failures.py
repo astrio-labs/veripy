@@ -63,13 +63,24 @@ HARNESS_KINDS: dict[str, str] = {
               "wall exceeded). Says nothing about the program.",
     "freeze": "An exam's frozen region was modified — the attempt is "
               "invalid, not wrong.",
-    "unknown": "The producer could not classify this failure. Always "
-               "accompanied by the raw message; treat as unclassified "
-               "rather than as any particular kind.",
+}
+
+# Origin genuinely undetermined. `unknown` is NOT a harness kind: it is
+# what the prover-message classifier returns for a diagnostic it does not
+# recognize, and what a failed run with no parsed diagnostics reports — so
+# filing it under "harness" would tell a host to skip proof repair for a
+# real, merely-unclassified proof failure. Route it by `region`/`status`
+# instead of by group.
+UNCLASSIFIED_KINDS: dict[str, str] = {
+    "unknown": "The producer could not classify this failure; the raw "
+               "message is always attached. Origin is undetermined — use "
+               "`status` (a `failed` run means the prover ran) and `region` "
+               "(`source` vs `sidecar`) to decide whether proof repair "
+               "applies. Do not assume it is harness-only.",
 }
 
 FAILURE_KINDS: dict[str, str] = {**PROVER_KINDS, **FRONTEND_KINDS,
-                                 **HARNESS_KINDS}
+                                 **HARNESS_KINDS, **UNCLASSIFIED_KINDS}
 
 
 def is_known(kind: str) -> bool:
