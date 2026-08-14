@@ -10,6 +10,7 @@ agent needs to act without re-parsing human-oriented output.
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from tokenize import TokenError
 from typing import Any
@@ -38,7 +39,18 @@ def _attribute(specs: Any, py_line: int | None) -> str | None:
 def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
                       hunt_counterexamples: bool = False) -> dict[str, Any]:
     """Encode + verify one module; return the structured outcome. Never
-    raises for expected failure modes — every outcome is a payload."""
+    raises for expected failure modes — every outcome is a payload.
+
+    Every invocation stages into a PRIVATE directory under `outdir`. The
+    stub used to be written to `outdir/<stem>.dfy`, so two concurrent
+    verifications of same-stemmed modules sharing an outdir raced on one
+    file: whichever wrote last was the one Dafny actually read. Both
+    directions were silent and well-formed — a module that violates its
+    spec came back `ok` (unverified code reported verified), and a correct
+    module came back `failed` with failures belonging to the other file.
+    An embedding host naturally shares one scratch directory across
+    callers, so this is a soundness break, not a tidiness issue.
+    """
     payload: dict[str, Any] = {
         "schema": SCHEMA,
         "file": str(path),
@@ -49,6 +61,9 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     }
     try:
         outdir.mkdir(parents=True, exist_ok=True)
+        # mkdtemp is atomic and unique per process AND per thread, which a
+        # stem- or PID-derived name is not.
+        workdir = Path(tempfile.mkdtemp(prefix="verify-", dir=outdir))
         source = path.read_text()
     except (OSError, UnicodeDecodeError) as exc:
         payload["status"] = "tool-error"
@@ -99,7 +114,7 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         "lemmas": sorted(sidecar.lemmas),
         "text": sidecar.text,
     }
-    stub = outdir / f"{path.stem}.dfy"
+    stub = workdir / f"{path.stem}.dfy"
     try:
         stub.write_text(encoded.dafny_source + sidecar.text)
     except OSError as exc:
@@ -143,7 +158,9 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     if hunt_counterexamples and payload["failures"]:
         from .benchmark.runner import _hunt
 
-        verdict, detail = _hunt(source, path.stem, outdir / "hunt", 5)
+        # Also private: _hunt stages `<stem>_checked.py`, which collides on
+        # exactly the same stems the stub did.
+        verdict, detail = _hunt(source, path.stem, workdir / "hunt", 5)
         if verdict == "counterexample":
             payload["counterexample"] = detail
     return payload
@@ -151,19 +168,14 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
 
 def verify_structured_many(paths: list[Path], outdir: Path, time_limit: int = 30,
                            hunt_counterexamples: bool = False) -> list[dict[str, Any]]:
-    # Same-stem inputs from different directories would overwrite each
-    # other's stub; give every path a distinct subdirectory when stems
-    # collide so each payload's stub reference stays valid.
-    stems: dict[str, int] = {}
-    outdirs: list[Path] = []
-    for p in paths:
-        n = stems.get(p.stem, 0)
-        stems[p.stem] = n + 1
-        outdirs.append(outdir if n == 0 else outdir / f"dup{n}")
+    """Same-stem inputs no longer need special handling: `verify_structured`
+    stages each invocation privately, so stub paths are unique by
+    construction — across calls, threads and processes, not just within
+    one batch as the old `dup{n}` scheme managed."""
     return [
-        verify_structured(p, o, time_limit=time_limit,
+        verify_structured(p, outdir, time_limit=time_limit,
                           hunt_counterexamples=hunt_counterexamples)
-        for p, o in zip(paths, outdirs)
+        for p in paths
     ]
 
 

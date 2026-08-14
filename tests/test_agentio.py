@@ -185,6 +185,45 @@ def test_same_stem_files_get_distinct_stubs(tmp_path):
 
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_concurrent_same_stem_verifications_do_not_swap_verdicts(tmp_path):
+    """The soundness case: a shared outdir must not let one verification
+    certify another's code.
+
+    The stub used to be written to `outdir/<stem>.dfy`, so two concurrent
+    verifications of same-stemmed modules raced on one file and Dafny read
+    whichever was written last. Both directions were silent and produced
+    well-formed payloads: the BROKEN module came back `ok`, and the correct
+    module came back `failed` carrying the other file's failures. An
+    embedding host shares one scratch directory across callers by nature,
+    so this is a soundness break rather than untidiness.
+    """
+    import concurrent.futures
+
+    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+    a_dir.mkdir(), b_dir.mkdir()
+    (a_dir / "m.py").write_text(GOOD)          # verifies
+    (b_dir / "m.py").write_text(BROKEN_CLAMP)  # violates its ensures
+    shared = tmp_path / "shared-out"
+
+    # Repeat: the race is timing-dependent and one pass can pass by luck.
+    for _ in range(4):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(verify_structured, d / "m.py", shared,
+                                   60)
+                       for d in (a_dir, b_dir)]
+            good, broken = (f.result() for f in futures)
+        assert good["status"] == "ok", (
+            f"correct module reported {good['status']} with failures "
+            f"{good['failures']} — verdict came from the other file's stub")
+        assert broken["status"] == "failed", (
+            "a module that violates its postcondition was reported "
+            f"{broken['status']} — unverified code certified")
+        # Stub paths must be unique, or the payload's own reference is stale.
+        assert good["stub"] != broken["stub"]
+        assert all(f["function"] == "clamp" for f in broken["failures"])
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_sidecar_region_failures_not_attributed_to_functions(tmp_path):
     src = tmp_path / "m.py"
     src.write_text(GOOD)

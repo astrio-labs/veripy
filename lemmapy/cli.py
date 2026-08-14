@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from .frontend.conformance import RULES, aggregate, survey_paths
@@ -299,7 +300,12 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             continue
         if sidecar.lemmas:
             sidecar_lemmas[str(path)] = sorted(sidecar.lemmas)
-        stub = outdir / f"{path.stem}.dfy"
+        # Private staging per file: `outdir/<stem>.dfy` made two concurrent
+        # verifications of same-stemmed modules race on one path, and the
+        # loser's verdict was reported against the winner's stub — silently,
+        # in both directions. See verify_structured for the full note.
+        stub_dir = Path(tempfile.mkdtemp(prefix="verify-", dir=outdir))
+        stub = stub_dir / f"{path.stem}.dfy"
         stub.write_text(encoded.dafny_source + sidecar.text)
         result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
         if result.error is not None:
