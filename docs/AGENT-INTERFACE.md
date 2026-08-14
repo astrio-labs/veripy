@@ -24,8 +24,9 @@ Three properties, each pinned by a test in `tests/test_api.py`:
 1. **It never prints.** Diagnostics are returned, not written to stdout.
 2. **It never exits.** No `sys.exit` reaches the host process.
 3. **Expected failures are values.** A file outside the fragment, an
-   unreadable path, a bad engine spec — all return a payload with a
-   status. Exceptions are reserved for programmer error.
+   unparseable one, an unreadable path, a workdir the host cannot write, a
+   bad engine spec — all return a payload with a status. Exceptions are
+   reserved for programmer error.
 
 `api.guard(path)` returns generated boundary-guard *source* rather than
 writing a file, because where generated code lands is the host's decision.

@@ -15,9 +15,10 @@ Three properties this module guarantees, each pinned by a test:
 1. **It never prints.** Diagnostics are returned, not emitted.
 2. **It never exits.** No `sys.exit`, no `SystemExit`.
 3. **Expected failures are values.** A file outside the fragment, an
-   unreadable path, a missing prover — all return a payload with a
-   `status`, never an exception. Exceptions are reserved for programmer
-   error (a wrong argument type), which a host should not catch.
+   unparseable one, an unreadable path, a workdir the host cannot write, a
+   missing prover — all return a payload with a `status`, never an
+   exception. Exceptions are reserved for programmer error (a wrong
+   argument type), which a host should not catch.
 
 Payload shapes and the failure vocabulary are documented in
 docs/AGENT-INTERFACE.md and versioned by `toolchain_info()`.
@@ -156,9 +157,20 @@ def repair(path: Path | str, workdir: Path | str, *, engine: str = "claude",
     except ValueError as exc:
         return {"verified": False, "iterations": 0, "reason": str(exc),
                 "sidecar_text": None}
-    outcome = repair_file(path, Path(workdir), eng,
-                          max_iterations=max_iterations,
-                          time_limit=time_limit, apply=apply)
+    try:
+        outcome = repair_file(path, Path(workdir), eng,
+                              max_iterations=max_iterations,
+                              time_limit=time_limit, apply=apply)
+    except (OSError, UnicodeDecodeError) as exc:
+        # Everything repair_file touches on disk is outside this library's
+        # control: the workdir (a host may hand us a path that is a file, or
+        # a directory it cannot write), the sidecar beside the source, and —
+        # under apply=True — the source's own directory. Any of those is an
+        # environment failure, not programmer error, so it is a VALUE.
+        # Narrow on purpose: a TypeError from repair_file is our bug and
+        # must still reach the host.
+        return {"verified": False, "iterations": 0,
+                "reason": f"filesystem error: {exc}", "sidecar_text": None}
     return {"verified": outcome.verified, "iterations": outcome.iterations,
             "reason": outcome.reason, "sidecar_text": outcome.sidecar_text}
 
@@ -176,7 +188,20 @@ def guard(path: Path | str, *, check_ensures: bool = False) -> dict[str, Any]:
         source = path.read_text()
     except (OSError, UnicodeDecodeError) as exc:
         return {"ok": False, "source": None, "reason": f"unreadable: {exc}"}
-    specs = parse_source(source, filename=str(path))
+    try:
+        specs = parse_source(source, filename=str(path))
+    except SyntaxError as exc:
+        # Null bytes arrive as a SyntaxError with no lineno; naming a line
+        # number of "None" would be worse than not naming one.
+        where = f" on line {exc.lineno}" if exc.lineno else ""
+        return {"ok": False, "source": None,
+                "reason": f"syntax error{where}: {exc.msg}"}
+    except (ValueError, TokenError) as exc:
+        # Same non-SyntaxError parse failures conformance() enumerates (null
+        # bytes, comment-tokenizer failures on a malformed buffer). A host
+        # that guards a directory of candidate files hits these on the first
+        # unparseable one, and a raised exception there kills the sweep.
+        return {"ok": False, "source": None, "reason": f"unparseable: {exc}"}
     if specs.errors or specs.orphans:
         return {"ok": False, "source": None,
                 "reason": "spec errors; call conformance() first"}

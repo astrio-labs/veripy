@@ -6,6 +6,7 @@ values — because each is easy to break with an otherwise-reasonable edit.
 """
 
 import io
+import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -97,6 +98,55 @@ def test_expected_failures_are_values_with_published_kinds(tmp_path):
     broken = tmp_path / "broken.py"
     broken.write_text("def f(:\n")
     assert api.conformance(broken)["failures"][0]["kind"] == "syntax"
+
+
+def test_guard_reports_an_unparseable_module_as_a_value(tmp_path):
+    # guard() used to call parse_source unguarded, so a malformed file threw
+    # SyntaxError (or ValueError/TokenError) straight into the host — the one
+    # thing property 3 says cannot happen. conformance() has always caught
+    # these; guard() must too, or a host sweeping a directory dies on the
+    # first unparseable file in it.
+    broken = tmp_path / "broken.py"
+    broken.write_text("def f(:\n")
+    result = api.guard(broken)
+    assert result == {"ok": False, "source": None,
+                      "reason": "syntax error on line 1: invalid syntax"}
+
+    nul = tmp_path / "nul.py"
+    nul.write_bytes(b"def f():\n    return 0\n\x00\n")
+    nul_result = api.guard(nul)
+    assert nul_result["ok"] is False and nul_result["source"] is None
+    # No lineno on this one; the reason must not say "line None".
+    assert "None" not in nul_result["reason"], nul_result["reason"]
+
+
+def test_repair_reports_a_filesystem_failure_as_a_value(tmp_path):
+    # repair_file touches disk the host owns: the workdir, the sidecar beside
+    # the source, and (apply=True) the source's directory. An OSError from any
+    # of those used to escape repair() into the host.
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
+
+    # A workdir that is a regular file: repair_file's mkdir raises before any
+    # prover runs, so this pins the boundary without needing dafny.
+    not_a_dir = tmp_path / "wfile"
+    not_a_dir.write_text("x")
+    result = api.repair(src, not_a_dir, engine="file:/nonexistent")
+    assert result["verified"] is False and result["sidecar_text"] is None
+    assert "filesystem error" in result["reason"]
+
+    # An unreadable sidecar beside the source, read before the first verify.
+    sidecar = tmp_path / "m.proofs.dfy"
+    sidecar.write_text("lemma L() {}\n")
+    sidecar.chmod(0o000)
+    try:
+        if os.access(sidecar, os.R_OK):  # pragma: no cover - root/odd fs
+            pytest.skip("cannot make a file unreadable here")
+        unreadable = api.repair(src, tmp_path / "w", engine="file:/nonexistent")
+    finally:
+        sidecar.chmod(0o644)
+    assert unreadable["verified"] is False
+    assert "filesystem error" in unreadable["reason"]
 
 
 def test_conformance_accepts_a_module_in_the_fragment(tmp_path):
