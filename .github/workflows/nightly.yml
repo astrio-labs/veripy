@@ -1,0 +1,87 @@
+# Nightly long-running differential sweep.
+#
+# CI's difftest tier is deliberately shallow (it runs on every PR and must
+# not cost minutes), so it explores a small slice of the input space each
+# time. This job trades latency for depth: the whole corpus, two orders of
+# magnitude more examples, and a fresh random seed every night, so the
+# inputs it tries are ones no PR run reached.
+#
+# Divergence means an ENCODER BUG — the Dafny model disagrees with the
+# Python it claims to model — which makes every proof over that construct
+# meaningless. That is why the report is uploaded whatever the outcome:
+# the mismatch record is the reproducer, and a log that scrolls away is
+# not evidence.
+name: nightly
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "17 6 * * *"  # 06:17 UTC daily; off the hour to dodge the rush
+  workflow_dispatch:
+    inputs:
+      examples:
+        description: "Hypothesis examples per function"
+        default: "5000"
+
+# A long sweep must not stack on itself if a run overruns the day.
+concurrency:
+  group: nightly-difftest
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-dotnet@6bd8b7f7774af54e05809fcc5431931b3eb1ddee  # v4.0.1
+        with:
+          dotnet-version: "8.0.x"
+      - name: Install Dafny
+        run: |
+          dotnet tool install --global dafny --version 4.11.0
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" DafnyRuntimePython
+
+      # --min-functions is the point of the job as much as the sweep is: if
+      # the corpus moves, or a task stops being conformant, the command
+      # would otherwise compare fewer and fewer functions while still
+      # exiting 0. A nightly that has silently stopped testing is worse
+      # than no nightly, because it keeps reporting green.
+      # Swept: benchmark/tasks, the corpus every task of which MUST encode
+      # and MUST agree with its Dafny model. NOT examples/contact — that is
+      # the grammar-contact corpus, whose files are deliberately outside the
+      # fragment; a nightly red every night for a documented rejection would
+      # train everyone to ignore this job.
+      # The dispatch input reaches the shell through `env`, never through
+      # `${{ }}` inside `run`: an expression is substituted into the script
+      # text before a shell exists, so whatever the box contained would be
+      # run as commands. As an env value it is just a string, and "$EXAMPLES"
+      # arrives at argparse as one argument that either parses as an int or
+      # fails there.
+      - name: Long differential sweep over the corpus
+        env:
+          EXAMPLES: ${{ github.event.inputs.examples || 5000 }}
+        run: |
+          lemmapy difftest benchmark/tasks \
+            -n "$EXAMPLES" \
+            -o build/nightly \
+            --report build/nightly/difftest-report.json \
+            --min-functions 14
+
+      - name: Upload the divergence report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: difftest-report
+          path: build/nightly/difftest-report.json
+          if-no-files-found: warn
+          retention-days: 90

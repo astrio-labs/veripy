@@ -1,6 +1,7 @@
 import pytest
 
 from lemmapy.backends.dafny.encoder import EncodeError, encode_module
+from lemmapy.backends.dafny.preamble import PREAMBLE_NAMES
 from lemmapy.frontend.extract import parse_source
 
 
@@ -434,7 +435,7 @@ def test_pow_on_non_int_rejected():
         "def f(xs: list[int]) -> int:\n"
         "    return xs ** 2\n"
     )
-    with pytest.raises(EncodeError, match="non-int operands"):
+    with pytest.raises(EncodeError, match="Python has no `\\*\\*`"):
         _encode(src)
 
 
@@ -515,6 +516,74 @@ def test_quantifier_binder_capture_by_genexp_binder_rejected():
     )
     with pytest.raises(EncodeError, match="shadows an existing name"):
         _encode(src)
+
+
+def test_preamble_names_are_exactly_the_globally_visible_declarations():
+    # The reserved set is scraped out of the preamble TEXT so a declaration
+    # added later is reserved without anyone remembering to. The cost is
+    # that a preamble rewritten in a shape the scraper cannot parse would
+    # leave the set empty and reopen the hole with every test still green,
+    # so v0.6's globally visible names are pinned here: growing the
+    # preamble has to be a deliberate edit in this test too.
+    assert PREAMBLE_NAMES == {
+        "PyMod", "PyFloorDiv", "PyMin", "PyMax", "PyAbs", "PyIndex",
+        "PySlice", "PySeqMax", "PySeqMin", "PySum", "PyPow",
+        "PyOpt", "PyNone", "PySome",
+        "PyExn", "ValueError", "IndexError", "ZeroDivisionError",
+        "TypeError", "KeyError",
+        "PyOutcome", "PyOk", "PyErr",
+    }
+    # Datatype members are reached only through a receiver, so they are not
+    # in the top-level scope and a Python name equal to one cannot collide.
+    assert not ({"IsFailure", "PropagateFailure", "Extract"} & PREAMBLE_NAMES)
+
+
+def test_module_name_colliding_with_preamble_declaration_rejected():
+    # The preamble is inlined into the same Dafny scope as the encoded
+    # module, so `def PyExn` emitted a second top-level PyExn and Dafny
+    # answered "duplicate name of top-level declaration" against generated
+    # code — a resolver error on a file the user never wrote.
+    for name in sorted(PREAMBLE_NAMES):
+        src = (
+            "#@ ensures result == x\n"
+            f"def {name}(x: int) -> int:\n"
+            "    return x\n"
+        )
+        with pytest.raises(EncodeError, match="collides with a declaration"):
+            _encode(src)
+    # Module-level bindings that are not defs land in the same scope.
+    for line in ("PySum = 5\n", "from math import prod as PyMax\n"):
+        src = line + "#@ ensures result == 0\ndef f() -> int:\n    return 0\n"
+        with pytest.raises(EncodeError, match="collides with a declaration"):
+            _encode(src)
+
+
+def test_local_param_and_binder_colliding_with_preamble_rejected():
+    # `sum(...)` in a spec encodes to a CALL of the preamble's PySum; a
+    # local, parameter or binder of that name shadows the function at the
+    # call site and Dafny reports "non-function expression is called with
+    # parameters" — again against generated Dafny, not the Python line.
+    cases = (
+        "#@ ensures result == sum(xs)\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    PySum = 0\n"
+        "    return PySum\n",
+
+        "#@ ensures result == 0\n"
+        "def g(PyMod: int) -> int:\n"
+        "    return 0\n",
+
+        "#@ ensures forall PySum in range(len(xs)) :: sum(xs[:PySum]) >= 0\n"
+        "def h(xs: list[int]) -> int:\n"
+        "    return 0\n",
+
+        "#@ ensures result == sum(PyAbs for PyAbs in xs)\n"
+        "def k(xs: list[int]) -> int:\n"
+        "    return 0\n",
+    )
+    for src in cases:
+        with pytest.raises(EncodeError, match="collides with a declaration"):
+            _encode(src)
 
 
 def test_range_keywords_rejected_everywhere():
@@ -1223,3 +1292,133 @@ def test_sequential_loops_reuse_index():
     )
     dfy = _encode(src)
     assert dfy.count("var i :=") == 1  # second loop reuses, no duplicate local
+
+
+# --- binary-operator operand types: `check` must reject what Dafny would ------
+#
+# These all passed `check` as "conformant" and then failed INSIDE Dafny with
+# a message about `seq<char>`, breaking the M1 rule that the encoder dry-run
+# is the conformance authority.
+
+def _reject(src: str, pattern: str):
+    with pytest.raises(EncodeError, match=pattern):
+        _encode(src)
+
+
+def _fn(body: str, sig: str = "a: str, b: str", ret: str = "str") -> str:
+    return (f"#@ ensures len(result) >= 0\n"
+            f"def f({sig}) -> {ret}:\n"
+            f"    return {body}\n")
+
+
+def test_str_repetition_is_named_as_python_legal_but_unmodelled():
+    # Python DOES define `s * n`; the message must not imply the program is
+    # wrong, only that the fragment has not grown to it.
+    _reject(_fn("a * 2", "a: str"), "sequence repetition")
+    _reject(_fn("2 * a", "a: str"), "sequence repetition")  # mirrored operands
+    _reject(_fn("xs * 2", "xs: list[int]", "list[int]"), "sequence repetition")
+
+
+def test_string_formatting_percent_is_not_integer_modulo():
+    # `s % x` silently encoded to PyMod(seq<char>, int).
+    _reject(_fn("a % b", "a: str, b: int"), "printf-style string formatting")
+
+
+def test_bool_arithmetic_names_the_coercion_it_relies_on():
+    # `True + True == 2` in Python; Dafny has no such coercion, so this
+    # could never have worked -- but it was accepted by `check`.
+    _reject("#@ ensures result >= 0\ndef f(a: bool, b: bool) -> int:\n    return a + b\n",
+            "bool-to-int coercion")
+
+
+@pytest.mark.parametrize("body,sig,ret", [
+    ("a - b", "a: str, b: str", "str"),
+    ("a + b", "a: str, b: int", "str"),
+    ("a + b", "a: int, b: str", "int"),
+    ("a // b", "a: str, b: int", "str"),
+    ("xs - ys", "xs: list[int], ys: list[int]", "list[int]"),
+])
+def test_operations_python_itself_rejects_say_so(body, sig, ret):
+    # Distinguished from "not modelled yet": CPython raises TypeError here,
+    # and a fixit suggesting the fragment might grow would be misleading.
+    _reject(_fn(body, sig, ret), "raises TypeError")
+
+
+def test_undetermined_operand_type_fails_closed():
+    # The inferencer is conservative; an operand it cannot type is rejected
+    # rather than emitted and hoped for (what `**` already did).
+    src = ("#@ ensures result >= 0\n"
+           "def f(xs: list[int]) -> int:\n"
+           "    return xs[0][0] + 1\n")
+    _reject(src, "cannot determine the operand types|outside the slice-1 encoder")
+
+
+def test_the_legitimate_cases_still_encode():
+    assert "(a + b)" in _encode(_fn("a + b", "a: str, b: str"))
+    assert "(a + b)" in _encode(_fn("a + b", "a: list[int], b: list[int]", "list[int]"))
+    assert "(a + b)" in _encode(_fn("a + b", "a: int, b: int", "int"))
+    assert "(a - b)" in _encode(_fn("a - b", "a: int, b: int", "int"))
+    assert "PyMod(a, b)" in _encode(_fn("a % b", "a: int, b: int", "int"))
+
+
+def test_empty_list_literal_takes_its_type_from_the_other_operand():
+    # `[] + xs` encoded and verified before operands were type-checked here;
+    # `_infer` cannot type a bare `[]`, so the fail-closed branch would have
+    # rejected a concatenation the fragment has always modelled.
+    assert "([] + xs)" in _encode(_fn("[] + xs", "xs: list[int]", "list[int]"))
+    assert "(xs + [])" in _encode(_fn("xs + []", "xs: list[int]", "list[int]"))
+    # and the type it borrows propagates, so nesting still works
+    assert "(([] + xs) + ys)" in _encode(
+        _fn("([] + xs) + ys", "xs: list[int], ys: list[int]", "list[int]"))
+
+
+@pytest.mark.parametrize("body,sig,ret", [
+    ("[] + []", "", "list[int]"),        # nothing supplies the element type
+    ("[] + s", "s: str", "str"),         # Python: TypeError, list + str
+    ("[] + n", "n: int", "int"),
+    ("[] * 3", "", "list[int]"),         # the exception is `+` only
+    ("[] - xs", "xs: list[int]", "list[int]"),
+])
+def test_empty_list_exception_does_not_leak(body, sig, ret):
+    # The sibling types a bare `[]` only across `+`, and only against a
+    # list; everything else stays fail-closed.
+    _reject(_fn(body, sig, ret), "cannot determine the operand types")
+
+
+# --- sidecar line mapping ------------------------------------------------------
+
+def test_sidecar_locate_maps_stub_lines_to_the_files_own_lines(tmp_path):
+    from lemmapy.backends.dafny.encoder import ProofSidecar, load_proof_sidecar
+
+    src = tmp_path / "m.py"
+    src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (tmp_path / "m.proofs.dfy").write_text(
+        "lemma A(x: int)\n  ensures x == x\n{\n}\n")
+    sidecar = load_proof_sidecar(src)
+    extent = 100  # pretend the generated stub ends here
+    # The wrapper prepends a blank line and a header comment, so the file's
+    # own line 1 sits at extent + header_lines. Derived, not assumed:
+    assert sidecar.header_lines == 2
+    assert sidecar.locate(extent + 2, extent) == (str(tmp_path / "m.proofs.dfy"), 1)
+    assert sidecar.locate(extent + 3, extent) == (str(tmp_path / "m.proofs.dfy"), 2)
+    # Lines at or before the stub's end are NOT the sidecar's.
+    assert sidecar.locate(extent, extent) is None
+    assert sidecar.locate(1, extent) is None
+    # A file with no sidecar can never claim a line.
+    assert ProofSidecar.empty().locate(extent + 5, extent) is None
+
+
+def test_map_line_refuses_to_answer_past_the_generated_region():
+    from lemmapy.backends.dafny.driver import _map_line
+
+    line_map = {10: 3, 20: 7}
+    # Inside the generated region: exact hit, then nearest-above (statements
+    # span more lines than they are keyed at).
+    assert _map_line(line_map, 20, 30) == 7
+    assert _map_line(line_map, 25, 30) == 7
+    # Past it, the nearest-above fallback would answer 7 -- the last Python
+    # line encoded, which has nothing to do with a lemma in the sidecar.
+    assert _map_line(line_map, 31, 30) is None
+    assert _map_line(line_map, 99, 30) is None
+    # Unbounded callers keep the old behaviour.
+    assert _map_line(line_map, 99) == 7

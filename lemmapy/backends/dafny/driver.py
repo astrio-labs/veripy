@@ -109,8 +109,19 @@ def dafny_version() -> str | None:
     return version or None
 
 
-def _map_line(line_map: dict[int, int], dafny_line: int) -> int | None:
-    """Exact hit, else the nearest mapped line above (statements span lines)."""
+def _map_line(line_map: dict[int, int], dafny_line: int,
+              stub_extent: int | None = None) -> int | None:
+    """Exact hit, else the nearest mapped line above (statements span lines).
+
+    `stub_extent` is where the GENERATED region ends; everything past it is
+    the appended proof sidecar, which has no Python line at all. Without the
+    bound, the nearest-above fallback answers with the last mapped line in
+    the file — so a failing lemma was reported against whichever Python
+    statement happened to be encoded last, a line with nothing to do with
+    it. Absent is the honest answer, and callers already handle None.
+    """
+    if stub_extent is not None and dafny_line > stub_extent:
+        return None
     if dafny_line in line_map:
         return line_map[dafny_line]
     candidates = [dl for dl in line_map if dl < dafny_line]
@@ -118,7 +129,8 @@ def _map_line(line_map: dict[int, int], dafny_line: int) -> int | None:
 
 
 def verify_dafny_file(
-    path: Path, line_map: dict[int, int], time_limit: int = 30
+    path: Path, line_map: dict[int, int], time_limit: int = 30,
+    stub_extent: int | None = None,
 ) -> VerifyResult:
     exe = find_dafny()
     if exe is None:
@@ -145,7 +157,7 @@ def verify_dafny_file(
             # fold it into the previous diagnostic so the report points at
             # the spec clause, not just the return statement.
             rline = int(related.group("line"))
-            r_py = _map_line(line_map, rline)
+            r_py = _map_line(line_map, rline, stub_extent)
             last = diagnostics[-1]
             if r_py is not None:
                 last.message += f" (related: source line {r_py})"
@@ -157,7 +169,7 @@ def verify_dafny_file(
             dline = int(m.group("line"))
             diagnostics.append(Diagnostic(
                 dafny_line=dline,
-                py_line=_map_line(line_map, dline),
+                py_line=_map_line(line_map, dline, stub_extent),
                 severity=m.group("sev").lower(),
                 message=m.group("msg").strip(),
             ))
