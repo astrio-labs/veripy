@@ -214,7 +214,12 @@ def test_sidecar_proof_failure_never_reads_as_verified(tmp_path):
     assert status == 1
     fn = json.loads(report.read_text())["functions"][0]
     assert fn["status"] == "indeterminate"
-    assert any("unattributed" in f["message"] for f in fn["failures"])
+    # Named as the sidecar's, and pointing at the sidecar FILE. The record
+    # used to say "unattributed" and cite the generated stub — which is not
+    # a file anyone edits, and hid which of two very different regions the
+    # failure was actually in.
+    assert any("proof sidecar" in f["message"] for f in fn["failures"])
+    assert all(f["file"].endswith("m.proofs.dfy") for f in fn["failures"])
 
 
 def test_sentinel_injection_rejected_both_ends(tmp_path):

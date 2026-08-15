@@ -1383,3 +1383,42 @@ def test_empty_list_exception_does_not_leak(body, sig, ret):
     # The sibling types a bare `[]` only across `+`, and only against a
     # list; everything else stays fail-closed.
     _reject(_fn(body, sig, ret), "cannot determine the operand types")
+
+
+# --- sidecar line mapping ------------------------------------------------------
+
+def test_sidecar_locate_maps_stub_lines_to_the_files_own_lines(tmp_path):
+    from lemmapy.backends.dafny.encoder import ProofSidecar, load_proof_sidecar
+
+    src = tmp_path / "m.py"
+    src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (tmp_path / "m.proofs.dfy").write_text(
+        "lemma A(x: int)\n  ensures x == x\n{\n}\n")
+    sidecar = load_proof_sidecar(src)
+    extent = 100  # pretend the generated stub ends here
+    # The wrapper prepends a blank line and a header comment, so the file's
+    # own line 1 sits at extent + header_lines. Derived, not assumed:
+    assert sidecar.header_lines == 2
+    assert sidecar.locate(extent + 2, extent) == (str(tmp_path / "m.proofs.dfy"), 1)
+    assert sidecar.locate(extent + 3, extent) == (str(tmp_path / "m.proofs.dfy"), 2)
+    # Lines at or before the stub's end are NOT the sidecar's.
+    assert sidecar.locate(extent, extent) is None
+    assert sidecar.locate(1, extent) is None
+    # A file with no sidecar can never claim a line.
+    assert ProofSidecar.empty().locate(extent + 5, extent) is None
+
+
+def test_map_line_refuses_to_answer_past_the_generated_region():
+    from lemmapy.backends.dafny.driver import _map_line
+
+    line_map = {10: 3, 20: 7}
+    # Inside the generated region: exact hit, then nearest-above (statements
+    # span more lines than they are keyed at).
+    assert _map_line(line_map, 20, 30) == 7
+    assert _map_line(line_map, 25, 30) == 7
+    # Past it, the nearest-above fallback would answer 7 -- the last Python
+    # line encoded, which has nothing to do with a lemma in the sidecar.
+    assert _map_line(line_map, 31, 30) is None
+    assert _map_line(line_map, 99, 30) is None
+    # Unbounded callers keep the old behaviour.
+    assert _map_line(line_map, 99) == 7
