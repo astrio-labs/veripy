@@ -24,8 +24,19 @@ jobs:
         with:
           python-version: "3.12"
       - name: Build sdist + wheel
+        # Everything that shapes the artifact is pinned: pip/build/twine
+        # here, and setuptools inside build's ISOLATED env via
+        # PIP_CONSTRAINT (verified: a conflicting pin fails the isolated
+        # install, so the constraint is genuinely honoured there). The
+        # pins are the versions the reviewed artifacts were built with —
+        # an unchanged commit re-published later produces the same bytes
+        # from the same toolchain, instead of whatever resolved that day.
+        # pyproject keeps its >=77 floor: sdist CONSUMERS build with what
+        # they have; only our published artifacts need one known chain.
+        env:
+          PIP_CONSTRAINT: ${{ github.workspace }}/.github/release-constraints.txt
         run: |
-          python -m pip install --upgrade pip build twine
+          python -m pip install "pip==25.2" "build==1.5.0" "twine==7.0.0"
           python -m build
           python -m twine check --strict dist/*
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
