@@ -15,3 +15,4 @@ docs/PAPER-RELATED-WORK.md
 
 # Local tool state (forall-core workspace), not project source.
 .forall/
+dist/
