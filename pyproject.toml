@@ -1,16 +1,37 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "lemmapy"
-version = "0.0.1"
-description = "Verify annotated production Python: #@ specs on real code, runtime contracts today (M0), typed-fragment translation to Dafny next (M1)."
+# Alpha on purpose: this release exists to claim the name with the real
+# package behind it. Because only pre-releases exist, `pip install lemmapy`
+# resolves nothing without --pre — reserved, but not "released".
+version = "0.1.0a1"
+description = "Verify annotated production Python: #@ specs compile to runtime contracts and translate to Dafny for SMT proofs."
+readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["verification", "dafny", "contracts", "smt", "formal-methods", "crosshair"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
     "icontract>=2.6.6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/nolanlwin/lemmapy"
+Repository = "https://github.com/nolanlwin/lemmapy"
+Issues = "https://github.com/nolanlwin/lemmapy/issues"
 
 [project.optional-dependencies]
 types = [

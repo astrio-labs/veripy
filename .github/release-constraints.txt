@@ -1,0 +1,5 @@
+# Pins for the RELEASE build only (via PIP_CONSTRAINT in publish.yml).
+# pyproject keeps its floor (setuptools>=77) because sdist consumers build
+# with whatever they have; this file makes the artifacts WE publish come
+# from one known toolchain instead of whatever resolved that day.
+setuptools==84.0.0

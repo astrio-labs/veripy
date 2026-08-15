@@ -1,0 +1,64 @@
+# Publish to PyPI via TRUSTED PUBLISHING (OIDC) — no API token exists
+# anywhere: PyPI trusts this exact repo + workflow + environment, and every
+# run mints a short-lived identity. One-time setup on pypi.org is documented
+# in the workflow's job summary below.
+#
+# Deliberately manual-only (workflow_dispatch): publishing is an outward
+# action a human triggers, never a side effect of a push or tag. Uploads are
+# immutable — a bad file name/version can never be re-uploaded — which is
+# why the build is checked with twine before anything leaves the runner.
+name: publish
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
+        with:
+          python-version: "3.12"
+      - name: Build sdist + wheel
+        # Everything that shapes the artifact is pinned: pip/build/twine
+        # here, and setuptools inside build's ISOLATED env via
+        # PIP_CONSTRAINT (verified: a conflicting pin fails the isolated
+        # install, so the constraint is genuinely honoured there). The
+        # pins are the versions the reviewed artifacts were built with —
+        # an unchanged commit re-published later produces the same bytes
+        # from the same toolchain, instead of whatever resolved that day.
+        # pyproject keeps its >=77 floor: sdist CONSUMERS build with what
+        # they have; only our published artifacts need one known chain.
+        env:
+          PIP_CONSTRAINT: ${{ github.workspace }}/.github/release-constraints.txt
+        run: |
+          python -m pip install "pip==25.2" "build==1.5.0" "twine==7.0.0"
+          python -m build
+          python -m twine check --strict dist/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment is part of PyPI's trust anchor: the pending publisher
+    # on pypi.org names it, so a workflow edit alone cannot redirect
+    # publishing.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/lemmapy
+    permissions:
+      id-token: write  # OIDC — this is the whole credential
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
