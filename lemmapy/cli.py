@@ -402,7 +402,10 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
         stub_dir.mkdir(parents=True, exist_ok=True)
         stub = stub_dir / f"{path.stem}.dfy"
         atomic_write_text(stub, stub_text)
-        result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
+        stub_extent = encoded.dafny_source.count("\n") + 1
+        result = verify_dafny_file(stub, encoded.line_map,
+                                   time_limit=time_limit,
+                                   stub_extent=stub_extent)
         if result.error is not None:
             print(f"{path}: dafny trouble: {result.error}", file=sys.stderr)
             trouble += 1
@@ -415,10 +418,22 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
             failed += 1
             print(f"{path}: VERIFICATION FAILED -> {stub}")
             errs = []
-            stub_extent = encoded.dafny_source.count("\n") + 1
             for d in result.diagnostics:
                 if d.severity == "error":
-                    where = f"{path}:{d.py_line}" if d.py_line is not None else f"{stub}:{d.dafny_line}"
+                    # A failure in the appended sidecar region gets a
+                    # PYTHON line from the driver's nearest-mapping lookup,
+                    # which sends the reader to a line that has nothing to
+                    # do with the failing lemma. The structured payload has
+                    # always said `region: "sidecar"`; the printed line
+                    # disagreed with it. Name the .proofs.dfy file and its
+                    # own line number instead.
+                    at = sidecar.locate(d.dafny_line, stub_extent)
+                    if at is not None:
+                        where = f"{at[0]}:{at[1]}"
+                    elif d.py_line is not None and d.dafny_line <= stub_extent:
+                        where = f"{path}:{d.py_line}"
+                    else:
+                        where = f"{stub}:{d.dafny_line}"
                     print(f"  {where}: {d.message}")
                     hint = proof_hint(d, source, specs)
                     if hint:
@@ -440,10 +455,16 @@ def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = T
                          for d in mine]
                 if not mine and unattributed:
                     status_str = "indeterminate"
-                    fails = [{"file": str(stub), "line": d.dafny_line,
-                              "message": f"unattributed (proof sidecar or "
-                                         f"generated region): {d.message}"}
-                             for d in unattributed]
+                    fails = []
+                    for d in unattributed:
+                        at = sidecar.locate(d.dafny_line, stub_extent)
+                        if at is not None:
+                            fails.append({"file": at[0], "line": at[1],
+                                          "message": f"proof sidecar: {d.message}"})
+                        else:
+                            fails.append({"file": str(stub), "line": d.dafny_line,
+                                          "message": f"unattributed (generated "
+                                                     f"region): {d.message}"})
                 else:
                     status_str = "failed" if mine else "verified"
                 fn_reports.append(function_report(fn, str(path), status_str, fails))

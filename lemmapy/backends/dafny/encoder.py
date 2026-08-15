@@ -68,10 +68,24 @@ from .preamble import PREAMBLE, PREAMBLE_NAMES
 class ProofSidecar:
     text: str
     lemmas: frozenset[str]
+    # Where the pack came from, and how many lines `text` prepends before
+    # the file's own line 1 — enough to map a stub line back to a location
+    # a reader can OPEN. Derived from the wrapper, never a literal, so the
+    # mapping follows if the wrapper changes.
+    path: Path | None = None
+    header_lines: int = 0
 
     @staticmethod
     def empty() -> "ProofSidecar":
         return ProofSidecar("", frozenset())
+
+    def locate(self, dafny_line: int, stub_extent: int) -> tuple[str, int] | None:
+        """(file, line) in the SIDECAR for a stub line, or None if that line
+        is not in the sidecar region."""
+        if self.path is None or dafny_line <= stub_extent:
+            return None
+        line = dafny_line - stub_extent - self.header_lines + 1
+        return (str(self.path), line) if line >= 1 else None
 
 
 def _strip_dafny_comments(text: str) -> str:
@@ -274,9 +288,9 @@ def load_proof_sidecar(source_path: Path) -> ProofSidecar:
         return ProofSidecar.empty()
     text = sidecar.read_text()
     lemmas = _validate_sidecar(text, sidecar.name)
-    return ProofSidecar(
-        f"\n// ---- proof additions from {sidecar.name} ----\n{text}", lemmas
-    )
+    header = f"\n// ---- proof additions from {sidecar.name} ----\n"
+    return ProofSidecar(header + text, lemmas, path=sidecar,
+                        header_lines=header.count("\n"))
 
 
 def validate_sidecar_text(text: str, name: str) -> frozenset[str]:

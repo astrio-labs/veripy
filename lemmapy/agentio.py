@@ -251,7 +251,8 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
     payload["stub"] = str(stub) if keep_artifacts else None
     stub_extent = encoded.dafny_source.count("\n") + 1
     payload["toolchain"]["dafny_version"] = dafny_version()  # cached per process
-    result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit)
+    result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit,
+                               stub_extent=stub_extent)
     if result.error is not None:
         payload["status"] = "tool-error"
         payload["error"] = result.error
