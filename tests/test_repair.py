@@ -1,6 +1,7 @@
 """The proof-repair loop, driven by the scripted file engine — verifies the
 loop mechanics (feedback, validation, apply) without an LLM."""
 
+import argparse
 import json
 from pathlib import Path
 
@@ -92,6 +93,68 @@ def test_claude_engine_runs_in_empty_sandbox(monkeypatch):
     assert Path(seen["cwd"]).name.startswith("lemmapy-engine-")
     assert seen["entries"] == []  # nothing to find in the sandbox
     assert Path(seen["cwd"]).resolve() != Path.cwd().resolve()
+
+
+def test_engine_wall_is_configurable_and_used(monkeypatch):
+    # The first n=6 exam lost `rolling_max` to the engine's own 600s wall,
+    # so the run reported one task UNMEASURED rather than unproved. The
+    # wall must be a knob, and it must actually reach the subprocess —
+    # otherwise a rerun cannot tell "could not prove it" from "did not
+    # answer in time".
+    import lemmapy.repair as repair_mod
+    from lemmapy.repair import DEFAULT_ENGINE_WALL_S, _ClaudeEngine
+
+    assert make_engine("claude").wall_s == DEFAULT_ENGINE_WALL_S
+    assert make_engine("claude", 1800).wall_s == 1800
+    assert make_engine("claude:opus", 900).wall_s == 900
+    assert make_engine("api:openrouter/x/y", 120).wall_s == 120
+
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+
+        class Proc:
+            returncode = 0
+            stdout = "lemma L()\n{\n}\n"
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(repair_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(repair_mod.shutil, "which", lambda name: "/fake/claude")
+    engine = _ClaudeEngine(wall_s=1234)
+    engine({"rules": "r", "attempt": 0, "source": "s", "failures": {},
+            "sidecar": "", "history": []})
+    assert seen["timeout"] == 1234
+
+
+def test_non_positive_engine_wall_is_rejected_not_silently_defaulted(capsys, tmp_path):
+    # Both non-positive walls used to pass validation and then fail quietly in
+    # different ways: a negative one reached `subprocess.run(timeout=)` and
+    # raised TimeoutExpired before the engine saw the prompt (recorded as "did
+    # not answer"), and `0` was eaten by `args.engine_wall or DEFAULT` and
+    # silently became 600s. An exam that reports its wall must have run under
+    # the wall it reports, so both are refused at the door.
+    from lemmapy.cli import _wall
+
+    for bad in (0, -5):
+        with pytest.raises(ValueError, match="positive number of seconds"):
+            make_engine("claude", bad)
+
+    src = tmp_path / "t.py"
+    src.write_text("def f(x: int) -> int:\n    return x\n")
+    for bad in ("0", "-5"):
+        with pytest.raises(SystemExit) as exc:
+            main(["repair", "--engine-wall", bad, str(src)])
+        assert exc.value.code == 2
+        assert "positive number of seconds" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as exc:
+            main(["benchmark", "--exam", "proof-repair", "--engine-wall", bad])
+        assert exc.value.code == 2
+
+    # ...and a wall that is legal is never replaced by the default.
+    assert _wall(argparse.Namespace(engine_wall=1)) == 1
 
 
 def test_make_engine_specs():
@@ -309,6 +372,43 @@ def test_prompt_states_omissions_and_stays_bounded():
     # proposals are digests, and the failures payload no longer repeats the
     # text it already carries.
     assert prompt.count("assert true;") == big.count("assert true;")
+
+
+def test_prompt_explains_the_kinds_actually_present():
+    # The taxonomy already says what to DO about each kind; the engine
+    # should read the same words a host does, rather than a second copy
+    # that can drift. Measurement motivated this: 15 of 15 unclassified
+    # records in the first n=6 run were sidecar resolution errors, and the
+    # generic rules told the engine to reason about proofs when the sidecar
+    # had not typechecked.
+    from lemmapy.failures import FAILURE_KINDS
+    from lemmapy.repair import _render_prompt, build_request
+
+    payload = {"status": "failed", "sidecar": {"text": "lemma L() {}"},
+               "failures": [
+                   {"kind": "resolution", "message": "unresolved identifier"},
+                   {"kind": "postcondition", "message": "could not be proved"}]}
+    prompt = _render_prompt(build_request("SRC", payload, 1, []))
+
+    assert "What these failures mean" in prompt
+    # Verbatim from the taxonomy — not a paraphrase maintained separately.
+    assert FAILURE_KINDS["resolution"] in prompt
+    assert FAILURE_KINDS["postcondition"] in prompt
+    # Only the kinds PRESENT: an unrelated kind must not be explained, or
+    # the section becomes a wall of text the engine learns to skip.
+    assert FAILURE_KINDS["termination"] not in prompt
+
+    # No failures -> no section at all.
+    empty = _render_prompt(build_request(
+        "SRC", {"status": "failed", "sidecar": {"text": ""}, "failures": []},
+        0, []))
+    assert "What these failures mean" not in empty
+
+    # An unknown label must not crash the renderer or invent guidance.
+    weird = _render_prompt(build_request(
+        "SRC", {"status": "failed", "sidecar": {"text": ""},
+                "failures": [{"kind": "not-a-kind", "message": "?"}]}, 0, []))
+    assert "What these failures mean" not in weird
 
 
 def test_strip_fences():

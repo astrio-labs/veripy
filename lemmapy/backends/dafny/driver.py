@@ -21,21 +21,30 @@ _SUMMARY_RE = re.compile(r"finished with (?P<ok>\d+) verified, (?P<bad>\d+) erro
 # published taxonomy (lemmapy/failures.py PROVER_KINDS) — that is what a
 # host branches on, and tests/test_failures.py fails if this drifts.
 _OBLIGATION_KINDS: tuple[tuple[str, str], ...] = (
+    # Resolution/type errors in the (engine- or hand-written) sidecar: the
+    # proof was never attempted, so they are not obligations. Checked
+    # BEFORE the obligation patterns because their text can mention one —
+    # which is what the comment here always claimed, while the entries sat
+    # below them and were reached second.
+    ("unresolved identifier", "resolution"),
+    ("wrong number of arguments", "resolution"),
+    ("incorrect argument type", "resolution"),
+    ("duplicate name", "resolution"),
     ("postcondition", "postcondition"),
-    ("loop invariant", "invariant"),
+    # Dafny says "this loop invariant could not be proved on entry" but
+    # "this invariant could not be proved to be MAINTAINED by the loop" —
+    # the two words are not adjacent in the second, so a needle of "loop
+    # invariant" caught entry failures and let every maintenance failure
+    # fall through to `unknown`. That is the more common of the two, and
+    # `unknown` is outside PROVER_KINDS, so a pack whose whole job is to
+    # maintain an invariant read as no evidence of a proof at all.
+    ("invariant", "invariant"),
     ("assertion", "assertion"),
     ("precondition for this call", "call-precondition"),
     ("requires clause", "call-precondition"),
     ("decreases", "termination"),
     ("timed out", "timeout"),
     ("out of resource", "timeout"),
-    # Resolution/type errors in the (engine- or hand-written) sidecar: the
-    # proof was never attempted, so they are not obligations. Checked
-    # before the obligation patterns because their text can mention one.
-    ("unresolved identifier", "resolution"),
-    ("wrong number of arguments", "resolution"),
-    ("incorrect argument type", "resolution"),
-    ("duplicate name", "resolution"),
     ("index out of range", "bounds"),
     ("divisor is always non-zero", "division"),
 )

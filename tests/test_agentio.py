@@ -27,11 +27,24 @@ def test_classify_obligation_kinds():
     cases = {
         "a postcondition could not be proved on this return path": "postcondition",
         "this loop invariant could not be proved on entry": "invariant",
+        # Dafny does not repeat "loop invariant" for the maintenance case,
+        # so a needle of "loop invariant" let the MORE COMMON of the two
+        # fall through to `unknown` -- which is outside PROVER_KINDS, so a
+        # pack whose whole job is maintaining an invariant read as no
+        # evidence of a proof at all.
+        "this invariant could not be proved to be maintained by the loop":
+            "invariant",
         "assertion might not hold": "assertion",
         "a precondition for this call could not be proved": "call-precondition",
         "cannot prove termination; try supplying a decreases clause": "termination",
         "verification timed out": "timeout",
         "something novel": "unknown",
+        # A resolution error whose text happens to name an obligation is
+        # still a resolution error: the proof was never attempted. These
+        # are matched first, which is what the table's comment always
+        # claimed while the entries sat below the obligation patterns.
+        "unresolved identifier: InvariantHelper": "resolution",
+        "wrong number of arguments (postcondition helper)": "resolution",
     }
     for message, kind in cases.items():
         assert classify_obligation(message) == kind, message

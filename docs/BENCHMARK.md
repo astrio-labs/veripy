@@ -80,10 +80,42 @@ Two properties fall out of this design that no static benchmark has:
      there is no sidecar channel for them to name.)
    - **Panel alignment.** Mutations sort by `(line, col, replacement)` and
      inserting `#@` lines is a monotone renumbering, so ordering survives
-     and the `max_mutants` truncation selects the same faults; line-numbered
-     `equivalent_mutants` are translated through the same map. Untranslated,
-     the adjudication would silently miss and the engine would be charged
-     for a mutant the golden run was forgiven.
+     and the `max_mutants` truncation selects the same faults; both
+     line-numbered adjudication channels — `equivalent_mutants` and
+     `timeout_kills` — are translated through the same map. Untranslated,
+     an adjudication silently misses: the exclusion is lost and the engine
+     is charged for a mutant the golden run was forgiven, or (for
+     `timeout_kills`, which the runner validates against the panel) the
+     ruling matches nothing and the whole panel errors as stale.
+
+   **The timeout-bias check.** A refutation gap between the arms is a
+   *strength* gap only if both arms concluded on the same mutants. A hunt
+   that exhausts its wall is inconclusive, and engine-written specs can be
+   systematically more expensive to hunt than golden ones — more
+   quantifiers, wider domains — without being any weaker. Counting those
+   as "not refuted" would report hunt COST as spec strength.
+
+   So every row records WHICH mutants went inconclusive in each arm, in the
+   stripped source's line numbering — the one coordinate system the two
+   arms share. Identities, not counts: one arm exhausting its wall on
+   mutant A while the other exhausts it on mutant B leaves each arm missing
+   a different mutant, and equal counts would have called that comparable.
+   A row whose arms disagree is marked `!` and named in a `TIMEOUT BIAS`
+   line saying the gap must not be quoted as a strength difference, and it
+   is **excluded from the aggregate** — quoting it in the headline would be
+   the same defect one level up, where the `!` no longer travels with the
+   number. The headline says how many rows it covers; if no row is
+   comparable it states `NOT AGGREGATED` rather than an average of nothing.
+   When the arms agree, the report says `timeout-bias check: PASSED`
+   explicitly, so a reader never has to assume the check was done. The
+   check is symmetric — golden timing out more disqualifies the comparison
+   just as loudly, since that direction flatters the engine.
+
+   The golden baseline is cached, and the cache key carries a schema
+   version for the same reason: an entry written before a field existed
+   matches an unchanged key, so "we never recorded golden's timeouts" would
+   load as "golden never timed out" — a PASSED verdict drawn from data
+   nobody collected.
 
    The anti-gaming property is the design's whole point, and it is
    measured, not asserted. An adversarial arm replaces every task's
