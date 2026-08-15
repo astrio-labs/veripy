@@ -1,0 +1,1 @@
+{"id": "sum_to_n", "origin": "HumanEval/60", "license": "MIT", "timeout_kills": ["line 23 col 14: `+` -> `-`"]}

@@ -183,6 +183,12 @@ the flattering denominator is exactly the kind of thing the trivial-spec
 floor exists to prevent elsewhere. `rolling_max` was re-run — see Run 4,
 which supersedes this one and which no number here should be quoted over.
 
+The roster has since grown to seven — `sum_to_n`, whose `GaussStep` pack
+is load-bearing. Run 3 predates it, so it is in neither denominator above
+and the numbers stay as measured; the next run is n=7. (The live roster is
+enumerated in [BENCHMARK.md](BENCHMARK.md#the-assurance-ladder); these run sections
+are dated records, not a statement of the roster today.)
+
 Note the prompt-budget fix was already in effect for this run (prior
 proposals digested, the duplicate sidecar copy removed), so it reduced
 prompt growth without eliminating the 600 s wall on the hardest task —
