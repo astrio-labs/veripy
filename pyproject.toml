@@ -5,8 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lemmapy"
 # Alpha on purpose: this release exists to claim the name with the real
-# package behind it. Because only pre-releases exist, `pip install lemmapy`
-# resolves nothing without --pre — reserved, but not "released".
+# package behind it. NOTE pip installs a pre-release when it is the only
+# version available (verified against the live index), so this alpha IS
+# installable by a plain `pip install lemmapy` — the alpha marker manages
+# expectations; it does not gate installation.
 version = "0.1.0a1"
 description = "Verify annotated production Python: #@ specs compile to runtime contracts and translate to Dafny for SMT proofs."
 readme = "README.md"
