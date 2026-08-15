@@ -129,8 +129,8 @@ Two properties fall out of this design that no static benchmark has:
    ```
 
    *(Both figures predate the operand-replacement family and the modp/
-   triples tasks; the golden baseline on the current 15-task panel is
-   54/69 = 78%.)*
+   triples tasks; the golden baseline on the current 16-task panel is
+   62/77 = 81%.)*
 
    All twelve tautologies clear the type gate, the runtime-contract hunt,
    the encoder, and the SMT prover — *every automated check the toolchain
@@ -233,6 +233,7 @@ incr_list              pass     pass     2/2?     pass     pass     pass     6/6
 intersperse            pass     pass     1/3      pass     pass     pass     6/6
 is_palindrome          pass     pass     2/4      pass     pass     pass     6/6
 is_prime               pass     pass     8/8      pass     pass     pass     6/6
+isqrt                  pass     pass     8/8      pass     pass     pass     6/6
 max_element            pass     pass     0/1*?    pass     pass     pass     6/6
 modp                   pass     pass     7/8*     pass     pass     pass     6/6
 rolling_max            pass     pass     1/5      pass     pass     pass     6/6
@@ -240,8 +241,8 @@ sum_squares            pass     pass     2/6      pass     pass     pass     6/6
 sum_to_n               pass     pass     5/6*     pass     pass     pass     6/6
 triples_sum_to_zero    pass     pass     8/8      pass     pass     pass     6/6
 -----------------------------------------------------------------------------------
-tasks: 15   full-ladder: 15   spec strength: 54/69 mutants REFUTED by the specs (78%); 13 crashed (caught by the interpreter, not the spec — never credited); 2 diverged (adjudicated nontermination — caught by the wall, not the spec, so never credited)
-panel resolution: median 4 mutants/task, min 1, max 8; 4 task(s) marked ? — panel too small for a per-task rate to be comparable
+tasks: 16   full-ladder: 16   spec strength: 62/77 mutants REFUTED by the specs (81%); 13 crashed (caught by the interpreter, not the spec — never credited); 2 diverged (adjudicated nontermination — caught by the wall, not the spec, so never credited)
+panel resolution: median 4.5 mutants/task, min 1, max 8; 4 task(s) marked ? — panel too small for a per-task rate to be comparable
 * 2 mutant(s) human-adjudicated as divergent; counted separately, NOT as spec strength; 1 mutant(s) excluded as adjudicated equivalent
 ```
 
