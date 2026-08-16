@@ -750,3 +750,59 @@ def test_exhausted_loop_still_counts_last_rejection(tmp_path):
     rejections = [a["rejection"] for a in outcome.attempts if a["rejection"]]
     assert len(rejections) == 2  # every proposal counted, including the last
     assert all(r["rule"] == "bodiless" for r in rejections)
+
+
+def test_model_substitution_is_refused_not_recorded():
+    """A requested model the CLI did not serve must fail loudly.
+
+    Measured, not hypothetical: `--model fable` was accepted without error
+    and silently served by opus (modelUsage showed opus doing the work),
+    and `--model fable-5` returned a reply with no model provenance at
+    all. Either would have produced a mislabelled results column,
+    detectable only by a post-hoc ledger audit.
+    """
+    from lemmapy.repair import _ClaudeEngine, _parse_claude_json
+
+    # Shape from the live probe: helper haiku + the model that actually
+    # served the reply, distinguished by output tokens.
+    substituted = (
+        '{"result":"OK","usage":{"output_tokens":4},'
+        '"modelUsage":{"claude-haiku-4-5-20251001":{"outputTokens":12},'
+        '"claude-opus-4-8":{"outputTokens":400}}}'
+    )
+    _, usage = _parse_claude_json(substituted)
+    assert usage["primary_model"] == "claude-opus-4-8"
+
+    engine = _ClaudeEngine(model="fable")
+    with pytest.raises(RuntimeError, match="silently substituted"):
+        engine._check_served_model(usage)
+
+    # No provenance at all (the fable-5 probe): also refused.
+    engine = _ClaudeEngine(model="fable-5")
+    with pytest.raises(RuntimeError, match="no model provenance"):
+        engine._check_served_model({"models": [], "primary_model": None})
+    with pytest.raises(RuntimeError, match="no model provenance"):
+        engine._check_served_model(None)
+
+    # The helper-model trap: haiku appears in EVERY invocation's
+    # modelUsage, so matching against the model LIST would accept a
+    # substitution whenever haiku was requested. Primary-model matching
+    # does not.
+    engine = _ClaudeEngine(model="haiku")
+    with pytest.raises(RuntimeError, match="silently substituted"):
+        engine._check_served_model(usage)  # primary is opus
+
+    # Correct service passes, for aliases and full ids alike.
+    served = {"primary_model": "claude-sonnet-4-6", "models": ["claude-sonnet-4-6"]}
+    _ClaudeEngine(model="sonnet")._check_served_model(served)
+    _ClaudeEngine(model="claude-sonnet-4-6")._check_served_model(served)
+    # The default engine promises nothing and checks nothing.
+    _ClaudeEngine()._check_served_model(None)
+
+
+def test_anthropic_api_provider_exists():
+    from lemmapy.repair import _ApiEngine
+
+    engine = make_engine("api:anthropic/claude-fable-5")
+    assert isinstance(engine, _ApiEngine)
+    assert engine.key_env == "ANTHROPIC_API_KEY"

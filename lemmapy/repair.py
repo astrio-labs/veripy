@@ -268,6 +268,13 @@ def _parse_claude_json(stdout: str) -> tuple[str, dict[str, Any] | None]:
         "duration_api_ms": obj.get("duration_api_ms"),
         "num_turns": obj.get("num_turns"),
         "models": sorted((obj.get("modelUsage") or {}).keys()),
+        # The entry that produced the most output tokens is the model that
+        # actually SERVED the reply; other entries are CLI helper models
+        # (a small haiku appears in every invocation's modelUsage).
+        "primary_model": max(
+            (obj.get("modelUsage") or {}).items(),
+            key=lambda kv: (kv[1] or {}).get("outputTokens", 0),
+            default=(None, None))[0],
     }
     return text, usage
 
@@ -299,8 +306,35 @@ class _ClaudeEngine:
         if proc.returncode != 0:
             raise RuntimeError(f"claude engine failed: {proc.stderr[:400]}")
         text, usage = _parse_claude_json(proc.stdout)
+        self._check_served_model(usage)
         self.usage_log.append(usage)
         return _strip_fences(text)
+
+    def _check_served_model(self, usage: dict[str, Any] | None) -> None:
+        """Refuse to record data under a model label the CLI did not serve.
+
+        Measured failure mode, not hypothetical: `--model fable` was
+        accepted without error and silently served by opus, and
+        `--model fable-5` returned a reply with NO model provenance at
+        all. Either would have produced a mislabelled results column that
+        only a post-hoc ledger audit could catch. When a model was
+        explicitly requested, provenance must be verifiable and must
+        match — a loud failure before any data is recorded.
+        """
+        if self.model is None:
+            return  # default model: nothing was promised
+        primary = (usage or {}).get("primary_model")
+        if not primary:
+            raise RuntimeError(
+                f"engine 'claude:{self.model}': the CLI reply carries no "
+                f"model provenance, so the requested model cannot be "
+                f"verified — refusing to record unattributable data")
+        want = self.model.lower().removeprefix("claude-")
+        if want not in primary.lower():
+            raise RuntimeError(
+                f"engine 'claude:{self.model}': requested model was NOT "
+                f"served — the CLI silently substituted {primary!r}; "
+                f"refusing to record a mislabelled results column")
 
 
 def claude_engine(request: dict[str, Any]) -> str:
@@ -315,6 +349,10 @@ def claude_engine(request: dict[str, Any]) -> str:
 _API_PROVIDERS = {
     "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    # Direct Anthropic path (OpenAI-compatible endpoint). The way to run a
+    # model the CLI does not expose (e.g. fable): the API REJECTS an
+    # unknown model id loudly, where the CLI silently substituted opus.
+    "anthropic": ("https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
 }
 
 
