@@ -362,16 +362,36 @@ def claude_engine(request: dict[str, Any]) -> str:
     return _ClaudeEngine()(request)
 
 
+# Live-probed lockdown, in order of what each layer actually stopped:
+# `--mode ask` alone still RAN `ls /` and read files outside the
+# workspace; `--sandbox enabled` stopped the shell but still read the
+# actual golden sidecar by absolute path (a demonstrated answer-key
+# retrieval); only a workspace permissions config denying every tool
+# closed the reads — after which the model still answers from the prompt
+# (probe: two DENIED file reads, then a correct arithmetic reply). All
+# three layers are kept: defense in depth, and the flags also pin the
+# posture visibly in every recorded command line.
+_CURSOR_PERMISSIONS_CONFIG = (
+    '{\n'
+    '  "permissions": {\n'
+    '    "allow": [],\n'
+    '    "deny": ["Read(**)", "Shell(**)", "Write(**)", "Grep(**)",'
+    ' "Glob(**)", "Ls(**)", "WebSearch", "WebFetch"]\n'
+    '  }\n'
+    '}\n'
+)
+
+
 def _cursor_cmd(exe: str, prompt: str, model: str | None = None) -> list[str]:
-    """Pinned cursor-agent invocation. `--mode ask` is the CLI's read-only
-    Q&A mode — bare `-p` grants ALL tools including shell and write (its
-    own --help says so), which is the retrieval hazard the claude engine's
-    tool denial exists to prevent. Ask mode plus the empty-cwd sandbox is
-    the equivalent posture: nothing to read, nothing writable, no shell.
-    `--trust` is required headless — without it the CLI prompts for
-    workspace trust and hangs until the wall kills it."""
-    cmd = [exe, "-p", prompt, "--mode", "ask", "--output-format", "json",
-           "--trust"]
+    """Pinned cursor-agent invocation. Bare `-p` grants ALL tools
+    including shell and write (its own --help says so) — the retrieval
+    hazard the claude engine's tool denial exists to prevent. The pinned
+    posture is ask mode + sandbox + the deny-all workspace permissions
+    config `_CursorEngine` writes into its empty cwd. `--trust` is
+    required headless — without it the CLI prompts for workspace trust
+    and hangs until the wall kills it."""
+    cmd = [exe, "-p", prompt, "--mode", "ask", "--sandbox", "enabled",
+           "--output-format", "json", "--trust"]
     if model is not None:
         cmd += ["--model", model]
     return cmd
@@ -401,9 +421,15 @@ def _parse_cursor_json(stdout: str) -> tuple[str, dict[str, Any] | None]:
         return stdout, None
     served = obj.get("model") or (obj.get("metadata") or {}).get("model")
     raw = obj.get("usage") or {}
+    # Field names pinned from a live 2026.05.28 sample: usage keys are
+    # camelCase (inputTokens/outputTokens/cacheReadTokens), durations are
+    # top-level, and NO model field is present — the serving model is
+    # engine-claimed for every cursor call unless a future CLI adds one.
     usage = {
-        "input_tokens": raw.get("input_tokens"),
-        "output_tokens": raw.get("output_tokens"),
+        "input_tokens": raw.get("inputTokens", raw.get("input_tokens")),
+        "output_tokens": raw.get("outputTokens", raw.get("output_tokens")),
+        "cache_read_input_tokens": raw.get("cacheReadTokens"),
+        "duration_api_ms": obj.get("duration_api_ms"),
         "models": [served] if served else [],
         "primary_model": served,
         "provenance": "cli-reported" if served else "engine-claimed",
@@ -435,6 +461,12 @@ class _CursorEngine:
             raise RuntimeError(
                 "engine 'cursor' needs the cursor-agent CLI on PATH")
         with tempfile.TemporaryDirectory(prefix="lemmapy-engine-") as sandbox:
+            # The deny-all permissions config is the layer that actually
+            # closed out-of-workspace reads in the live probes (ask mode
+            # and --sandbox each left a retrieval path open on their own).
+            config = Path(sandbox) / ".cursor" / "cli.json"
+            config.parent.mkdir()
+            config.write_text(_CURSOR_PERMISSIONS_CONFIG)
             proc = subprocess.run(
                 _cursor_cmd(exe, _render_prompt(request), model=self.model),
                 capture_output=True, text=True, timeout=self.wall_s,

@@ -296,31 +296,42 @@ def test_api_engine_requires_key(monkeypatch):
                 "failures": {}, "sidecar": "", "history": []})
 
 
-def test_cursor_cmd_is_readonly_ask_mode():
-    # Measurement integrity, cursor flavor: bare `-p` grants ALL tools
-    # including shell and write (the CLI's own --help says so) — the same
-    # retrieval hazard the claude engine's --disallowedTools closes. The
-    # pinned command must select the read-only ask mode, and --trust must
-    # be present or a headless run hangs on the workspace-trust prompt.
+def test_cursor_cmd_is_locked_down():
+    # Measurement integrity, cursor flavor. Live probes established that
+    # `--mode ask` alone still runs read-only shell and reads files
+    # outside the workspace, and `--sandbox enabled` alone still read the
+    # actual golden sidecar by absolute path — so the pinned command must
+    # carry BOTH flags (the third layer, the deny-all permissions config,
+    # is written into the sandbox by the engine and tested below).
+    # `--trust` must be present or a headless run hangs on the
+    # workspace-trust prompt.
     from lemmapy.repair import _cursor_cmd
 
     cmd = _cursor_cmd("/fake/cursor-agent", "prompt text",
                       model="cursor-grok-4.6-high-fast")
     assert cmd[cmd.index("--mode") + 1] == "ask"
+    assert cmd[cmd.index("--sandbox") + 1] == "enabled"
     assert "--trust" in cmd
     assert cmd[cmd.index("--output-format") + 1] == "json"
     assert cmd[cmd.index("--model") + 1] == "cursor-grok-4.6-high-fast"
     assert cmd[1:3] == ["-p", "prompt text"]
 
 
+# Field names pinned from a live 2026.05.28 sample: camelCase usage keys,
+# top-level durations, and NO model attribution.
 CURSOR_JSON_SAMPLE = (
-    '{"result": "```dafny\\nlemma L()\\n{\\n}\\n```",'
-    ' "model": "cursor-grok-4.6-high-fast",'
-    ' "usage": {"input_tokens": 90, "output_tokens": 6}}'
+    '{"type":"result","subtype":"success","is_error":false,'
+    '"duration_ms":8234,"duration_api_ms":8234,'
+    '"result":"```dafny\\nlemma L()\\n{\\n}\\n```",'
+    '"session_id":"s","request_id":"r",'
+    '"usage":{"inputTokens":13947,"outputTokens":38,'
+    '"cacheReadTokens":12000,"cacheWriteTokens":0}}'
 )
 
 
-def test_cursor_engine_sandbox_parse_and_provenance(monkeypatch):
+def test_cursor_engine_sandbox_config_and_live_sample_parse(monkeypatch):
+    import json as _json
+
     import lemmapy.repair as repair_mod
     from lemmapy.repair import _CursorEngine
 
@@ -330,7 +341,9 @@ def test_cursor_engine_sandbox_parse_and_provenance(monkeypatch):
         import os
 
         seen["cmd"] = cmd
-        seen["entries"] = os.listdir(kwargs["cwd"])
+        seen["entries"] = sorted(os.listdir(kwargs["cwd"]))
+        config = Path(kwargs["cwd"]) / ".cursor" / "cli.json"
+        seen["config"] = _json.loads(config.read_text())
 
         class Proc:
             returncode = 0
@@ -346,9 +359,17 @@ def test_cursor_engine_sandbox_parse_and_provenance(monkeypatch):
     request = {"rules": "r", "attempt": 0, "source": "s",
                "failures": {}, "sidecar": "", "history": []}
     assert engine(request) == "lemma L()\n{\n}\n"  # fences stripped
-    assert seen["entries"] == []  # empty sandbox, same as claude
-    assert engine.usage_log[-1]["primary_model"] == "cursor-grok-4.6-high-fast"
-    assert engine.usage_log[-1]["provenance"] == "cli-reported"
+    # The sandbox holds EXACTLY the lockdown config — nothing readable.
+    assert seen["entries"] == [".cursor"]
+    assert seen["config"]["permissions"]["allow"] == []
+    assert "Read(**)" in seen["config"]["permissions"]["deny"]
+    assert "Shell(**)" in seen["config"]["permissions"]["deny"]
+    # Live sample carries no model attribution: engine-claimed, tokens in.
+    usage = engine.usage_log[-1]
+    assert usage["provenance"] == "engine-claimed"
+    assert usage["primary_model"] is None
+    assert usage["input_tokens"] == 13947
+    assert usage["output_tokens"] == 38
 
 
 def test_cursor_engine_missing_provenance_is_marked_not_refused(monkeypatch):
