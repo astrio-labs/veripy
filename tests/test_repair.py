@@ -296,6 +296,126 @@ def test_api_engine_requires_key(monkeypatch):
                 "failures": {}, "sidecar": "", "history": []})
 
 
+def test_cursor_cmd_is_readonly_ask_mode():
+    # Measurement integrity, cursor flavor: bare `-p` grants ALL tools
+    # including shell and write (the CLI's own --help says so) — the same
+    # retrieval hazard the claude engine's --disallowedTools closes. The
+    # pinned command must select the read-only ask mode, and --trust must
+    # be present or a headless run hangs on the workspace-trust prompt.
+    from lemmapy.repair import _cursor_cmd
+
+    cmd = _cursor_cmd("/fake/cursor-agent", "prompt text",
+                      model="cursor-grok-4.6-high-fast")
+    assert cmd[cmd.index("--mode") + 1] == "ask"
+    assert "--trust" in cmd
+    assert cmd[cmd.index("--output-format") + 1] == "json"
+    assert cmd[cmd.index("--model") + 1] == "cursor-grok-4.6-high-fast"
+    assert cmd[1:3] == ["-p", "prompt text"]
+
+
+CURSOR_JSON_SAMPLE = (
+    '{"result": "```dafny\\nlemma L()\\n{\\n}\\n```",'
+    ' "model": "cursor-grok-4.6-high-fast",'
+    ' "usage": {"input_tokens": 90, "output_tokens": 6}}'
+)
+
+
+def test_cursor_engine_sandbox_parse_and_provenance(monkeypatch):
+    import lemmapy.repair as repair_mod
+    from lemmapy.repair import _CursorEngine
+
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        import os
+
+        seen["cmd"] = cmd
+        seen["entries"] = os.listdir(kwargs["cwd"])
+
+        class Proc:
+            returncode = 0
+            stdout = CURSOR_JSON_SAMPLE
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(repair_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(repair_mod.shutil, "which",
+                        lambda name: "/fake/cursor-agent")
+    engine = _CursorEngine(model="cursor-grok-4.6-high-fast")
+    request = {"rules": "r", "attempt": 0, "source": "s",
+               "failures": {}, "sidecar": "", "history": []}
+    assert engine(request) == "lemma L()\n{\n}\n"  # fences stripped
+    assert seen["entries"] == []  # empty sandbox, same as claude
+    assert engine.usage_log[-1]["primary_model"] == "cursor-grok-4.6-high-fast"
+    assert engine.usage_log[-1]["provenance"] == "cli-reported"
+
+
+def test_cursor_engine_missing_provenance_is_marked_not_refused(monkeypatch):
+    # The claude guard refuses a reply with no provenance because the
+    # claude CLI always attributes. Cursor may not attribute at all —
+    # refusing every such call would make the engine unusable, so the
+    # ledger entry carries "engine-claimed" instead, a disclosed condition
+    # of any cursor column.
+    import lemmapy.repair as repair_mod
+    from lemmapy.repair import _CursorEngine
+
+    def fake_run(cmd, **kwargs):
+        class Proc:
+            returncode = 0
+            stdout = '{"result": "lemma L()\\n{\\n}\\n"}'
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(repair_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(repair_mod.shutil, "which",
+                        lambda name: "/fake/cursor-agent")
+    engine = _CursorEngine(model="cursor-grok-4.6-high-fast")
+    request = {"rules": "r", "attempt": 0, "source": "s",
+               "failures": {}, "sidecar": "", "history": []}
+    assert engine(request) == "lemma L()\n{\n}\n"
+    assert engine.usage_log[-1]["provenance"] == "engine-claimed"
+    assert engine.usage_log[-1]["primary_model"] is None
+
+
+def test_cursor_engine_refuses_reported_substitution(monkeypatch):
+    # A REPORTED mismatch still refuses loudly — same failure mode the
+    # claude guard exists for (silent substitution mislabels a column).
+    import lemmapy.repair as repair_mod
+    from lemmapy.repair import _CursorEngine
+
+    def fake_run(cmd, **kwargs):
+        class Proc:
+            returncode = 0
+            stdout = ('{"result": "lemma L()\\n{\\n}\\n",'
+                      ' "model": "gpt-5.2"}')
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(repair_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(repair_mod.shutil, "which",
+                        lambda name: "/fake/cursor-agent")
+    engine = _CursorEngine(model="cursor-grok-4.6-high-fast")
+    with pytest.raises(RuntimeError, match="NOT.*served"):
+        engine({"rules": "r", "attempt": 0, "source": "s",
+                "failures": {}, "sidecar": "", "history": []})
+
+
+def test_make_engine_cursor_specs():
+    from lemmapy.repair import _CursorEngine
+
+    assert isinstance(make_engine("cursor"), _CursorEngine)
+    engine = make_engine("cursor:cursor-grok-4.6-high-fast")
+    assert isinstance(engine, _CursorEngine)
+    assert engine.model == "cursor-grok-4.6-high-fast"
+    with pytest.raises(ValueError, match="bad model"):
+        make_engine("cursor:")
+    with pytest.raises(ValueError, match="engine-effort"):
+        make_engine("cursor:cursor-grok-4.6-high-fast", effort="high")
+
+
 def test_history_digests_proposals_and_reports_drops():
     # The prompt outgrew the engine's own wall at iteration 3 of the modp
     # probe, which is why that probe produced no number. Prior proposals are
