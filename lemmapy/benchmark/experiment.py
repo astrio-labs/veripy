@@ -82,14 +82,16 @@ class _AblatedEngine:
         return getattr(self.inner, "usage_log", [])
 
 
-def _arm_config(spec: str, arm: str, max_iterations: int):
+def _arm_config(spec: str, arm: str, max_iterations: int,
+                effort: str | None = None):
     """(engine_factory, max_iterations) for one arm of one engine."""
     if arm == "full":
-        return (lambda: make_engine(spec)), max_iterations
+        return (lambda: make_engine(spec, effort=effort)), max_iterations
     if arm == "one-shot":
-        return (lambda: make_engine(spec)), 1
+        return (lambda: make_engine(spec, effort=effort)), 1
     if arm == "ablated":
-        return (lambda: _AblatedEngine(make_engine(spec))), max_iterations
+        return (lambda: _AblatedEngine(make_engine(spec, effort=effort))), \
+            max_iterations
     raise ValueError(f"unknown arm {arm!r} (use one of {', '.join(ARMS)})")
 
 
@@ -229,6 +231,7 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
                    only_tasks: set[str] | None = None,
                    resume: bool = True, exam: str = "proof-repair",
                    retries: int = 2, ladder: dict[str, Any] | None = None,
+                   engine_effort: str | None = None,
                    progress=None) -> list[dict[str, Any]]:
     """Run an exam over the full matrix, appending one row per
     (task, engine, arm, trial) to the ledger. Returns the rows written by
@@ -237,7 +240,7 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
     if exam not in EXAMS:
         raise ValueError(f"unknown exam {exam!r} (use one of {', '.join(EXAMS)})")
     for spec in engines:
-        make_engine(spec)
+        make_engine(spec, effort=engine_effort)
     allowed = ARMS if exam == "proof-repair" else SPEC_ARMS
     for arm in arms:
         if arm not in allowed:
@@ -262,6 +265,9 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
     _append(ledger, {
         "schema": RUN_SCHEMA, "run_id": run_id, "ts": _now(), "exam": exam,
         "git_rev": _git_rev(tasks_root), "claude_version": _claude_version(),
+        # An unrecorded effort is a hidden variable in every cross-model
+        # comparison; "cli-default" is itself a recorded condition.
+        "engine_effort": engine_effort or "cli-default",
         "engines": engines, "arms": arms, "trials": trials,
         "max_iterations": max_iterations, "time_limit": time_limit,
         "retries": retries, "ladder": ladder_kwargs,
@@ -272,7 +278,8 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
     written: list[dict[str, Any]] = []
     for spec in engines:
         for arm in arms:
-            factory, arm_iters = _arm_config(spec, arm, max_iterations)
+            factory, arm_iters = _arm_config(spec, arm, max_iterations,
+                                             effort=engine_effort)
             for trial in range(trials):
                 pending = {t for t in roster
                            if (exam, t, spec, arm, trial) not in done}

@@ -43,6 +43,12 @@ Engine = Callable[[dict[str, Any]], str]
 # time", which are different claims.
 DEFAULT_ENGINE_WALL_S = 600
 
+# `claude --effort <level>` values (CLI 2.1.193). Effort materially shifts
+# a thinking model's proof performance, so an experiment must RECORD it —
+# an unrecorded effort is a hidden variable in every cross-model table.
+# None means "the CLI's default", which is itself recorded as such.
+ENGINE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
 RULES = """\
 You are repairing a Dafny proof for a verified-Python toolchain.
 You may change ONLY the proof sidecar (<stem>.proofs.dfy). Reply with the
@@ -224,7 +230,8 @@ def _strip_fences(text: str) -> str:
 
 
 def _claude_cmd(exe: str, prompt: str, model: str | None = None,
-                json_output: bool = False) -> list[str]:
+                json_output: bool = False,
+                effort: str | None = None) -> list[str]:
     """Measurement integrity: the engine must work from the request alone.
     With tools enabled, a headless agent FOUND the golden sidecar in the
     repository and returned it verbatim — a retrieval result masquerading
@@ -239,6 +246,8 @@ def _claude_cmd(exe: str, prompt: str, model: str | None = None,
         cmd += ["--model", model]
     if json_output:
         cmd += ["--output-format", "json"]
+    if effort is not None:
+        cmd += ["--effort", effort]
     cmd += ["--disallowedTools", "*"]
     return cmd
 
@@ -268,6 +277,17 @@ def _parse_claude_json(stdout: str) -> tuple[str, dict[str, Any] | None]:
         "duration_api_ms": obj.get("duration_api_ms"),
         "num_turns": obj.get("num_turns"),
         "models": sorted((obj.get("modelUsage") or {}).keys()),
+        # The entry that produced the most output tokens is the model that
+        # actually SERVED the reply; other entries are CLI helper models
+        # (a small haiku appears in every invocation's modelUsage, with a
+        # constant ~12-14 token overhead). Reliable for engine replies,
+        # which are sidecars/annotated modules (hundreds of tokens); for
+        # replies under ~30 tokens the helper can out-token the server, so
+        # do not use this field to attribute tiny probe outputs.
+        "primary_model": max(
+            (obj.get("modelUsage") or {}).items(),
+            key=lambda kv: (kv[1] or {}).get("outputTokens", 0),
+            default=(None, None))[0],
     }
     return text, usage
 
@@ -280,9 +300,15 @@ class _ClaudeEngine:
     `Engine = Callable[[dict], str]` contract intact."""
 
     def __init__(self, model: str | None = None,
-                 wall_s: int = DEFAULT_ENGINE_WALL_S):
+                 wall_s: int = DEFAULT_ENGINE_WALL_S,
+                 effort: str | None = None):
+        if effort is not None and effort not in ENGINE_EFFORT_LEVELS:
+            raise ValueError(
+                f"unknown effort {effort!r} "
+                f"(use one of {', '.join(ENGINE_EFFORT_LEVELS)})")
         self.model = model
         self.wall_s = wall_s
+        self.effort = effort
         self.usage_log: list[dict[str, Any] | None] = []
 
     def __call__(self, request: dict[str, Any]) -> str:
@@ -292,15 +318,42 @@ class _ClaudeEngine:
         with tempfile.TemporaryDirectory(prefix="lemmapy-engine-") as sandbox:
             proc = subprocess.run(
                 _claude_cmd(exe, _render_prompt(request), model=self.model,
-                            json_output=True),
+                            json_output=True, effort=self.effort),
                 capture_output=True, text=True, timeout=self.wall_s,
                 cwd=sandbox,
             )
         if proc.returncode != 0:
             raise RuntimeError(f"claude engine failed: {proc.stderr[:400]}")
         text, usage = _parse_claude_json(proc.stdout)
+        self._check_served_model(usage)
         self.usage_log.append(usage)
         return _strip_fences(text)
+
+    def _check_served_model(self, usage: dict[str, Any] | None) -> None:
+        """Refuse to record data under a model label the CLI did not serve.
+
+        Measured failure mode, not hypothetical: `--model fable` was
+        accepted without error and silently served by opus, and
+        `--model fable-5` returned a reply with NO model provenance at
+        all. Either would have produced a mislabelled results column that
+        only a post-hoc ledger audit could catch. When a model was
+        explicitly requested, provenance must be verifiable and must
+        match — a loud failure before any data is recorded.
+        """
+        if self.model is None:
+            return  # default model: nothing was promised
+        primary = (usage or {}).get("primary_model")
+        if not primary:
+            raise RuntimeError(
+                f"engine 'claude:{self.model}': the CLI reply carries no "
+                f"model provenance, so the requested model cannot be "
+                f"verified — refusing to record unattributable data")
+        want = self.model.lower().removeprefix("claude-")
+        if want not in primary.lower():
+            raise RuntimeError(
+                f"engine 'claude:{self.model}': requested model was NOT "
+                f"served — the CLI silently substituted {primary!r}; "
+                f"refusing to record a mislabelled results column")
 
 
 def claude_engine(request: dict[str, Any]) -> str:
@@ -315,14 +368,33 @@ def claude_engine(request: dict[str, Any]) -> str:
 _API_PROVIDERS = {
     "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    # Direct Anthropic path (OpenAI-compatible endpoint). The way to run a
+    # model the CLI does not expose (e.g. fable): the API REJECTS an
+    # unknown model id loudly, where the CLI silently substituted opus.
+    "anthropic": ("https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
 }
 
 
+# Anthropic's native protocol requires an explicit output ceiling; the
+# engines' replies are sidecars/annotated modules (a few KB), so a generous
+# fixed bound is fine and never truncates a legitimate answer.
+_ANTHROPIC_MAX_TOKENS = 8192
+_ANTHROPIC_VERSION = "2023-06-01"
+
+
 class _ApiEngine:
-    """OpenAI-compatible chat-completions engine (`api:<provider>/<model>`).
-    A raw HTTP completion has no tools by construction — a strictly
-    tighter sandbox than the CLI path (nothing to deny). stdlib-only on
-    purpose: no new dependency for the harness."""
+    """Direct-API engine (`api:<provider>/<model>`). A raw HTTP completion
+    has no tools by construction — a strictly tighter sandbox than the CLI
+    path (nothing to deny). stdlib-only on purpose: no new dependency.
+
+    Two transports: openai/openrouter speak OpenAI chat-completions;
+    `anthropic` speaks the NATIVE messages protocol (`/v1/messages`,
+    `x-api-key`, `anthropic-version`, required `max_tokens`, content-block
+    response). Anthropic also operates an OpenAI-compatibility layer, but
+    it is a convenience surface with documented caveats — this provider
+    exists to be the reliable path for CLI-unexposed models, so it uses
+    the canonical protocol.
+    """
 
     def __init__(self, provider: str, model: str,
                  wall_s: int = DEFAULT_ENGINE_WALL_S):
@@ -350,10 +422,12 @@ class _ApiEngine:
             raise RuntimeError(
                 f"engine 'api:{self.provider}/{self.model}' needs "
                 f"{self.key_env} set")
+        prompt = _render_prompt(request)
+        if self.provider == "anthropic":
+            return self._call_anthropic(key, prompt)
         body = json.dumps({
             "model": self.model,
-            "messages": [{"role": "user",
-                          "content": _render_prompt(request)}],
+            "messages": [{"role": "user", "content": prompt}],
         }).encode()
         req = urllib.request.Request(
             f"{self.base}/chat/completions", data=body,
@@ -375,6 +449,47 @@ class _ApiEngine:
         return _strip_fences(
             (choices[0].get("message") or {}).get("content") or "")
 
+    def _call_anthropic(self, key: str, prompt: str) -> str:
+        """Anthropic native messages protocol. Distinct in every part that
+        matters: endpoint (/v1/messages), auth header (x-api-key, not
+        Authorization), a mandatory anthropic-version, a REQUIRED
+        max_tokens, and a content-block response rather than choices."""
+        import urllib.request
+
+        body = json.dumps({
+            "model": self.model,
+            "max_tokens": _ANTHROPIC_MAX_TOKENS,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.base}/messages", data=body,
+            headers={"x-api-key": key,
+                     "anthropic-version": _ANTHROPIC_VERSION,
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.wall_s) as resp:
+            obj = json.loads(resp.read().decode())
+        if obj.get("type") == "error":
+            # Includes unknown-model: the API refuses loudly, which is the
+            # property this provider exists for (the CLI substituted).
+            err = obj.get("error") or {}
+            raise RuntimeError(
+                f"anthropic api error ({err.get('type')}): "
+                f"{str(err.get('message'))[:400]}")
+        text = "".join(block.get("text", "")
+                       for block in (obj.get("content") or [])
+                       if block.get("type") == "text")
+        if not text:
+            raise RuntimeError(
+                f"anthropic api returned no text content: {str(obj)[:400]}")
+        raw = obj.get("usage") or {}
+        self.usage_log.append({
+            "input_tokens": raw.get("input_tokens"),
+            "output_tokens": raw.get("output_tokens"),
+            "cost_usd": None,
+            "models": [obj.get("model") or self.model],
+        })
+        return _strip_fences(text)
+
 
 class _FileEngine:
     """Scripted engine: returns `1.dfy`, `2.dfy`, ... from a directory in
@@ -392,7 +507,8 @@ class _FileEngine:
         return candidate.read_text()
 
 
-def make_engine(spec: str, wall_s: int = DEFAULT_ENGINE_WALL_S) -> Engine:
+def make_engine(spec: str, wall_s: int = DEFAULT_ENGINE_WALL_S,
+                effort: str | None = None) -> Engine:
     # A non-positive wall is never what the caller meant, and it does not
     # fail loudly on its own: `subprocess.run(timeout=-5)` raises
     # TimeoutExpired before the engine is even given the prompt, which an
@@ -402,20 +518,28 @@ def make_engine(spec: str, wall_s: int = DEFAULT_ENGINE_WALL_S) -> Engine:
         raise ValueError(
             f"engine wall must be a positive number of seconds, got {wall_s}")
     if spec == "claude":
-        return _ClaudeEngine(wall_s=wall_s)
+        return _ClaudeEngine(wall_s=wall_s, effort=effort)
     if spec.startswith("claude:"):
         model = spec[len("claude:"):]
         # argv hygiene: an empty or dash-leading "model" would be read as a
         # flag by the CLI, silently reshaping the pinned command.
         if not model or model.startswith("-"):
             raise ValueError(f"unknown engine {spec!r}: bad model {model!r}")
-        return _ClaudeEngine(model, wall_s=wall_s)
+        return _ClaudeEngine(model, wall_s=wall_s, effort=effort)
     if spec.startswith("api:"):
         rest = spec[len("api:"):]
         provider, sep, model = rest.partition("/")
         if not sep or not provider or not model:
             raise ValueError(
                 f"unknown engine {spec!r} (use 'api:<provider>/<model>')")
+        if effort is not None:
+            # Effort is a claude-CLI control. Accepting it here and
+            # silently not applying it would record a condition the run
+            # never had — the exact hidden-variable class this knob exists
+            # to eliminate.
+            raise ValueError(
+                f"engine {spec!r} does not support --engine-effort "
+                f"(a claude-CLI control)")
         return _ApiEngine(provider, model, wall_s=wall_s)
     if spec.startswith("file:"):
         return _FileEngine(Path(spec[5:]))

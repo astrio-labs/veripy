@@ -750,3 +750,205 @@ def test_exhausted_loop_still_counts_last_rejection(tmp_path):
     rejections = [a["rejection"] for a in outcome.attempts if a["rejection"]]
     assert len(rejections) == 2  # every proposal counted, including the last
     assert all(r["rule"] == "bodiless" for r in rejections)
+
+
+def test_model_substitution_is_refused_not_recorded():
+    """A requested model the CLI did not serve must fail loudly.
+
+    Measured, not hypothetical: `--model fable` was accepted without error
+    and silently served by opus (modelUsage showed opus doing the work),
+    and `--model fable-5` returned a reply with no model provenance at
+    all. Either would have produced a mislabelled results column,
+    detectable only by a post-hoc ledger audit.
+    """
+    from lemmapy.repair import _ClaudeEngine, _parse_claude_json
+
+    # Shape from the live probe: helper haiku + the model that actually
+    # served the reply, distinguished by output tokens.
+    substituted = (
+        '{"result":"OK","usage":{"output_tokens":4},'
+        '"modelUsage":{"claude-haiku-4-5-20251001":{"outputTokens":12},'
+        '"claude-opus-4-8":{"outputTokens":400}}}'
+    )
+    _, usage = _parse_claude_json(substituted)
+    assert usage["primary_model"] == "claude-opus-4-8"
+
+    engine = _ClaudeEngine(model="fable")
+    with pytest.raises(RuntimeError, match="silently substituted"):
+        engine._check_served_model(usage)
+
+    # No provenance at all (the fable-5 probe): also refused.
+    engine = _ClaudeEngine(model="fable-5")
+    with pytest.raises(RuntimeError, match="no model provenance"):
+        engine._check_served_model({"models": [], "primary_model": None})
+    with pytest.raises(RuntimeError, match="no model provenance"):
+        engine._check_served_model(None)
+
+    # The helper-model trap: haiku appears in EVERY invocation's
+    # modelUsage, so matching against the model LIST would accept a
+    # substitution whenever haiku was requested. Primary-model matching
+    # does not.
+    engine = _ClaudeEngine(model="haiku")
+    with pytest.raises(RuntimeError, match="silently substituted"):
+        engine._check_served_model(usage)  # primary is opus
+
+    # Correct service passes, for aliases and full ids alike.
+    served = {"primary_model": "claude-sonnet-4-6", "models": ["claude-sonnet-4-6"]}
+    _ClaudeEngine(model="sonnet")._check_served_model(served)
+    _ClaudeEngine(model="claude-sonnet-4-6")._check_served_model(served)
+    # The default engine promises nothing and checks nothing.
+    _ClaudeEngine()._check_served_model(None)
+
+
+def test_anthropic_engine_speaks_the_native_protocol(monkeypatch):
+    """The anthropic provider must not reuse the OpenAI transport.
+
+    Anthropic's native API differs in every part that matters: endpoint
+    (/v1/messages), auth header (x-api-key, never Authorization),
+    mandatory anthropic-version, REQUIRED max_tokens, and a content-block
+    response instead of choices. An OpenAI-shaped request would terminate
+    as an engine error instead of invoking the model — found in review.
+    """
+    import io
+    import json as json_mod
+    import urllib.request
+
+    seen = {}
+
+    class FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["headers"] = {k.lower(): v for k, v in req.headers.items()}
+        seen["body"] = json_mod.loads(req.data.decode())
+        return FakeResp(json_mod.dumps({
+            "type": "message", "model": "claude-fable-5",
+            "content": [{"type": "text",
+                         "text": "```dafny\nlemma L()\n{\n}\n```"}],
+            "usage": {"input_tokens": 90, "output_tokens": 11},
+        }).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    engine = make_engine("api:anthropic/claude-fable-5")
+    request = {"rules": "r", "attempt": 0, "source": "s",
+               "failures": {}, "sidecar": "", "history": []}
+    assert engine(request) == "lemma L()\n{\n}\n"
+    assert seen["url"].endswith("/messages")
+    assert not seen["url"].endswith("/chat/completions")
+    assert seen["headers"]["x-api-key"] == "sk-ant-test"
+    assert "authorization" not in seen["headers"]
+    assert seen["headers"]["anthropic-version"]
+    assert seen["body"]["max_tokens"] > 0          # REQUIRED by the API
+    assert seen["body"]["model"] == "claude-fable-5"
+    # Resolved model provenance is recorded, as for every other engine.
+    assert engine.usage_log[-1]["models"] == ["claude-fable-5"]
+    assert engine.usage_log[-1]["input_tokens"] == 90
+
+
+def test_anthropic_engine_surfaces_api_errors(monkeypatch):
+    # Unknown model: the API refuses loudly — the exact property this
+    # provider exists for, after the CLI silently substituted.
+    import io
+    import json as json_mod
+    import urllib.request
+
+    class FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        return FakeResp(json_mod.dumps({
+            "type": "error",
+            "error": {"type": "not_found_error",
+                      "message": "model: claude-nonesuch"},
+        }).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    engine = make_engine("api:anthropic/claude-nonesuch")
+    with pytest.raises(RuntimeError, match="not_found_error"):
+        engine({"rules": "r", "attempt": 0, "source": "s",
+                "failures": {}, "sidecar": "", "history": []})
+
+
+def test_engine_effort_is_threaded_recorded_and_validated(tmp_path, monkeypatch):
+    """Effort must be a recorded condition, never a hidden variable.
+
+    The T2/T4 columns were measured at the CLI's DEFAULT effort because no
+    knob existed; that is a stated condition only because the command line
+    was uniform. From here on the level is explicit in argv, refused when
+    invalid, refused where it cannot apply, and stamped into the run
+    header — "cli-default" included, since an unrecorded default is still
+    a hidden variable.
+    """
+    import lemmapy.repair as repair_mod
+    from lemmapy.repair import _claude_cmd, _ClaudeEngine
+
+    cmd = _claude_cmd("/usr/bin/claude", "prompt", model="opus",
+                      json_output=True, effort="high")
+    i = cmd.index("--effort")
+    assert cmd[i + 1] == "high"
+    assert cmd[-2:] == ["--disallowedTools", "*"]     # denial stays last
+    assert cmd.index("prompt") < cmd.index("--disallowedTools")
+
+    assert make_engine("claude:opus", effort="max").effort == "max"
+    with pytest.raises(ValueError, match="unknown effort"):
+        _ClaudeEngine(effort="ultra")
+    with pytest.raises(ValueError, match="does not support --engine-effort"):
+        make_engine("api:openrouter/x/y", effort="high")
+
+    # The effort actually reaches the subprocess argv.
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+
+        class Proc:
+            returncode = 0
+            stdout = ('{"result":"lemma L()\\n{\\n}","usage":{"output_tokens":99},'
+                      '"modelUsage":{"claude-opus-4-8":{"outputTokens":99}}}')
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(repair_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(repair_mod.shutil, "which", lambda n: "/fake/claude")
+    engine = make_engine("claude:opus", effort="xhigh")
+    engine({"rules": "r", "attempt": 0, "source": "s", "failures": {},
+            "sidecar": "", "history": []})
+    assert "--effort" in seen["cmd"] and "xhigh" in seen["cmd"]
+
+    # The run header records the condition either way.
+    import lemmapy.benchmark.experiment as exp_mod
+    from lemmapy.benchmark.experiment import run_experiment
+    from lemmapy.benchmark.exam import ExamScore
+
+    monkeypatch.setattr(
+        exp_mod, "run_repair_exam",
+        lambda tasks_root, workdir, factory, max_iterations=4, time_limit=60,
+        only=None: (factory(), [ExamScore(task_id=t, restored=True,
+                                          iterations=1, reason="verified")
+                                for t in sorted(only or [])])[1])
+    corpus = tmp_path / "tasks"
+    d = corpus / "mini"
+    d.mkdir(parents=True)
+    (d / "task.py").write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (d / "task.proofs.dfy").write_text("lemma L(x: int)\n  ensures x == x\n{\n}\n")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    for effort, recorded in [(None, "cli-default"), ("high", "high")]:
+        ledger = tmp_path / f"ledger-{recorded}.jsonl"
+        run_experiment(corpus, tmp_path / f"cells-{recorded}",
+                       [f"file:{empty}"], ["one-shot"], 1, ledger,
+                       engine_effort=effort)
+        header = json.loads(ledger.read_text().splitlines()[0])
+        assert header["engine_effort"] == recorded
