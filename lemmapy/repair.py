@@ -270,7 +270,11 @@ def _parse_claude_json(stdout: str) -> tuple[str, dict[str, Any] | None]:
         "models": sorted((obj.get("modelUsage") or {}).keys()),
         # The entry that produced the most output tokens is the model that
         # actually SERVED the reply; other entries are CLI helper models
-        # (a small haiku appears in every invocation's modelUsage).
+        # (a small haiku appears in every invocation's modelUsage, with a
+        # constant ~12-14 token overhead). Reliable for engine replies,
+        # which are sidecars/annotated modules (hundreds of tokens); for
+        # replies under ~30 tokens the helper can out-token the server, so
+        # do not use this field to attribute tiny probe outputs.
         "primary_model": max(
             (obj.get("modelUsage") or {}).items(),
             key=lambda kv: (kv[1] or {}).get("outputTokens", 0),
