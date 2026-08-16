@@ -878,3 +878,77 @@ def test_anthropic_engine_surfaces_api_errors(monkeypatch):
     with pytest.raises(RuntimeError, match="not_found_error"):
         engine({"rules": "r", "attempt": 0, "source": "s",
                 "failures": {}, "sidecar": "", "history": []})
+
+
+def test_engine_effort_is_threaded_recorded_and_validated(tmp_path, monkeypatch):
+    """Effort must be a recorded condition, never a hidden variable.
+
+    The T2/T4 columns were measured at the CLI's DEFAULT effort because no
+    knob existed; that is a stated condition only because the command line
+    was uniform. From here on the level is explicit in argv, refused when
+    invalid, refused where it cannot apply, and stamped into the run
+    header — "cli-default" included, since an unrecorded default is still
+    a hidden variable.
+    """
+    import lemmapy.repair as repair_mod
+    from lemmapy.repair import _claude_cmd, _ClaudeEngine
+
+    cmd = _claude_cmd("/usr/bin/claude", "prompt", model="opus",
+                      json_output=True, effort="high")
+    i = cmd.index("--effort")
+    assert cmd[i + 1] == "high"
+    assert cmd[-2:] == ["--disallowedTools", "*"]     # denial stays last
+    assert cmd.index("prompt") < cmd.index("--disallowedTools")
+
+    assert make_engine("claude:opus", effort="max").effort == "max"
+    with pytest.raises(ValueError, match="unknown effort"):
+        _ClaudeEngine(effort="ultra")
+    with pytest.raises(ValueError, match="does not support --engine-effort"):
+        make_engine("api:openrouter/x/y", effort="high")
+
+    # The effort actually reaches the subprocess argv.
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+
+        class Proc:
+            returncode = 0
+            stdout = ('{"result":"lemma L()\\n{\\n}","usage":{"output_tokens":99},'
+                      '"modelUsage":{"claude-opus-4-8":{"outputTokens":99}}}')
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(repair_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(repair_mod.shutil, "which", lambda n: "/fake/claude")
+    engine = make_engine("claude:opus", effort="xhigh")
+    engine({"rules": "r", "attempt": 0, "source": "s", "failures": {},
+            "sidecar": "", "history": []})
+    assert "--effort" in seen["cmd"] and "xhigh" in seen["cmd"]
+
+    # The run header records the condition either way.
+    import lemmapy.benchmark.experiment as exp_mod
+    from lemmapy.benchmark.experiment import run_experiment
+    from lemmapy.benchmark.exam import ExamScore
+
+    monkeypatch.setattr(
+        exp_mod, "run_repair_exam",
+        lambda tasks_root, workdir, factory, max_iterations=4, time_limit=60,
+        only=None: (factory(), [ExamScore(task_id=t, restored=True,
+                                          iterations=1, reason="verified")
+                                for t in sorted(only or [])])[1])
+    corpus = tmp_path / "tasks"
+    d = corpus / "mini"
+    d.mkdir(parents=True)
+    (d / "task.py").write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
+    (d / "task.proofs.dfy").write_text("lemma L(x: int)\n  ensures x == x\n{\n}\n")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    for effort, recorded in [(None, "cli-default"), ("high", "high")]:
+        ledger = tmp_path / f"ledger-{recorded}.jsonl"
+        run_experiment(corpus, tmp_path / f"cells-{recorded}",
+                       [f"file:{empty}"], ["one-shot"], 1, ledger,
+                       engine_effort=effort)
+        header = json.loads(ledger.read_text().splitlines()[0])
+        assert header["engine_effort"] == recorded

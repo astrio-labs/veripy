@@ -43,6 +43,12 @@ Engine = Callable[[dict[str, Any]], str]
 # time", which are different claims.
 DEFAULT_ENGINE_WALL_S = 600
 
+# `claude --effort <level>` values (CLI 2.1.193). Effort materially shifts
+# a thinking model's proof performance, so an experiment must RECORD it —
+# an unrecorded effort is a hidden variable in every cross-model table.
+# None means "the CLI's default", which is itself recorded as such.
+ENGINE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
 RULES = """\
 You are repairing a Dafny proof for a verified-Python toolchain.
 You may change ONLY the proof sidecar (<stem>.proofs.dfy). Reply with the
@@ -224,7 +230,8 @@ def _strip_fences(text: str) -> str:
 
 
 def _claude_cmd(exe: str, prompt: str, model: str | None = None,
-                json_output: bool = False) -> list[str]:
+                json_output: bool = False,
+                effort: str | None = None) -> list[str]:
     """Measurement integrity: the engine must work from the request alone.
     With tools enabled, a headless agent FOUND the golden sidecar in the
     repository and returned it verbatim — a retrieval result masquerading
@@ -239,6 +246,8 @@ def _claude_cmd(exe: str, prompt: str, model: str | None = None,
         cmd += ["--model", model]
     if json_output:
         cmd += ["--output-format", "json"]
+    if effort is not None:
+        cmd += ["--effort", effort]
     cmd += ["--disallowedTools", "*"]
     return cmd
 
@@ -291,9 +300,15 @@ class _ClaudeEngine:
     `Engine = Callable[[dict], str]` contract intact."""
 
     def __init__(self, model: str | None = None,
-                 wall_s: int = DEFAULT_ENGINE_WALL_S):
+                 wall_s: int = DEFAULT_ENGINE_WALL_S,
+                 effort: str | None = None):
+        if effort is not None and effort not in ENGINE_EFFORT_LEVELS:
+            raise ValueError(
+                f"unknown effort {effort!r} "
+                f"(use one of {', '.join(ENGINE_EFFORT_LEVELS)})")
         self.model = model
         self.wall_s = wall_s
+        self.effort = effort
         self.usage_log: list[dict[str, Any] | None] = []
 
     def __call__(self, request: dict[str, Any]) -> str:
@@ -303,7 +318,7 @@ class _ClaudeEngine:
         with tempfile.TemporaryDirectory(prefix="lemmapy-engine-") as sandbox:
             proc = subprocess.run(
                 _claude_cmd(exe, _render_prompt(request), model=self.model,
-                            json_output=True),
+                            json_output=True, effort=self.effort),
                 capture_output=True, text=True, timeout=self.wall_s,
                 cwd=sandbox,
             )
@@ -492,7 +507,8 @@ class _FileEngine:
         return candidate.read_text()
 
 
-def make_engine(spec: str, wall_s: int = DEFAULT_ENGINE_WALL_S) -> Engine:
+def make_engine(spec: str, wall_s: int = DEFAULT_ENGINE_WALL_S,
+                effort: str | None = None) -> Engine:
     # A non-positive wall is never what the caller meant, and it does not
     # fail loudly on its own: `subprocess.run(timeout=-5)` raises
     # TimeoutExpired before the engine is even given the prompt, which an
@@ -502,20 +518,28 @@ def make_engine(spec: str, wall_s: int = DEFAULT_ENGINE_WALL_S) -> Engine:
         raise ValueError(
             f"engine wall must be a positive number of seconds, got {wall_s}")
     if spec == "claude":
-        return _ClaudeEngine(wall_s=wall_s)
+        return _ClaudeEngine(wall_s=wall_s, effort=effort)
     if spec.startswith("claude:"):
         model = spec[len("claude:"):]
         # argv hygiene: an empty or dash-leading "model" would be read as a
         # flag by the CLI, silently reshaping the pinned command.
         if not model or model.startswith("-"):
             raise ValueError(f"unknown engine {spec!r}: bad model {model!r}")
-        return _ClaudeEngine(model, wall_s=wall_s)
+        return _ClaudeEngine(model, wall_s=wall_s, effort=effort)
     if spec.startswith("api:"):
         rest = spec[len("api:"):]
         provider, sep, model = rest.partition("/")
         if not sep or not provider or not model:
             raise ValueError(
                 f"unknown engine {spec!r} (use 'api:<provider>/<model>')")
+        if effort is not None:
+            # Effort is a claude-CLI control. Accepting it here and
+            # silently not applying it would record a condition the run
+            # never had — the exact hidden-variable class this knob exists
+            # to eliminate.
+            raise ValueError(
+                f"engine {spec!r} does not support --engine-effort "
+                f"(a claude-CLI control)")
         return _ApiEngine(provider, model, wall_s=wall_s)
     if spec.startswith("file:"):
         return _FileEngine(Path(spec[5:]))

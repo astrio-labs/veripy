@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from .frontend.conformance import RULES, aggregate, survey_paths
+from .repair import ENGINE_EFFORT_LEVELS
 from .frontend.extract import parse_source
 from .frontend.typegate import run_type_gate
 from .agentio import atomic_write_text, stub_dir_for
@@ -36,6 +37,10 @@ def _engine_wall(value: str) -> int:
         raise argparse.ArgumentTypeError(
             f"must be a positive number of seconds, got {seconds}")
     return seconds
+
+
+def _effort(args) -> str | None:
+    return getattr(args, "engine_effort", None)
 
 
 def _wall(args) -> int:
@@ -706,12 +711,13 @@ def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False) -> i
 
 
 def cmd_repair(path: Path, outdir: Path, engine_spec: str, max_iterations: int,
-               time_limit: int, apply: bool, engine_wall: int | None = None) -> int:
+               time_limit: int, apply: bool, engine_wall: int | None = None,
+               engine_effort: str | None = None) -> int:
     from .repair import DEFAULT_ENGINE_WALL_S, make_engine, repair_file
 
     wall = DEFAULT_ENGINE_WALL_S if engine_wall is None else engine_wall
     try:
-        engine = make_engine(engine_spec, wall)
+        engine = make_engine(engine_spec, wall, effort=engine_effort)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -832,6 +838,10 @@ def main(argv: list[str] | None = None) -> int:
              "the ones the engine writes (mutant kill rate vs golden)",
     )
     p_benchmark.add_argument(
+        "--engine-effort", choices=list(ENGINE_EFFORT_LEVELS), default=None,
+        help="claude-CLI reasoning effort for engine calls; omitted = the "
+             "CLI default, recorded as such")
+    parser.add_argument(
         "--engine-wall", type=_engine_wall, default=None,
         help="seconds a single engine call may take (default 600); raise it "
              "to tell 'could not prove it' apart from 'did not answer'",
@@ -1008,7 +1018,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "repair":
         return cmd_repair(args.file, args.outdir, args.engine,
                           args.max_iterations, args.time_limit, args.apply,
-                          engine_wall=args.engine_wall)
+                          engine_wall=args.engine_wall,
+                          engine_effort=_effort(args))
     if args.command == "difftest":
         return cmd_difftest(args.files, args.outdir, args.examples,
                             report=args.report,
@@ -1021,13 +1032,13 @@ def main(argv: list[str] | None = None) -> int:
             from .repair import make_engine
 
             try:
-                make_engine(args.engine, _wall(args))  # validate the spec up front
+                make_engine(args.engine, _wall(args), effort=_effort(args))  # validate the spec up front
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
             try:
                 scores = run_repair_exam(args.tasks, args.outdir / "exam",
-                                         lambda: make_engine(args.engine, _wall(args)),
+                                         lambda: make_engine(args.engine, _wall(args), effort=_effort(args)),
                                          max_iterations=args.max_iterations,
                                          time_limit=args.time_limit)
             except ValueError as exc:
@@ -1044,7 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
             from .repair import make_engine
 
             try:
-                make_engine(args.engine, _wall(args))  # validate the spec up front
+                make_engine(args.engine, _wall(args), effort=_effort(args))  # validate the spec up front
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
@@ -1056,7 +1067,7 @@ def main(argv: list[str] | None = None) -> int:
                               difftest_examples=20)
             try:
                 scores = run_spec_exam(args.tasks, args.outdir / "spec-exam",
-                                       lambda: make_engine(args.engine, _wall(args)),
+                                       lambda: make_engine(args.engine, _wall(args), effort=_effort(args)),
                                        retries=args.retries, **ladder)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
@@ -1096,7 +1107,7 @@ def main(argv: list[str] | None = None) -> int:
                 time_limit=args.time_limit,
                 only_tasks=set(args.only_tasks) if args.only_tasks else None,
                 resume=not args.no_resume, exam=args.exam,
-                retries=args.retries,
+                retries=args.retries, engine_effort=_effort(args),
                 ladder=dict(mutant_cap=args.mutant_cap, hunt_timeout=5,
                             dafny_time_limit=args.time_limit,
                             difftest_examples=60),
