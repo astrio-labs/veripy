@@ -42,6 +42,11 @@ _OBLIGATION_KINDS: tuple[tuple[str, str], ...] = (
     ("assertion", "assertion"),
     ("precondition for this call", "call-precondition"),
     ("requires clause", "call-precondition"),
+    # A failing FUNCTION precondition is phrased without "call" ("function
+    # precondition could not be proved"), so neither needle above matched
+    # and these fell through to `unknown` — despite being ordinary
+    # call-precondition obligations (preamble domain guards, mostly).
+    ("function precondition", "call-precondition"),
     ("decreases", "termination"),
     ("timed out", "timeout"),
     ("out of resource", "timeout"),
