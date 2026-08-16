@@ -800,9 +800,81 @@ def test_model_substitution_is_refused_not_recorded():
     _ClaudeEngine()._check_served_model(None)
 
 
-def test_anthropic_api_provider_exists():
-    from lemmapy.repair import _ApiEngine
+def test_anthropic_engine_speaks_the_native_protocol(monkeypatch):
+    """The anthropic provider must not reuse the OpenAI transport.
 
+    Anthropic's native API differs in every part that matters: endpoint
+    (/v1/messages), auth header (x-api-key, never Authorization),
+    mandatory anthropic-version, REQUIRED max_tokens, and a content-block
+    response instead of choices. An OpenAI-shaped request would terminate
+    as an engine error instead of invoking the model — found in review.
+    """
+    import io
+    import json as json_mod
+    import urllib.request
+
+    seen = {}
+
+    class FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["headers"] = {k.lower(): v for k, v in req.headers.items()}
+        seen["body"] = json_mod.loads(req.data.decode())
+        return FakeResp(json_mod.dumps({
+            "type": "message", "model": "claude-fable-5",
+            "content": [{"type": "text",
+                         "text": "```dafny\nlemma L()\n{\n}\n```"}],
+            "usage": {"input_tokens": 90, "output_tokens": 11},
+        }).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     engine = make_engine("api:anthropic/claude-fable-5")
-    assert isinstance(engine, _ApiEngine)
-    assert engine.key_env == "ANTHROPIC_API_KEY"
+    request = {"rules": "r", "attempt": 0, "source": "s",
+               "failures": {}, "sidecar": "", "history": []}
+    assert engine(request) == "lemma L()\n{\n}\n"
+    assert seen["url"].endswith("/messages")
+    assert not seen["url"].endswith("/chat/completions")
+    assert seen["headers"]["x-api-key"] == "sk-ant-test"
+    assert "authorization" not in seen["headers"]
+    assert seen["headers"]["anthropic-version"]
+    assert seen["body"]["max_tokens"] > 0          # REQUIRED by the API
+    assert seen["body"]["model"] == "claude-fable-5"
+    # Resolved model provenance is recorded, as for every other engine.
+    assert engine.usage_log[-1]["models"] == ["claude-fable-5"]
+    assert engine.usage_log[-1]["input_tokens"] == 90
+
+
+def test_anthropic_engine_surfaces_api_errors(monkeypatch):
+    # Unknown model: the API refuses loudly — the exact property this
+    # provider exists for, after the CLI silently substituted.
+    import io
+    import json as json_mod
+    import urllib.request
+
+    class FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        return FakeResp(json_mod.dumps({
+            "type": "error",
+            "error": {"type": "not_found_error",
+                      "message": "model: claude-nonesuch"},
+        }).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    engine = make_engine("api:anthropic/claude-nonesuch")
+    with pytest.raises(RuntimeError, match="not_found_error"):
+        engine({"rules": "r", "attempt": 0, "source": "s",
+                "failures": {}, "sidecar": "", "history": []})

@@ -356,11 +356,26 @@ _API_PROVIDERS = {
 }
 
 
+# Anthropic's native protocol requires an explicit output ceiling; the
+# engines' replies are sidecars/annotated modules (a few KB), so a generous
+# fixed bound is fine and never truncates a legitimate answer.
+_ANTHROPIC_MAX_TOKENS = 8192
+_ANTHROPIC_VERSION = "2023-06-01"
+
+
 class _ApiEngine:
-    """OpenAI-compatible chat-completions engine (`api:<provider>/<model>`).
-    A raw HTTP completion has no tools by construction — a strictly
-    tighter sandbox than the CLI path (nothing to deny). stdlib-only on
-    purpose: no new dependency for the harness."""
+    """Direct-API engine (`api:<provider>/<model>`). A raw HTTP completion
+    has no tools by construction — a strictly tighter sandbox than the CLI
+    path (nothing to deny). stdlib-only on purpose: no new dependency.
+
+    Two transports: openai/openrouter speak OpenAI chat-completions;
+    `anthropic` speaks the NATIVE messages protocol (`/v1/messages`,
+    `x-api-key`, `anthropic-version`, required `max_tokens`, content-block
+    response). Anthropic also operates an OpenAI-compatibility layer, but
+    it is a convenience surface with documented caveats — this provider
+    exists to be the reliable path for CLI-unexposed models, so it uses
+    the canonical protocol.
+    """
 
     def __init__(self, provider: str, model: str,
                  wall_s: int = DEFAULT_ENGINE_WALL_S):
@@ -388,10 +403,12 @@ class _ApiEngine:
             raise RuntimeError(
                 f"engine 'api:{self.provider}/{self.model}' needs "
                 f"{self.key_env} set")
+        prompt = _render_prompt(request)
+        if self.provider == "anthropic":
+            return self._call_anthropic(key, prompt)
         body = json.dumps({
             "model": self.model,
-            "messages": [{"role": "user",
-                          "content": _render_prompt(request)}],
+            "messages": [{"role": "user", "content": prompt}],
         }).encode()
         req = urllib.request.Request(
             f"{self.base}/chat/completions", data=body,
@@ -412,6 +429,47 @@ class _ApiEngine:
         })
         return _strip_fences(
             (choices[0].get("message") or {}).get("content") or "")
+
+    def _call_anthropic(self, key: str, prompt: str) -> str:
+        """Anthropic native messages protocol. Distinct in every part that
+        matters: endpoint (/v1/messages), auth header (x-api-key, not
+        Authorization), a mandatory anthropic-version, a REQUIRED
+        max_tokens, and a content-block response rather than choices."""
+        import urllib.request
+
+        body = json.dumps({
+            "model": self.model,
+            "max_tokens": _ANTHROPIC_MAX_TOKENS,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.base}/messages", data=body,
+            headers={"x-api-key": key,
+                     "anthropic-version": _ANTHROPIC_VERSION,
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.wall_s) as resp:
+            obj = json.loads(resp.read().decode())
+        if obj.get("type") == "error":
+            # Includes unknown-model: the API refuses loudly, which is the
+            # property this provider exists for (the CLI substituted).
+            err = obj.get("error") or {}
+            raise RuntimeError(
+                f"anthropic api error ({err.get('type')}): "
+                f"{str(err.get('message'))[:400]}")
+        text = "".join(block.get("text", "")
+                       for block in (obj.get("content") or [])
+                       if block.get("type") == "text")
+        if not text:
+            raise RuntimeError(
+                f"anthropic api returned no text content: {str(obj)[:400]}")
+        raw = obj.get("usage") or {}
+        self.usage_log.append({
+            "input_tokens": raw.get("input_tokens"),
+            "output_tokens": raw.get("output_tokens"),
+            "cost_usd": None,
+            "models": [obj.get("model") or self.model],
+        })
+        return _strip_fences(text)
 
 
 class _FileEngine:
