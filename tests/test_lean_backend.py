@@ -48,9 +48,9 @@ def test_registry_serves_lean():
 
 def test_encoder_emits_def_and_spec_theorem():
     enc = _encode(BUMP)
-    assert "def bump (x : Int) : Int :=" in enc.lean_source
-    assert "theorem bump_spec (x : Int) :" in enc.lean_source
-    assert "(bump x) = (x + 1)" in enc.lean_source
+    assert "def «bump» («x» : Int) : Int :=" in enc.lean_source
+    assert "theorem «bump_spec» («x» : Int) :" in enc.lean_source
+    assert "(«bump» «x») = («x» + 1)" in enc.lean_source
     assert enc.theorems == ["bump_spec"]
     # The tactic lines map to the ensures clause, so a failing proof
     # points at the contract, not at Lean plumbing.
@@ -62,10 +62,10 @@ def test_encoder_emits_def_and_spec_theorem():
 
 def test_encoder_compiles_if_chains_and_requires():
     enc = _encode(CLAMP)
-    assert "if (x < lo) then lo else" in enc.lean_source
-    assert "(h0 : (lo ≤ hi))" in enc.lean_source
+    assert "if («x» < «lo») then «lo» else" in enc.lean_source
+    assert "(h0 : («lo» ≤ «hi»))" in enc.lean_source
     # The chained comparison becomes a conjunction over the application.
-    assert "(clamp x lo hi)" in enc.lean_source
+    assert "(«clamp» «x» «lo» «hi»)" in enc.lean_source
     assert "∧" in enc.lean_source
 
 
@@ -89,17 +89,34 @@ def test_encoder_rejects_out_of_slice_loudly():
         _encode(reassign)
 
 
-def test_encoder_rejects_name_collisions_with_emitted_declarations():
-    # A module `def PyAbs` (prelude), a `def f` + `def f_spec` pair
-    # (generated theorem), or a parameter named `then` (Lean keyword)
-    # would emit duplicate or unparseable Lean — and Lean's complaint
-    # would masquerade as a prover error on valid-looking Python.
-    shadows_prelude = ("#@ ensures result == a\n"
-                      "def PyAbs(a: int) -> int:\n"
-                      "    return a\n")
-    with pytest.raises(EncodeError, match="prelude"):
-        _encode(shadows_prelude)
+def test_escaped_identifiers_make_keyword_collisions_unrepresentable():
+    # A keyword BLOCKLIST is inherently incomplete (`forall` escaped the
+    # first draft's list; any future Lean keyword escapes it forever), so
+    # every user identifier is emitted as «name» instead: a Python
+    # function named `theorem`, a parameter named `then`, a local named
+    # `have`, and a `def PyAbs` (prelude shadow) all ENCODE — the
+    # collision class is unrepresentable, not enumerated.
+    keyworded = ("#@ requires then >= 0\n"
+                 "#@ ensures result == then + 1\n"
+                 "def theorem(then: int) -> int:\n"
+                 "    have = then + 1\n"
+                 "    return have\n")
+    enc = _encode(keyworded)
+    assert "def «theorem» («then» : Int)" in enc.lean_source
+    assert "let «have» :=" in enc.lean_source
 
+    shadows_prelude = ("#@ ensures result == abs(a)\n"
+                       "def PyAbs(a: int) -> int:\n"
+                       "    return abs(a)\n")
+    enc2 = _encode(shadows_prelude)
+    assert "def «PyAbs»" in enc2.lean_source     # user def, escaped
+    assert "(PyAbs «a»)" in enc2.lean_source     # abs() -> prelude, bare
+
+
+def test_encoder_rejects_cross_declaration_collisions():
+    # The one collision escaping cannot remove: two EMITTED declarations
+    # with the same name (`def f` beside `def f_spec`, whose generated
+    # theorem is also «f_spec»).
     theorem_clash = ("#@ ensures result == x\n"
                      "def f(x: int) -> int:\n"
                      "    return x\n"
@@ -109,19 +126,6 @@ def test_encoder_rejects_name_collisions_with_emitted_declarations():
                      "    return x\n")
     with pytest.raises(EncodeError, match="collides"):
         _encode(theorem_clash)
-
-    keyword_param = ("#@ ensures result == then\n"
-                     "def g(then: int) -> int:\n"
-                     "    return then\n")
-    with pytest.raises(EncodeError, match="keyword"):
-        _encode(keyword_param)
-
-    keyword_local = ("#@ ensures result == x\n"
-                     "def h(x: int) -> int:\n"
-                     "    have = x\n"
-                     "    return have\n")
-    with pytest.raises(EncodeError, match="keyword"):
-        _encode(keyword_local)
 
 
 def test_encoder_rejects_signature_forms_it_cannot_emit():
@@ -197,6 +201,19 @@ def test_end_to_end_true_spec_verifies(tmp_path):
     payload = verify_structured(src, tmp_path / "out", backend="lean")
     assert payload["status"] == "ok"
     assert payload["toolchain"]["dafny_version"]  # lean's version string
+
+    # A module with a LOCAL binding must also prove: omega does not look
+    # through the `let`s the body compiler emits, and the tactic script's
+    # `try dsimp only` exists precisely for this (measured: a one-local
+    # module failed with the local itself in omega's counterexample,
+    # while `dsimp only` without `try` regressed let-free clamp).
+    local = tmp_path / "local.py"
+    local.write_text("#@ ensures result == x + 2\n"
+                     "def g(x: int) -> int:\n"
+                     "    y = x + 1\n"
+                     "    return y + 1\n")
+    payload2 = verify_structured(local, tmp_path / "out2", backend="lean")
+    assert payload2["status"] == "ok"
 
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")

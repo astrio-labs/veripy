@@ -44,30 +44,25 @@ from .prelude import PRELUDE, PRELUDE_VERSION  # noqa: F401  (version re-exporte
 
 _SLICE_RULE = "lean-slice-1"
 
-# Names the emitted artifact already owns. A Python `def PyAbs` (prelude
-# collision), a `def f` next to a `def f_spec` (theorem collision), or a
-# parameter named `then` (keyword collision) would emit duplicate or
-# unparseable Lean declarations — Lean's complaint would then surface as
-# a confusing prover error on valid-looking Python, so the encoder
-# rejects the collision at the source line instead (the same class the
-# Dafny encoder's builtin-shadow check closes).
-_PRELUDE_NAMES = frozenset({"PyAbs"})
-_LEAN_KEYWORDS = frozenset({
-    "def", "theorem", "lemma", "let", "if", "then", "else", "by", "fun",
-    "match", "with", "do", "return", "have", "show", "from", "in",
-    "min", "max", "abs", "True", "False", "Int", "Nat", "Prop", "Type",
-    "sorry", "axiom", "instance", "structure", "inductive", "where",
-})
+# Every user-derived identifier (function, parameter, local, generated
+# theorem) is emitted in Lean's escaped-identifier syntax «name». A
+# keyword BLOCKLIST is inherently incomplete — `forall` escaped the
+# first draft's list, and any keyword a future Lean adds would escape it
+# forever — whereas «...» makes the collision class unrepresentable: an
+# escaped identifier never collides with any keyword, and never captures
+# a prelude or core name (a Python `def PyAbs` emits «PyAbs», distinct
+# from the prelude's PyAbs; `abs()` still resolves to the unescaped
+# prelude). The only collisions left are between emitted declarations
+# themselves (`def f` beside `def f_spec`), which the reservation check
+# below still refuses at the source line.
+
+
+def _ident(name: str) -> str:
+    return f"«{name}»"
 
 
 def _check_name(name: str, what: str, line: int | None,
                 taken: set[str]) -> None:
-    if name in _PRELUDE_NAMES:
-        raise _reject(f"{what} {name!r} collides with a prelude "
-                      f"declaration", line)
-    if name in _LEAN_KEYWORDS:
-        raise _reject(f"{what} {name!r} collides with a Lean keyword or "
-                      f"builtin", line)
     if name in taken:
         raise _reject(f"{what} {name!r} collides with another emitted "
                       f"declaration", line)
@@ -104,7 +99,7 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
         if e.id not in names:
             raise _reject(f"unknown name {e.id!r} in this slice "
                           f"(parameters and prior assignments only)", line)
-        return e.id
+        return _ident(e.id)
     if isinstance(e, ast.Constant) and isinstance(e.value, int) \
             and not isinstance(e.value, bool):
         return str(e.value) if e.value >= 0 else f"({e.value})"
@@ -203,12 +198,8 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
             raise _reject(f"reassigning parameter {target!r} is outside "
                           f"slice 1 (parameters are immutable so that "
                           f"`old()` needs no snapshots)", head.lineno)
-        # A local named `then` (or `PyAbs`) would emit an unparseable or
-        # shadowing `let`; Lean's complaint would masquerade as a prover
-        # error on valid-looking Python.
-        _check_name(target, "local", head.lineno, set())
         value = _int_expr(head.value, names, head.lineno)
-        return (f"let {target} := {value}; "
+        return (f"let {_ident(target)} := {value}; "
                 + _body_expr(rest, names | {target}, params))
     if isinstance(head, ast.If):
         cond = _prop_expr(head.test, names, head.lineno)
@@ -310,19 +301,20 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         params = tuple(arg.arg for arg in a.args)
         names = set(params)
 
-        binders = " ".join(f"({p} : Int)" for p in params)
+        binders = " ".join(f"({_ident(p)} : Int)" for p in params)
         body = _body_expr([s for s in fn.body
                            if not (isinstance(s, ast.Expr)
                                    and isinstance(s.value, ast.Constant))],
                           names, params)
         emit("", None)
-        emit(f"def {spec_fn.name} {binders} : Int :=", fn.lineno)
+        emit(f"def {_ident(spec_fn.name)} {binders} : Int :=", fn.lineno)
         emit(f"  {body}", fn.lineno)
 
         ensures = _parse_clause(spec_fn, "ensures")
         if not ensures:
             continue
-        app = "(" + " ".join([spec_fn.name, *params]) + ")"
+        app = ("(" + " ".join([_ident(spec_fn.name),
+                               *map(_ident, params)]) + ")")
         hyps = []
         for i, (expr, line) in enumerate(_parse_clause(spec_fn, "requires")):
             hyps.append(f"(h{i} : {_prop_expr(expr, names, line)})")
@@ -334,12 +326,20 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         theorem = f"{spec_fn.name}_spec"
         theorems.append(theorem)
         emit("", None)
-        emit(f"theorem {theorem} {sig} :", first_ensures_line)
+        emit(f"theorem {_ident(theorem)} {sig} :", first_ensures_line)
         emit(f"    {goal} := by", first_ensures_line)
         # The failing-goal diagnostic lands on the tactic lines; map them
         # to the first ensures clause so a `postcondition` failure points
         # at the contract, not at Lean plumbing.
-        emit(f"  unfold {spec_fn.name}", first_ensures_line)
+        emit(f"  unfold {_ident(spec_fn.name)}", first_ensures_line)
+        # `dsimp only` zeta-reduces the `let`s the body compiler emits
+        # for Python locals — omega does not look through let-bindings
+        # (measured: a one-local module failed with the local itself in
+        # omega's counterexample; bump/clamp never caught it because
+        # they bind no locals). `try`, because dsimp FAILS outright on
+        # "no progress" (measured: it regressed let-free clamp to a
+        # failed unknown before the try).
+        emit("  try dsimp only", first_ensures_line)
         emit("  repeat' split", first_ensures_line)
         emit("  all_goals omega", first_ensures_line)
 
