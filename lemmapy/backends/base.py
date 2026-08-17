@@ -23,8 +23,52 @@ Shape notes, deliberately conservative for P0:
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Iterable, Protocol, runtime_checkable
+
+
+class SidecarLike(Protocol):
+    """What the pipeline reads off a loaded sidecar."""
+
+    lemmas: Any        # iterable of lemma names (sorted into the payload)
+    text: str          # verbatim sidecar text, appended to the artifact
+
+
+class EncodedLike(Protocol):
+    """What the pipeline reads off an encoded module. Everything else the
+    encoder produces is backend-private; the emitted text itself is read
+    through `ProofBackend.encoded_text`, never by attribute."""
+
+    line_map: dict[int, int]   # backend artifact line -> Python source line
+
+
+class DiagnosticLike(Protocol):
+    """One prover diagnostic, as the payload builder consumes it.
+
+    `dafny_line` is the artifact-coordinate field's schema-pinned name
+    (`lemmapy-failures/1` carries both coordinate systems under that
+    key); a non-Dafny backend still reports its artifact line here until
+    the AGENT-INTERFACE schema versions a neutral name.
+    """
+
+    severity: str              # "error" rows become failure records
+    dafny_line: int
+    py_line: int | None
+    message: str
+
+    @property
+    def obligation(self) -> str: ...   # a published taxonomy kind
+
+
+class VerifyResultLike(Protocol):
+    """What the pipeline reads off a prover run."""
+
+    ok: bool
+    error: str | None          # tool-level failure (prover missing/crashed)
+    summary: str
+    raw: str
+    diagnostics: Iterable[DiagnosticLike]
 
 
 @runtime_checkable
@@ -39,25 +83,31 @@ class ProofBackend(Protocol):
 
     def sidecar_path(self, source_path: Path) -> Path: ...
 
-    def load_sidecar(self, source_path: Path) -> Any: ...
+    def load_sidecar(self, source_path: Path) -> SidecarLike: ...
 
     def validate_sidecar(self, text: str) -> None: ...
 
     def encode(self, source: str, specs: Any, *, module_name: str,
-               proof_lemmas: Any) -> Any: ...
+               proof_lemmas: Any) -> EncodedLike: ...
 
-    def encoded_text(self, encoded: Any) -> str: ...
+    def encoded_text(self, encoded: EncodedLike) -> str: ...
 
     def artifact_name(self, stem: str) -> str: ...
 
     def verify_artifact(self, artifact: Path, line_map: dict[int, int], *,
                         time_limit: int,
-                        extent: int | None) -> Any: ...
+                        extent: int | None) -> VerifyResultLike: ...
 
 
 # name -> zero-arg factory. Factories run once; the instance is cached.
+# The lock covers first-construction: verify_structured is documented as
+# concurrency-safe (the staging machinery exists for exactly that), so
+# two threads racing the first lookup must not each build an instance —
+# backend-local state (e.g. a cached prover version) would then diverge
+# between calls that believe they share a singleton.
 _FACTORIES: dict[str, Callable[[], ProofBackend]] = {}
 _INSTANCES: dict[str, ProofBackend] = {}
+_LOCK = threading.Lock()
 
 # Backends whose modules register on import, keyed by the name callers use.
 # Lazy so `import lemmapy` never imports a prover integration it does not
@@ -85,15 +135,18 @@ def get_backend(name: str = "dafny") -> ProofBackend:
     engine layer refuses silent model substitution: the backend name is
     provenance, and every payload built under it is labelled by it.
     """
-    if name in _INSTANCES:
+    if name in _INSTANCES:  # fast path: no lock once constructed
         return _INSTANCES[name]
-    if name not in _FACTORIES and name in _LAZY_MODULES:
-        import importlib
+    with _LOCK:
+        if name in _INSTANCES:  # lost the race: the winner's instance
+            return _INSTANCES[name]
+        if name not in _FACTORIES and name in _LAZY_MODULES:
+            import importlib
 
-        importlib.import_module(_LAZY_MODULES[name])
-    if name not in _FACTORIES:
-        raise ValueError(
-            f"unknown backend {name!r} (available: "
-            f"{', '.join(available_backends())})")
-    _INSTANCES[name] = _FACTORIES[name]()
-    return _INSTANCES[name]
+            importlib.import_module(_LAZY_MODULES[name])
+        if name not in _FACTORIES:
+            raise ValueError(
+                f"unknown backend {name!r} (available: "
+                f"{', '.join(available_backends())})")
+        _INSTANCES[name] = _FACTORIES[name]()
+        return _INSTANCES[name]

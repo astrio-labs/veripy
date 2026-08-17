@@ -15,6 +15,7 @@ from lemmapy.backends.base import (
     get_backend,
 )
 from lemmapy.backends.dafny.backend import DafnyBackend
+from lemmapy.backends.dafny.driver import find_dafny
 from lemmapy.backends.dafny.preamble import PREAMBLE_VERSION
 
 GOOD = (
@@ -36,8 +37,10 @@ def test_unknown_backend_is_refused_with_the_known_set():
     # A typo must never silently fall back to another prover: the backend
     # name is provenance, and every payload built under it is labelled by
     # it (same principle as the engine layer's substitution guard).
-    with pytest.raises(ValueError, match="unknown backend 'lean'.*dafny"):
-        get_backend("lean")
+    # ('coq' rather than 'lean': the Lean track's P1 registers lean, and
+    # this test must keep refusing something.)
+    with pytest.raises(ValueError, match="unknown backend 'coq'.*dafny"):
+        get_backend("coq")
 
 
 def test_dafny_backend_satisfies_the_protocol():
@@ -71,7 +74,8 @@ def test_backend_threaded_verify_is_byte_identical_to_default(tmp_path):
     assert "dafny_version" in a["toolchain"]
 
 
-def test_cli_verify_accepts_backend_dafny_and_refuses_others(tmp_path, capsys):
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_cli_verify_accepts_backend_dafny(tmp_path):
     from lemmapy.cli import main
 
     src = tmp_path / "m.py"
@@ -80,9 +84,18 @@ def test_cli_verify_accepts_backend_dafny_and_refuses_others(tmp_path, capsys):
     status = main(["verify", str(src), "-o", str(tmp_path / "o"),
                    "--no-types", "--backend", "dafny", "--json", str(out)])
     assert status == 0
+
+
+def test_cli_verify_refuses_unregistered_backend(tmp_path):
     # An unregistered backend is an argparse-level refusal (exit 2), so a
-    # typo can never run under a silently-substituted prover.
+    # typo can never run under a silently-substituted prover. Needs no
+    # prover installed: the refusal happens before any verification.
+    from lemmapy.cli import main
+
+    src = tmp_path / "m.py"
+    src.write_text(GOOD)
     with pytest.raises(SystemExit) as exc:
-        main(["verify", str(src), "-o", str(tmp_path / "o2"),
-              "--no-types", "--backend", "lean", "--json", str(out)])
+        main(["verify", str(src), "-o", str(tmp_path / "o"),
+              "--no-types", "--backend", "coq",
+              "--json", str(tmp_path / "f.json")])
     assert exc.value.code == 2
