@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..repair import Engine, make_engine
+from ..repair import DEFAULT_ENGINE_WALL_S, Engine, make_engine
 from .exam import ExamScore, exam_tasks, run_repair_exam
 from .specexam import SpecExamScore, run_spec_exam, spec_exam_tasks
 
@@ -169,7 +169,7 @@ def _usage_total(usage: list[dict[str, Any] | None]) -> dict[str, Any]:
 
 def _score_row(score: ExamScore, *, run_id: str, exam: str, engine: str,
                arm: str, trial: int, max_iterations: int,
-               time_limit: int) -> dict[str, Any]:
+               time_limit: int, engine_wall: int) -> dict[str, Any]:
     proposals = sum(1 for a in score.attempts if a.get("engine_ms") is not None)
     rejections = sum(1 for a in score.attempts if a.get("rejection"))
     return {
@@ -181,12 +181,14 @@ def _score_row(score: ExamScore, *, run_id: str, exam: str, engine: str,
         "golden_lemmas": len(score.golden_lemmas),
         "usage": score.usage, "usage_total": _usage_total(score.usage),
         "wall_ms": score.wall_ms, "max_iterations": max_iterations,
-        "time_limit": time_limit, "ts": _now(),
+        # The RESOLVED wall, never None: a row must be self-describing even
+        # when the invocation took the default.
+        "time_limit": time_limit, "engine_wall": engine_wall, "ts": _now(),
     }
 
 
 def _spec_row(score: SpecExamScore, *, run_id: str, engine: str, arm: str,
-              trial: int, time_limit: int) -> dict[str, Any]:
+              trial: int, time_limit: int, engine_wall: int) -> dict[str, Any]:
     """A spec-writing row. `restored` carries EXAM VALIDITY so the summary's
     k/n column stays meaningful across exams; spec strength lives in the
     mutants fields, which is what the paper reports."""
@@ -218,7 +220,7 @@ def _spec_row(score: SpecExamScore, *, run_id: str, engine: str, arm: str,
         "rules_version": score.rules_version,
         "usage": score.usage, "usage_total": _usage_total(score.usage),
         "wall_ms": score.wall_ms, "max_iterations": 1,
-        "time_limit": time_limit, "ts": _now(),
+        "time_limit": time_limit, "engine_wall": engine_wall, "ts": _now(),
     }
 
 
@@ -268,6 +270,25 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
         raise ValueError(f"no {exam} exam tasks under {tasks_root}")
 
     ledger.parent.mkdir(parents=True, exist_ok=True)
+    wall = engine_wall if engine_wall is not None else DEFAULT_ENGINE_WALL_S
+    if resume and ledger.exists():
+        # Exceeding the wall yields an UNMEASURED row, not a failed one, so
+        # rows produced under different walls are different experiments.
+        # Resume must not stitch them into one ledger: a cell completed at
+        # 600s would silently stand in for the 1800s measurement it is not.
+        # A row without the field predates the recording, and unknown is
+        # not a match either (the timeout-bias rule, one level up).
+        walls = {r.get("engine_wall") for r in _rows(ledger)}
+        foreign = walls - {wall}
+        if foreign:
+            names = ", ".join("unrecorded" if w is None else str(w)
+                              for w in sorted(foreign, key=str))
+            raise ValueError(
+                f"{ledger} holds trial rows measured under engine wall(s) "
+                f"{names}, but this invocation uses {wall}; rows across "
+                f"walls are not comparable — use a fresh --ledger, or "
+                f"--no-resume to append anyway (the summary will refuse to "
+                f"pool across walls)")
     run_id = f"run-{_now()}-{hashlib.sha256(repr((engines, arms, trials)).encode()).hexdigest()[:6]}"
     ladder_kwargs = dict(ladder or {})
     _append(ledger, {
@@ -278,6 +299,7 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
         "engine_effort": engine_effort or "cli-default",
         "engines": engines, "arms": arms, "trials": trials,
         "max_iterations": max_iterations, "time_limit": time_limit,
+        "engine_wall": wall,
         "retries": retries, "ladder": ladder_kwargs,
         "tasks_root": str(tasks_root), "roster": roster,
     })
@@ -303,7 +325,8 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
                         _score_row(score, run_id=run_id, exam=exam,
                                    engine=spec, arm=arm, trial=trial,
                                    max_iterations=arm_iters,
-                                   time_limit=time_limit)
+                                   time_limit=time_limit,
+                                   engine_wall=wall)
                         for score in run_repair_exam(
                             tasks_root, cell_dir, factory,
                             max_iterations=arm_iters, time_limit=time_limit,
@@ -312,7 +335,8 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
                 else:
                     rows = [
                         _spec_row(score, run_id=run_id, engine=spec, arm=arm,
-                                  trial=trial, time_limit=time_limit)
+                                  trial=trial, time_limit=time_limit,
+                                  engine_wall=wall)
                         for score in run_spec_exam(
                             tasks_root, cell_dir, factory, retries=retries,
                             only=pending, **ladder_kwargs)
@@ -386,6 +410,27 @@ def summarize_ledger(ledger: Path) -> str:
     rows = _rows(ledger)
     if not rows:
         return f"no trial rows in {ledger}"
+    # One ledger, one wall. Rows measured under different walls (reachable
+    # via --no-resume appends, or rows predating the field) are different
+    # experiments; averaging them would let a 600s row stand in for the
+    # 1800s measurement it is not. Summarize each wall's rows separately
+    # rather than printing one table that silently pools them.
+    walls = sorted({r.get("engine_wall") for r in rows}, key=str)
+    if len(walls) > 1:
+        parts = []
+        for w in walls:
+            subset = [r for r in rows if r.get("engine_wall") == w]
+            label = "unrecorded" if w is None else f"{w}s"
+            parts.append(f"=== engine wall {label} "
+                         f"({len(subset)} trial row(s)) ===\n"
+                         + _summarize_rows(subset))
+        return (f"MIXED ENGINE WALLS in {ledger} — rows are not comparable "
+                f"across walls, so each is summarized alone:\n\n"
+                + "\n\n".join(parts))
+    return _summarize_rows(rows)
+
+
+def _summarize_rows(rows: list[dict[str, Any]]) -> str:
     groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     for row in rows:
         groups.setdefault(

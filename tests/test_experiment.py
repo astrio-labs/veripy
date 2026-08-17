@@ -633,3 +633,91 @@ def test_cli_experiment_rejects_a_non_positive_engine_wall(tmp_path, capsys):
         main(["experiment", "--tasks", str(tmp_path), "--engine-wall", "-5"])
     assert exc.value.code == 2
     assert "positive" in capsys.readouterr().err
+
+
+def test_every_trial_row_records_the_resolved_wall(tmp_path, monkeypatch):
+    # Self-describing rows: the RESOLVED wall, never None, even when the
+    # invocation took the default — a row must say what it was measured
+    # under without the reader reconstructing the command line.
+    import lemmapy.benchmark.experiment as exp_mod
+    from lemmapy.repair import DEFAULT_ENGINE_WALL_S
+
+    def fake(tasks_root, workdir, factory, max_iterations=4, time_limit=60,
+             only=None):
+        factory()
+        return [ExamScore(task_id=t, restored=True, iterations=1, reason="ok",
+                          golden_lemmas=["L"]) for t in sorted(only or [])]
+
+    monkeypatch.setattr(exp_mod, "run_repair_exam", fake)
+    corpus = _mini_corpus(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    ledger = tmp_path / "l.jsonl"
+    run_experiment(corpus, tmp_path / "c", [f"file:{empty}"], ["full"], 1,
+                   ledger, engine_wall=1800)
+    rows = [json.loads(l) for l in ledger.read_text().splitlines()]
+    header = [r for r in rows if r.get("schema") == "lemmapy-exam-run/1"]
+    trials = [r for r in rows if r.get("schema", "").startswith("lemmapy-exam-trial")]
+    assert header and header[0]["engine_wall"] == 1800
+    assert trials and all(r["engine_wall"] == 1800 for r in trials)
+    # Default taken -> the default is what gets recorded.
+    ledger2 = tmp_path / "l2.jsonl"
+    run_experiment(corpus, tmp_path / "c2", [f"file:{empty}"], ["full"], 1,
+                   ledger2)
+    trials2 = [json.loads(l) for l in ledger2.read_text().splitlines()
+               if '"trial"' in l]
+    assert all(r["engine_wall"] == DEFAULT_ENGINE_WALL_S for r in trials2)
+
+
+def test_resume_refuses_a_ledger_measured_under_a_different_wall(
+        tmp_path, monkeypatch):
+    import lemmapy.benchmark.experiment as exp_mod
+
+    def fake(tasks_root, workdir, factory, max_iterations=4, time_limit=60,
+             only=None):
+        factory()
+        return [ExamScore(task_id=t, restored=True, iterations=1, reason="ok",
+                          golden_lemmas=["L"]) for t in sorted(only or [])]
+
+    monkeypatch.setattr(exp_mod, "run_repair_exam", fake)
+    corpus = _mini_corpus(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    ledger = tmp_path / "l.jsonl"
+    run_experiment(corpus, tmp_path / "c", [f"file:{empty}"], ["full"], 1,
+                   ledger, engine_wall=600)
+    # Same ledger, different wall: a 600s cell must not stand in for the
+    # 1800s measurement it is not.
+    with pytest.raises(ValueError, match="600.*1800|engine wall"):
+        run_experiment(corpus, tmp_path / "c2", [f"file:{empty}"], ["full"], 1,
+                       ledger, engine_wall=1800)
+    # Same wall resumes fine.
+    run_experiment(corpus, tmp_path / "c3", [f"file:{empty}"], ["full"], 1,
+                   ledger, engine_wall=600)
+    # Rows predating the field are unknown, and unknown is not a match.
+    legacy = tmp_path / "legacy.jsonl"
+    rows = [json.loads(l) for l in ledger.read_text().splitlines()]
+    with legacy.open("w") as fh:
+        for r in rows:
+            r.pop("engine_wall", None)
+            fh.write(json.dumps(r) + "\n")
+    with pytest.raises(ValueError, match="unrecorded"):
+        run_experiment(corpus, tmp_path / "c4", [f"file:{empty}"], ["full"], 1,
+                       legacy, engine_wall=600)
+
+
+def test_summary_refuses_to_pool_across_walls(tmp_path):
+    # A mixed ledger is reachable via --no-resume: the summary must not
+    # print one table that silently averages 600s rows with 1800s rows.
+    ledger = tmp_path / "l.jsonl"
+    _spec_ledger(ledger, [
+        {"task": "a", "engine_wall": 600, "comparable": True},
+        {"task": "b", "engine_wall": 1800, "comparable": True},
+    ])
+    out = summarize_ledger(ledger)
+    assert "MIXED ENGINE WALLS" in out
+    assert "engine wall 600s" in out and "engine wall 1800s" in out
+    # A single-wall ledger renders one plain table, no banner.
+    single = tmp_path / "s.jsonl"
+    _spec_ledger(single, [{"task": "a", "engine_wall": 600, "comparable": True}])
+    assert "MIXED" not in summarize_ledger(single)
