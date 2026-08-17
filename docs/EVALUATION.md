@@ -206,7 +206,7 @@ is wrong. It gets its own `resolution` kind in the failure taxonomy —
 shipping separately in the taxonomy PR, so on this revision the
 classification is not yet available and these still arrive as `unknown`.
 
-### Run 4 — roster n=6 (2026-08-14), the current figure
+### Run 4 — roster n=6 (2026-08-14), superseded by Run 5
 
 **5/6 restored = 83% (95% Wilson CI 44–97%)**, and — unlike Run 3 — *every
 task produced a measurement*, so there is only one denominator to report.
@@ -261,7 +261,122 @@ disproof — the taxonomy is explicit that the property may still hold.
 configuration (the `lemmapy experiment` matrix already supports this, and
 is the only thing that measures the variance rather than being surprised
 by it), then roster growth — n=7 landed after this run, so this figure is
-already one task stale.
+already one task stale. *Both were done: see Run 5, which supersedes this
+run and confirms the diagnosis — the per-trial rate swings 71%–100% at
+fixed configuration.*
+
+### Run 5 — roster n=7, THREE trials per task (2026-08-16), the current figure
+
+The first repeated-trials run, and the one that settles what Runs 3 and 4
+could only gesture at. Same configuration throughout: `--engine claude`,
+full loop, 4-iteration budget, 60 s verify, `--engine-wall 1800`.
+
+```
+lemmapy experiment --exam proof-repair --engines claude --arms full \
+  --trials 3 --engine-wall 1800 --time-limit 60 -o build/run5-matrix
+```
+
+**18/21 cells restored = 86% (95% Wilson CI 65–95%)**, over 2.8 h of
+wall-clock and 710k output tokens.
+
+| trial | restored |
+| --- | --- |
+| 1 | 6/7 (86%) |
+| 2 | 5/7 (71%) |
+| 3 | 7/7 (100%) |
+
+| task | trials | iterations |
+| --- | --- | --- |
+| sum_squares | 3/3 | 1, 1, 1 |
+| sum_to_n | 3/3 | 1, 1, 1 |
+| is_prime | 3/3 | 2, 2, 1 |
+| gcd | 3/3 | 1, 4, 2 |
+| modp | 3/3 | 4, 2, 4 |
+| rolling_max | **2/3** | 3, —, 2 |
+| below_zero | **1/3** | —, —, 1 |
+
+**The per-trial rate swings 71%–100% at fixed configuration.** That single
+fact retires the shape of every earlier report: Runs 3 and 4 each quoted
+one number as *the* rate, and this run shows any such number is a draw
+from a distribution. The pooled interval (65–95%) is narrower than Run 4's
+44–97% — and it was *repetition* that narrowed it, not the extra roster
+task. Note also that the pooled figure treats 21 cells as independent when
+they are 7 tasks measured 3 times each; the per-task column below is the
+honest view, and the corpus does not behave like one population.
+
+**Two observations are not enough to call a task, and this run contains
+the proof.** After trials 1 and 2, `below_zero` had failed twice, and the
+live read of this measurement recorded that it "looks systematic, not
+noise" — it had, after all, restored in 2 iterations in *both* Run 3 and
+Run 4, so a change seemed the better explanation. Trial 3 restored it on
+the **first iteration**. Nothing had changed. Two failures followed by a
+one-attempt success is as clean a demonstration as this corpus is likely
+to produce that per-task outcome is unstable and that reading a trend into
+n=2 is a mistake — the same mistake, one level down, that quoting a
+single-run rate makes.
+
+**The corpus splits, and the split is the useful result.** Five of seven
+tasks restore in every trial, two of them (`sum_squares`, `sum_to_n`) in
+exactly one iteration three times running. Two tasks are genuinely
+unreliable. "The loop restores 86%" is a worse description of this system
+than "the loop is dependable on five of these seven tasks and a coin-flip
+on the other two", and only repeated trials can tell those apart.
+
+**Outcome stability and effort stability are different things.** `gcd`
+restored in all three trials at 1, 4 and 2 iterations — a 4× spread in
+work on a task that never fails. Any mean-iterations figure drawn from a
+single run is noise, and `modp` (4, 2, 4) is the same story.
+
+**One mechanism worth chasing.** `rolling_max`'s failing trial spent three
+of its four iterations on `resolution` errors — the sidecar did not
+typecheck, so no obligation ever reached the prover. Budget consumed
+without a proof attempted, on the kind whose published guidance is the
+opposite of a proof failure's ("fix the declaration against the preamble
+signatures"). That is a plausible, testable cause for at least part of the
+instability, and it is a harness-side lever rather than a model-side one.
+
+**No pack was retrieved.** All **18** restored packs differ from their
+golden — and so do the final sidecars of the 3 cells that did not restore,
+so no cell in the matrix reproduced the answer key, whether it succeeded
+or not. (The stronger of the two statements is the one about failures: an
+engine that had found the golden would have restored.)
+
+**A restored proof does not necessarily transport.** Trial 1's `modp`
+pack — the four-lemma one, the most interesting object this run produced —
+verifies in **~3.5 s on macOS/arm64** (stable across four consecutive
+runs) and **times out at 60 s on the Linux/x86 CI runner**, with the same
+Dafny 4.11.0 on both sides. Z3 takes a different search path on the same
+nonlinear goal on a different platform build, and a 13× gap is not a
+slower machine. The pack is therefore NOT archived: the archive's
+`-engine-pack-` bucket asserts "this verifies", CI cannot confirm that
+claim, and a reader on Linux could not either.
+
+This is a limitation of the restoration metric itself, not of one pack.
+"Restored" in every run reported here means *restored on the measurement
+machine*, and at least one success in this matrix does not survive a
+change of platform. Nothing in the harness currently detects that — the
+exam verifies once, where it runs. A portability rung (verify each
+restored pack on a second platform before crediting it) is the obvious
+follow-up, and until it exists the rates above should be read as
+machine-relative.
+`modp` is the sharpest illustration of how far apart two runs of the same
+task can land: trial 1 produced a four-lemma proof routed through
+`PyModStep`/`PyModAddMul` (not archived — see the portability note below),
+while trial 3 rebuilt the result from first principles — distributivity,
+associativity, monotonicity, `ModUnique` — in twelve lemmas before
+reaching the same `ModMulLeft`
+([artifact](exam-artifacts/modp-engine-pack-2026-08e.dfy)). `gcd` again
+produced a pack smaller than the human one (five lemmas against the golden
+eight, [artifact](exam-artifacts/gcd-engine-pack-2026-08c.dfy)), and
+`below_zero`'s one-iteration success is archived as
+[the pack that followed two budget failures](exam-artifacts/below_zero-engine-pack-2026-08.dfy).
+
+**What this still does not measure.** One engine, one arm, one roster, and
+three trials — enough to establish that variance dominates a single run,
+not enough to estimate its magnitude precisely. The ablated and one-shot
+arms exist and were not run. Contamination remains assumed: the corpus is
+public, so these figures are a development-set measurement, and a headline
+comparison wants a held-out private set.
 
 **Methodology notes — two invalid runs preceded the first measurement, in
 opposite directions, and both are part of the record:**
