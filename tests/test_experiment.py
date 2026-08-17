@@ -721,3 +721,44 @@ def test_summary_refuses_to_pool_across_walls(tmp_path):
     single = tmp_path / "s.jsonl"
     _spec_ledger(single, [{"task": "a", "engine_wall": 600, "comparable": True}])
     assert "MIXED" not in summarize_ledger(single)
+
+
+def test_wall_guard_ignores_rows_this_matrix_cannot_reuse(tmp_path, monkeypatch):
+    # Only a row this matrix could REUSE can poison it. A spec-writing run
+    # at another wall sharing the ledger, a retired task's rows, or an
+    # engine not in this invocation can never stand in for one of this
+    # run's cells — refusing over them blocks a perfectly valid resume.
+    import lemmapy.benchmark.experiment as exp_mod
+
+    def fake(tasks_root, workdir, factory, max_iterations=4, time_limit=60,
+             only=None):
+        factory()
+        return [ExamScore(task_id=t, restored=True, iterations=1, reason="ok",
+                          golden_lemmas=["L"]) for t in sorted(only or [])]
+
+    monkeypatch.setattr(exp_mod, "run_repair_exam", fake)
+    corpus = _mini_corpus(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    ledger = tmp_path / "l.jsonl"
+    run_experiment(corpus, tmp_path / "c", [f"file:{empty}"], ["full"], 1,
+                   ledger, engine_wall=600)
+    rows = [json.loads(l) for l in ledger.read_text().splitlines()
+            if '"trial"' in l]
+    # Plant out-of-scope rows at a DIFFERENT wall: another exam, a task not
+    # in the roster, and an engine this invocation does not ask for.
+    with ledger.open("a") as fh:
+        for extra in ({"exam": "spec-writing"}, {"task": "retired_task"},
+                      {"engine": "file:/somewhere/else"}):
+            r = dict(rows[0]); r.update(extra); r["engine_wall"] = 1800
+            fh.write(json.dumps(r) + "\n")
+    # Same-wall resume of the same matrix still works.
+    run_experiment(corpus, tmp_path / "c2", [f"file:{empty}"], ["full"], 1,
+                   ledger, engine_wall=600)
+    # An IN-scope row at another wall still refuses.
+    with ledger.open("a") as fh:
+        r = dict(rows[0]); r["engine_wall"] = 1800; r["ts"] = 1
+        fh.write(json.dumps(r) + "\n")
+    with pytest.raises(ValueError, match="engine wall"):
+        run_experiment(corpus, tmp_path / "c3", [f"file:{empty}"], ["full"], 1,
+                       ledger, engine_wall=600)

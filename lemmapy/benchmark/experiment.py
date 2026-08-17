@@ -278,7 +278,18 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
         # 600s would silently stand in for the 1800s measurement it is not.
         # A row without the field predates the recording, and unknown is
         # not a match either (the timeout-bias rule, one level up).
-        walls = {r.get("engine_wall") for r in _rows(ledger)}
+        #
+        # Scoped to the rows THIS matrix could actually reuse — same exam,
+        # a task in the current roster, an engine/arm/trial in the current
+        # request. An out-of-scope row (another exam sharing the ledger, a
+        # retired task, an engine not asked for) can never stand in for one
+        # of this run's cells, so its wall is not this run's business.
+        reusable = [r for r in _rows(ledger)
+                    if r.get("exam") == exam and r.get("task") in set(roster)
+                    and r.get("engine") in set(engines)
+                    and r.get("arm") in set(arms)
+                    and isinstance(r.get("trial"), int) and r["trial"] < trials]
+        walls = {r.get("engine_wall") for r in reusable}
         foreign = walls - {wall}
         if foreign:
             names = ", ".join("unrecorded" if w is None else str(w)
