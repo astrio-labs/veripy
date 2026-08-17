@@ -36,6 +36,10 @@ def test_classify_obligation_kinds():
             "invariant",
         "assertion might not hold": "assertion",
         "a precondition for this call could not be proved": "call-precondition",
+        # The FUNCTION variant is phrased without "call"; it fell through
+        # to `unknown` until the dual-adjudication reclassification
+        # surfaced it on live prover output.
+        "function precondition could not be proved": "call-precondition",
         "cannot prove termination; try supplying a decreases clause": "termination",
         "verification timed out": "timeout",
         "something novel": "unknown",
