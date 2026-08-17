@@ -18,9 +18,10 @@ from pathlib import Path
 from tokenize import TokenError
 from typing import Any
 
-from .backends.dafny.driver import dafny_version, verify_dafny_file
-from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
-from .backends.dafny.preamble import PREAMBLE_VERSION
+from .backends.base import ProofBackend, get_backend
+# `EncodeError` remains the shared encode-failure type until a second
+# backend forces a neutral home (the Lean track's P1).
+from .backends.dafny.encoder import EncodeError
 from .failures import TAXONOMY_VERSION
 from .frontend.extract import parse_source
 
@@ -57,19 +58,24 @@ def _attribute(specs: Any, py_line: int | None) -> str | None:
     return best
 
 
-def new_payload(file: str, keep_artifacts: bool = False) -> dict[str, Any]:
+def new_payload(file: str, keep_artifacts: bool = False,
+                backend: ProofBackend | None = None) -> dict[str, Any]:
     """The documented payload skeleton. EVERY producer must build on
     this — the contract promises `toolchain` on every outcome, and a
     hand-built payload elsewhere (the CLI's gate-error path) silently
     broke that promise until this existed."""
+    if backend is None:
+        backend = get_backend()
     return {
         "schema": SCHEMA,
         "file": file,
         # Provenance rides every payload: a host must be able to tell
         # whether two verdicts meant the same thing. `dafny_version` stays
-        # None until the prover is actually reached.
+        # None until the prover is actually reached. (The key name is part
+        # of the payload schema; renaming it for backend neutrality is a
+        # versioned AGENT-INTERFACE change, not this seam's job.)
         "toolchain": {
-            "preamble_version": PREAMBLE_VERSION,
+            "preamble_version": backend.preamble_version,
             "dafny_version": None,
             "taxonomy_version": TAXONOMY_VERSION,
         },
@@ -84,7 +90,8 @@ def new_payload(file: str, keep_artifacts: bool = False) -> dict[str, Any]:
 
 def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
                       hunt_counterexamples: bool = False,
-                      keep_artifacts: bool = False) -> dict[str, Any]:
+                      keep_artifacts: bool = False,
+                      backend: str = "dafny") -> dict[str, Any]:
     """Encode + verify one module; return the structured outcome. Never
     raises for expected failure modes — every outcome is a payload.
 
@@ -117,7 +124,8 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
     the CLI prints its path for a human), so `payload["stub"]` is None when
     they are not kept, rather than a path that no longer exists.
     """
-    payload = new_payload(str(path), keep_artifacts)
+    be = get_backend(backend)
+    payload = new_payload(str(path), keep_artifacts, backend=be)
     workdir: Path | None = None
     try:
         outdir.mkdir(parents=True, exist_ok=True)
@@ -131,7 +139,7 @@ def verify_structured(path: Path, outdir: Path, time_limit: int = 30,
         # When keeping, the directory is derived later from the stub's own
         # content — it cannot be named before the stub exists.
         return _verify_into(path, outdir, workdir, payload, time_limit,
-                            hunt_counterexamples, keep_artifacts)
+                            hunt_counterexamples, keep_artifacts, be)
     finally:
         if workdir is not None and not keep_artifacts:
             shutil.rmtree(workdir, ignore_errors=True)
@@ -176,7 +184,7 @@ def stub_dir_for(outdir: Path, path: Path, stub_text: str) -> Path:
 def _verify_into(path: Path, outdir: Path, workdir: Path | None,
                  payload: dict[str, Any], time_limit: int,
                  hunt_counterexamples: bool,
-                 keep_artifacts: bool) -> dict[str, Any]:
+                 keep_artifacts: bool, be: ProofBackend) -> dict[str, Any]:
     try:
         source = path.read_text()
     except (OSError, UnicodeDecodeError) as exc:
@@ -208,9 +216,9 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
         ]
         return payload
     try:
-        sidecar = load_proof_sidecar(path)
-        encoded = encode_module(source, specs, module_name=path.name,
-                                proof_lemmas=sidecar.lemmas)
+        sidecar = be.load_sidecar(path)
+        encoded = be.encode(source, specs, module_name=path.name,
+                            proof_lemmas=sidecar.lemmas)
     except EncodeError as exc:
         payload["status"] = "encode-error"
         # Same record shape as a `failed` failure: a consumer written
@@ -230,29 +238,29 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
         payload["status"] = "tool-error"
         payload["error"] = f"unreadable proof sidecar: {exc}"
         return payload
-    sidecar_path = path.with_name(path.stem + ".proofs.dfy")
+    sidecar_path = be.sidecar_path(path)
     payload["sidecar"] = {
         "path": str(sidecar_path),
         "exists": sidecar_path.exists(),
         "lemmas": sorted(sidecar.lemmas),
         "text": sidecar.text,
     }
-    stub_text = encoded.dafny_source + sidecar.text
+    stub_text = be.encoded_text(encoded) + sidecar.text
     try:
         if workdir is None:  # keep_artifacts: name it after its content
             workdir = stub_dir_for(outdir, path, stub_text)
             workdir.mkdir(parents=True, exist_ok=True)
-        stub = workdir / f"{path.stem}.dfy"
+        stub = workdir / be.artifact_name(path.stem)
         atomic_write_text(stub, stub_text)
     except OSError as exc:
         payload["status"] = "tool-error"
         payload["error"] = f"cannot write stub: {exc}"
         return payload
     payload["stub"] = str(stub) if keep_artifacts else None
-    stub_extent = encoded.dafny_source.count("\n") + 1
-    payload["toolchain"]["dafny_version"] = dafny_version()  # cached per process
-    result = verify_dafny_file(stub, encoded.line_map, time_limit=time_limit,
-                               stub_extent=stub_extent)
+    stub_extent = be.encoded_text(encoded).count("\n") + 1
+    payload["toolchain"]["dafny_version"] = be.prover_version()  # cached per process
+    result = be.verify_artifact(stub, encoded.line_map,
+                                time_limit=time_limit, extent=stub_extent)
     if result.error is not None:
         payload["status"] = "tool-error"
         payload["error"] = result.error
@@ -301,7 +309,8 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
 
 def verify_structured_many(paths: list[Path], outdir: Path, time_limit: int = 30,
                            hunt_counterexamples: bool = False,
-                           keep_artifacts: bool = False) -> list[dict[str, Any]]:
+                           keep_artifacts: bool = False,
+                           backend: str = "dafny") -> list[dict[str, Any]]:
     """Same-stem inputs no longer need special handling: `verify_structured`
     stages each invocation privately, so stub paths are unique by
     construction — across calls, threads and processes, not just within
@@ -309,7 +318,7 @@ def verify_structured_many(paths: list[Path], outdir: Path, time_limit: int = 30
     return [
         verify_structured(p, outdir, time_limit=time_limit,
                           hunt_counterexamples=hunt_counterexamples,
-                          keep_artifacts=keep_artifacts)
+                          keep_artifacts=keep_artifacts, backend=backend)
         for p in paths
     ]
 

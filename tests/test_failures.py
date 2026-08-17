@@ -146,10 +146,13 @@ def test_unattributable_failure_reports_null_region(tmp_path, monkeypatch):
     # lives. The contract routes `unknown` by `region`, so a hardcoded
     # "source" would send a repair agent after the wrong file.
     import lemmapy.agentio as agentio_mod
+    from lemmapy.backends.base import get_backend
     from lemmapy.backends.dafny.driver import VerifyResult
 
+    # Patch the backend seam (what the pipeline actually calls), not the
+    # driver function agentio once imported directly.
     monkeypatch.setattr(
-        agentio_mod, "verify_dafny_file",
+        get_backend("dafny"), "verify_artifact",
         lambda *a, **k: VerifyResult(ok=False, diagnostics=[],
                                      summary="finished with 0 verified, 1 error",
                                      raw="opaque prover output"))

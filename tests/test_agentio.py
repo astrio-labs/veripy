@@ -70,16 +70,19 @@ def test_payload_carries_toolchain_provenance(tmp_path):
     # The prover never ran there, so its version is None and — importantly —
     # is never queried: an immediate error must not wait on a subprocess.
     missing = tmp_path / "nope.py"
-    import lemmapy.agentio as agentio_mod
+    from lemmapy.backends.base import get_backend
 
+    # Count calls at the backend seam (what the pipeline actually calls);
+    # the module-level `dafny_version` import is transitional and inert.
+    be = get_backend("dafny")
     called = {"n": 0}
-    real = agentio_mod.dafny_version
-    agentio_mod.dafny_version = lambda: (called.__setitem__("n", called["n"] + 1)
-                                         or "never")
+    real = be.prover_version
+    be.prover_version = lambda: (called.__setitem__("n", called["n"] + 1)
+                                 or "never")
     try:
         bad = verify_structured(missing, tmp_path / "out2")
     finally:
-        agentio_mod.dafny_version = real
+        be.prover_version = real
     assert bad["status"] == "tool-error"
     assert bad["toolchain"]["preamble_version"] == PREAMBLE_VERSION
     assert bad["toolchain"]["dafny_version"] is None
