@@ -89,6 +89,78 @@ def test_encoder_rejects_out_of_slice_loudly():
         _encode(reassign)
 
 
+def test_encoder_rejects_name_collisions_with_emitted_declarations():
+    # A module `def PyAbs` (prelude), a `def f` + `def f_spec` pair
+    # (generated theorem), or a parameter named `then` (Lean keyword)
+    # would emit duplicate or unparseable Lean — and Lean's complaint
+    # would masquerade as a prover error on valid-looking Python.
+    shadows_prelude = ("#@ ensures result == a\n"
+                      "def PyAbs(a: int) -> int:\n"
+                      "    return a\n")
+    with pytest.raises(EncodeError, match="prelude"):
+        _encode(shadows_prelude)
+
+    theorem_clash = ("#@ ensures result == x\n"
+                     "def f(x: int) -> int:\n"
+                     "    return x\n"
+                     "\n"
+                     "#@ ensures result == x\n"
+                     "def f_spec(x: int) -> int:\n"
+                     "    return x\n")
+    with pytest.raises(EncodeError, match="collides"):
+        _encode(theorem_clash)
+
+    keyword_param = ("#@ ensures result == then\n"
+                     "def g(then: int) -> int:\n"
+                     "    return then\n")
+    with pytest.raises(EncodeError, match="keyword"):
+        _encode(keyword_param)
+
+    keyword_local = ("#@ ensures result == x\n"
+                     "def h(x: int) -> int:\n"
+                     "    have = x\n"
+                     "    return have\n")
+    with pytest.raises(EncodeError, match="keyword"):
+        _encode(keyword_local)
+
+
+def test_encoder_rejects_signature_forms_it_cannot_emit():
+    # Defaults, *args/**kwargs, positional-only and keyword-only markers
+    # were previously ERASED from the binder list — a wrong-arity Lean
+    # artifact, or phantom unknown-name rejections for real parameters.
+    for src in (
+        "#@ ensures result == x\ndef f(x: int = 3) -> int:\n    return x\n",
+        "#@ ensures result == x\ndef f(x: int, *, y: int) -> int:\n    return x\n",
+        "#@ ensures result == x\ndef f(x: int, /) -> int:\n    return x\n",
+        # *args is refused upstream by the frontend ("outside the
+        # fragment") before this encoder runs — either guard is fine, as
+        # long as SOMETHING refuses loudly.
+        "#@ ensures result == x\ndef f(x: int, *a: int) -> int:\n    return x\n",
+    ):
+        with pytest.raises(EncodeError, match="slice 1|outside the fragment"):
+            _encode(src)
+
+
+def test_driver_reports_toolless_exit_as_tool_error(monkeypatch):
+    # Nonzero exit with no parsed diagnostic is the TOOL failing, not a
+    # proof — reporting `failed` would fabricate an unknown obligation
+    # and send a repair loop after a proof that was never judged.
+    import lemmapy.backends.lean.driver as driver_mod
+
+    class Proc:
+        returncode = 134
+        stdout = ""
+        stderr = "lean: internal panic"
+
+    monkeypatch.setattr(driver_mod.subprocess, "run",
+                        lambda *a, **k: Proc())
+    monkeypatch.setattr(driver_mod, "find_lean", lambda: "/fake/lean")
+    result = driver_mod.verify_lean_file(Path("/tmp/x.lean"), {})
+    assert result.ok is False
+    assert result.error is not None and "134" in result.error
+    assert "panic" in result.error
+
+
 def test_classifier_maps_live_lean_messages():
     # Pinned from live Lean 4.33 output: omega's failure text, which is
     # NOT "unsolved goals" (the first classifier draft missed it and a

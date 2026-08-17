@@ -148,6 +148,17 @@ def verify_lean_file(path: Path, line_map: dict[int, int],
             message=message,
         ))
     errors = [d for d in diagnostics if d.severity == "error"]
+    if proc.returncode != 0 and not errors:
+        # Nonzero exit with NO parsed error diagnostic is the tool
+        # failing (crash, bad invocation, stderr-only complaint), not a
+        # proof failing. Reporting it as `failed` would fabricate an
+        # `unknown` proof obligation and send a repair loop after a
+        # proof that was never judged — a tool error in a proof-failure
+        # costume, the exact conflation the taxonomy exists to prevent.
+        return LeanVerifyResult(
+            ok=False, diagnostics=diagnostics, raw=output,
+            error=(f"lean exited {proc.returncode} without diagnostics: "
+                   f"{(proc.stderr or proc.stdout)[:400]}"))
     ok = proc.returncode == 0 and not errors
     summary = (f"lean finished with {len(errors)} error(s)"
                if diagnostics or proc.returncode else "lean finished clean")

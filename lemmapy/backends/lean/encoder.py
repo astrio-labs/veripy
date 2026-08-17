@@ -44,6 +44,34 @@ from .prelude import PRELUDE, PRELUDE_VERSION  # noqa: F401  (version re-exporte
 
 _SLICE_RULE = "lean-slice-1"
 
+# Names the emitted artifact already owns. A Python `def PyAbs` (prelude
+# collision), a `def f` next to a `def f_spec` (theorem collision), or a
+# parameter named `then` (keyword collision) would emit duplicate or
+# unparseable Lean declarations — Lean's complaint would then surface as
+# a confusing prover error on valid-looking Python, so the encoder
+# rejects the collision at the source line instead (the same class the
+# Dafny encoder's builtin-shadow check closes).
+_PRELUDE_NAMES = frozenset({"PyAbs"})
+_LEAN_KEYWORDS = frozenset({
+    "def", "theorem", "lemma", "let", "if", "then", "else", "by", "fun",
+    "match", "with", "do", "return", "have", "show", "from", "in",
+    "min", "max", "abs", "True", "False", "Int", "Nat", "Prop", "Type",
+    "sorry", "axiom", "instance", "structure", "inductive", "where",
+})
+
+
+def _check_name(name: str, what: str, line: int | None,
+                taken: set[str]) -> None:
+    if name in _PRELUDE_NAMES:
+        raise _reject(f"{what} {name!r} collides with a prelude "
+                      f"declaration", line)
+    if name in _LEAN_KEYWORDS:
+        raise _reject(f"{what} {name!r} collides with a Lean keyword or "
+                      f"builtin", line)
+    if name in taken:
+        raise _reject(f"{what} {name!r} collides with another emitted "
+                      f"declaration", line)
+
 
 @dataclass
 class LeanEncoded:
@@ -175,6 +203,10 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
             raise _reject(f"reassigning parameter {target!r} is outside "
                           f"slice 1 (parameters are immutable so that "
                           f"`old()` needs no snapshots)", head.lineno)
+        # A local named `then` (or `PyAbs`) would emit an unparseable or
+        # shadowing `let`; Lean's complaint would masquerade as a prover
+        # error on valid-looking Python.
+        _check_name(target, "local", head.lineno, set())
         value = _int_expr(head.value, names, head.lineno)
         return (f"let {target} := {value}; "
                 + _body_expr(rest, names | {target}, params))
@@ -236,6 +268,19 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             if py_line is not None:
                 line_map[len(lines)] = py_line
 
+    # Reserve every emitted top-level name up front, so `def f` next to
+    # `def f_spec` collides regardless of definition order.
+    taken: set[str] = set()
+    for spec_fn in specs.functions:
+        fn = by_name.get(spec_fn.name)
+        line = fn.lineno if fn is not None else spec_fn.lineno
+        _check_name(spec_fn.name, "function", line, taken)
+        taken.add(spec_fn.name)
+        if spec_fn.by_kind("ensures"):
+            _check_name(f"{spec_fn.name}_spec", "generated theorem for",
+                        line, taken)
+            taken.add(f"{spec_fn.name}_spec")
+
     for spec_fn in specs.functions:
         if spec_fn.by_kind("proof"):
             raise _reject("`#@ proof` clauses need the sidecar channel "
@@ -244,15 +289,25 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         if fn is None:
             raise _reject(f"spec for unknown function {spec_fn.name!r}",
                           spec_fn.lineno)
-        for arg in fn.args.args:
+        a = fn.args
+        # Anything beyond plain positional parameters would be silently
+        # erased from the binder list — a wrong-arity artifact, or
+        # phantom "unknown name" rejections for parameters that exist.
+        if a.posonlyargs or a.kwonlyargs or a.vararg or a.kwarg \
+                or a.defaults or a.kw_defaults:
+            raise _reject("only plain positional parameters (no defaults, "
+                          "no *args/**kwargs, no positional-only or "
+                          "keyword-only markers) are in slice 1", fn.lineno)
+        for arg in a.args:
             ann = arg.annotation
             if not (isinstance(ann, ast.Name) and ann.id == "int"):
                 raise _reject(f"parameter {arg.arg!r} must be `int` in "
                               f"slice 1", fn.lineno)
+            _check_name(arg.arg, "parameter", fn.lineno, taken)
         ret = fn.returns
         if not (isinstance(ret, ast.Name) and ret.id == "int"):
             raise _reject("return type must be `int` in slice 1", fn.lineno)
-        params = tuple(a.arg for a in fn.args.args)
+        params = tuple(arg.arg for arg in a.args)
         names = set(params)
 
         binders = " ".join(f"({p} : Int)" for p in params)
