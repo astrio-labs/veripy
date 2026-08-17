@@ -362,6 +362,151 @@ def claude_engine(request: dict[str, Any]) -> str:
     return _ClaudeEngine()(request)
 
 
+# Live-probed lockdown, in order of what each layer actually stopped:
+# `--mode ask` alone still RAN `ls /` and read files outside the
+# workspace; `--sandbox enabled` stopped the shell but still read the
+# actual golden sidecar by absolute path (a demonstrated answer-key
+# retrieval); only a workspace permissions config denying every tool
+# closed the reads — after which the model still answers from the prompt
+# (probe: two DENIED file reads, then a correct arithmetic reply). All
+# three layers are kept: defense in depth, and the flags also pin the
+# posture visibly in every recorded command line.
+_CURSOR_PERMISSIONS_CONFIG = (
+    '{\n'
+    '  "permissions": {\n'
+    '    "allow": [],\n'
+    '    "deny": ["Read(**)", "Shell(**)", "Write(**)", "Grep(**)",'
+    ' "Glob(**)", "Ls(**)", "WebSearch", "WebFetch"]\n'
+    '  }\n'
+    '}\n'
+)
+
+
+def _cursor_cmd(exe: str, prompt: str, model: str | None = None) -> list[str]:
+    """Pinned cursor-agent invocation. Bare `-p` grants ALL tools
+    including shell and write (its own --help says so) — the retrieval
+    hazard the claude engine's tool denial exists to prevent. The pinned
+    posture is ask mode + sandbox + the deny-all workspace permissions
+    config `_CursorEngine` writes into its empty cwd. `--trust` is
+    required headless — without it the CLI prompts for workspace trust
+    and hangs until the wall kills it."""
+    cmd = [exe, "-p", prompt, "--mode", "ask", "--sandbox", "enabled",
+           "--output-format", "json", "--trust"]
+    if model is not None:
+        cmd += ["--model", model]
+    return cmd
+
+
+def _parse_cursor_json(stdout: str) -> tuple[str, dict[str, Any] | None]:
+    """Parse `cursor-agent -p --output-format json` output into
+    (text, usage). Tolerant like `_parse_claude_json`: format drift
+    degrades to text mode (usage None) instead of breaking runs. The reply
+    is read from the first string-valued field among result/text/response;
+    none matching falls back to raw stdout. Cursor's JSON may not name the
+    model that served the call — `usage["provenance"]` records whether
+    attribution was CLI-reported or merely engine-claimed, so the ledger
+    shows which columns carry verified ids and which do not."""
+    try:
+        obj = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return stdout, None
+    if not isinstance(obj, dict):
+        return stdout, None
+    if obj.get("is_error") or obj.get("error"):
+        detail = obj.get("error") or obj.get("result") or ""
+        raise RuntimeError(f"cursor engine error: {str(detail)[:400]}")
+    text = next((obj[key] for key in ("result", "text", "response")
+                 if isinstance(obj.get(key), str)), None)
+    if text is None:
+        return stdout, None
+    # Nested fields get type guards for the same drift-tolerance reason:
+    # a future CLI shipping `metadata` or `usage` as a non-object must
+    # degrade telemetry, not turn a usable reply into an engine error.
+    metadata = obj.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    served = obj.get("model") or metadata.get("model")
+    if not isinstance(served, str):
+        served = None
+    raw = obj.get("usage")
+    if not isinstance(raw, dict):
+        raw = {}
+    # Field names pinned from a live 2026.05.28 sample: usage keys are
+    # camelCase (inputTokens/outputTokens/cacheReadTokens), durations are
+    # top-level, and NO model field is present — the serving model is
+    # engine-claimed for every cursor call unless a future CLI adds one.
+    usage = {
+        "input_tokens": raw.get("inputTokens", raw.get("input_tokens")),
+        "output_tokens": raw.get("outputTokens", raw.get("output_tokens")),
+        "cache_read_input_tokens": raw.get("cacheReadTokens"),
+        "duration_api_ms": obj.get("duration_api_ms"),
+        "models": [served] if served else [],
+        "primary_model": served,
+        "provenance": "cli-reported" if served else "engine-claimed",
+    }
+    return text, usage
+
+
+class _CursorEngine:
+    """Headless `cursor-agent` engine (`cursor` / `cursor:<model>`) — the
+    out-of-family column. Same posture as `_ClaudeEngine`: read-only mode,
+    isolated empty working directory, wall clock, usage side channel.
+
+    Provenance is WEAKER here and deliberately so recorded: when the CLI
+    reports the serving model, a requested model must match (the same
+    refusal as the claude guard); when it reports none, the call is
+    allowed and the ledger entry carries provenance "engine-claimed" — a
+    disclosed condition of any cursor column, in contrast to the claude
+    columns' per-call verified ids."""
+
+    def __init__(self, model: str | None = None,
+                 wall_s: int = DEFAULT_ENGINE_WALL_S):
+        self.model = model
+        self.wall_s = wall_s
+        self.usage_log: list[dict[str, Any] | None] = []
+
+    def __call__(self, request: dict[str, Any]) -> str:
+        exe = shutil.which("cursor-agent")
+        if exe is None:
+            raise RuntimeError(
+                "engine 'cursor' needs the cursor-agent CLI on PATH")
+        with tempfile.TemporaryDirectory(prefix="lemmapy-engine-") as sandbox:
+            # The deny-all permissions config is the layer that actually
+            # closed out-of-workspace reads in the live probes (ask mode
+            # and --sandbox each left a retrieval path open on their own).
+            config = Path(sandbox) / ".cursor" / "cli.json"
+            config.parent.mkdir()
+            config.write_text(_CURSOR_PERMISSIONS_CONFIG)
+            proc = subprocess.run(
+                _cursor_cmd(exe, _render_prompt(request), model=self.model),
+                capture_output=True, text=True, timeout=self.wall_s,
+                cwd=sandbox,
+            )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"cursor engine failed: "
+                f"{(proc.stderr or proc.stdout)[:400]}")
+        text, usage = _parse_cursor_json(proc.stdout)
+        self._check_served_model(usage)
+        self.usage_log.append(usage)
+        return _strip_fences(text)
+
+    def _check_served_model(self, usage: dict[str, Any] | None) -> None:
+        if self.model is None:
+            return  # default model: nothing was promised
+        primary = (usage or {}).get("primary_model")
+        if not primary:
+            # Unlike the claude CLI, cursor may not attribute at all; the
+            # ledger entry says "engine-claimed" instead of refusing every
+            # call. A REPORTED mismatch below still refuses loudly.
+            return
+        if self.model.lower() not in primary.lower():
+            raise RuntimeError(
+                f"engine 'cursor:{self.model}': requested model was NOT "
+                f"served — the CLI reports {primary!r}; refusing to "
+                f"record a mislabelled results column")
+
+
 # provider -> (default base URL, API-key env var). Overridable via
 # LEMMAPY_API_BASE_<PROVIDER>. `openrouter` reaches the open models
 # (Kimi, GLM, ...) through one key.
@@ -541,11 +686,20 @@ def make_engine(spec: str, wall_s: int = DEFAULT_ENGINE_WALL_S,
                 f"engine {spec!r} does not support --engine-effort "
                 f"(a claude-CLI control)")
         return _ApiEngine(provider, model, wall_s=wall_s)
+    if spec == "cursor" or spec.startswith("cursor:"):
+        if effort is not None:
+            raise ValueError(
+                f"engine {spec!r} does not support --engine-effort "
+                f"(a claude-CLI control)")
+        model = spec[len("cursor:"):] if spec.startswith("cursor:") else None
+        if spec.startswith("cursor:") and (not model or model.startswith("-")):
+            raise ValueError(f"unknown engine {spec!r}: bad model {model!r}")
+        return _CursorEngine(model, wall_s=wall_s)
     if spec.startswith("file:"):
         return _FileEngine(Path(spec[5:]))
     raise ValueError(f"unknown engine {spec!r} (use 'claude', "
-                     f"'claude:<model>', 'api:<provider>/<model>', or "
-                     f"'file:<dir>')")
+                     f"'claude:<model>', 'cursor', 'cursor:<model>', "
+                     f"'api:<provider>/<model>', or 'file:<dir>')")
 
 
 def _acquire_apply_lock(lock: Path):
