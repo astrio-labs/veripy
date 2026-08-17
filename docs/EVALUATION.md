@@ -340,13 +340,31 @@ golden — and so do the final sidecars of the 3 cells that did not restore,
 so no cell in the matrix reproduced the answer key, whether it succeeded
 or not. (The stronger of the two statements is the one about failures: an
 engine that had found the golden would have restored.)
-The `modp` pair archived here is the sharpest illustration of how far
-apart two runs of the same task can land: trial 1 produced a four-lemma
-proof routed through `PyModStep`/`PyModAddMul`
-([artifact](exam-artifacts/modp-engine-pack-2026-08d.dfy)), while trial 3
-rebuilt the result from first principles — distributivity, associativity,
-monotonicity, `ModUnique` — in twelve lemmas before reaching the same
-`ModMulLeft`
+
+**A restored proof does not necessarily transport.** Trial 1's `modp`
+pack — the four-lemma one, the most interesting object this run produced —
+verifies in **~3.5 s on macOS/arm64** (stable across four consecutive
+runs) and **times out at 60 s on the Linux/x86 CI runner**, with the same
+Dafny 4.11.0 on both sides. Z3 takes a different search path on the same
+nonlinear goal on a different platform build, and a 13× gap is not a
+slower machine. The pack is therefore NOT archived: the archive's
+`-engine-pack-` bucket asserts "this verifies", CI cannot confirm that
+claim, and a reader on Linux could not either.
+
+This is a limitation of the restoration metric itself, not of one pack.
+"Restored" in every run reported here means *restored on the measurement
+machine*, and at least one success in this matrix does not survive a
+change of platform. Nothing in the harness currently detects that — the
+exam verifies once, where it runs. A portability rung (verify each
+restored pack on a second platform before crediting it) is the obvious
+follow-up, and until it exists the rates above should be read as
+machine-relative.
+`modp` is the sharpest illustration of how far apart two runs of the same
+task can land: trial 1 produced a four-lemma proof routed through
+`PyModStep`/`PyModAddMul` (not archived — see the portability note below),
+while trial 3 rebuilt the result from first principles — distributivity,
+associativity, monotonicity, `ModUnique` — in twelve lemmas before
+reaching the same `ModMulLeft`
 ([artifact](exam-artifacts/modp-engine-pack-2026-08e.dfy)). `gcd` again
 produced a pack smaller than the human one (five lemmas against the golden
 eight, [artifact](exam-artifacts/gcd-engine-pack-2026-08c.dfy)), and
