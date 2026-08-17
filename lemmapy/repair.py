@@ -419,8 +419,18 @@ def _parse_cursor_json(stdout: str) -> tuple[str, dict[str, Any] | None]:
                  if isinstance(obj.get(key), str)), None)
     if text is None:
         return stdout, None
-    served = obj.get("model") or (obj.get("metadata") or {}).get("model")
-    raw = obj.get("usage") or {}
+    # Nested fields get type guards for the same drift-tolerance reason:
+    # a future CLI shipping `metadata` or `usage` as a non-object must
+    # degrade telemetry, not turn a usable reply into an engine error.
+    metadata = obj.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    served = obj.get("model") or metadata.get("model")
+    if not isinstance(served, str):
+        served = None
+    raw = obj.get("usage")
+    if not isinstance(raw, dict):
+        raw = {}
     # Field names pinned from a live 2026.05.28 sample: usage keys are
     # camelCase (inputTokens/outputTokens/cacheReadTokens), durations are
     # top-level, and NO model field is present — the serving model is

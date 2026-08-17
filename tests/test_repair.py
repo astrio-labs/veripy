@@ -400,6 +400,22 @@ def test_cursor_engine_missing_provenance_is_marked_not_refused(monkeypatch):
     assert engine.usage_log[-1]["primary_model"] is None
 
 
+def test_cursor_parse_survives_non_object_nested_fields():
+    # The drift-tolerant contract covers NESTED shapes too: a future CLI
+    # shipping `usage` or `metadata` as a non-object must degrade
+    # telemetry, not turn a usable reply into an engine error.
+    from lemmapy.repair import _parse_cursor_json
+
+    text, usage = _parse_cursor_json(
+        '{"result": "lemma L()\\n{\\n}\\n",'
+        ' "usage": "not-an-object", "metadata": ["not", "an", "object"],'
+        ' "model": {"also": "not a string"}}')
+    assert text == "lemma L()\n{\n}\n"
+    assert usage["input_tokens"] is None
+    assert usage["primary_model"] is None
+    assert usage["provenance"] == "engine-claimed"
+
+
 def test_cursor_engine_refuses_reported_substitution(monkeypatch):
     # A REPORTED mismatch still refuses loudly — same failure mode the
     # claude guard exists for (silent substitution mislabels a column).
