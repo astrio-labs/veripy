@@ -422,6 +422,51 @@ def test_extract_fenced_pulls_answer_out_of_chatter():
     assert _extract_fenced(fenced) == _strip_fences(fenced)
 
 
+def test_extract_fenced_cuts_unfenced_prose_at_declaration():
+    # The measured grok shape: narration runs a sentence STRAIGHT into the
+    # code with no fence, and prose words ("the new proof file", "allowed
+    # ghost lemmas") trip the whitelist ('new'). The cut must start at the
+    # real declaration, not at a keyword mentioned in prose.
+    from lemmapy.repair import _extract_fenced
+
+    reply = ("I'll inspect the workspace so the new proof file only uses "
+             "allowed ghost lemmas.I'll match what the encoder "
+             "expects.lemma PyModId(a: int, b: int)\n"
+             "  requires b != 0\n{\n}\n")
+    out = _extract_fenced(reply)
+    assert out.startswith("lemma PyModId(a: int, b: int)")
+    assert "new" not in out          # prose (and its 'new') is gone
+    assert "ghost lemmas" not in out  # the earlier keyword mention didn't anchor
+    # ghost/opaque-qualified declarations still anchor correctly.
+    q = "Here is the pack.ghost predicate P(x: int) { x > 0 }"
+    assert _extract_fenced(q).startswith("ghost predicate P(x: int)")
+
+
+def test_extract_annotated_source_cuts_prose_before_python():
+    # The spec-writing exam's answer is #@-annotated PYTHON; grok's prose
+    # ran straight into the docstring ("...invariants.\"\"\"HumanEval/40"),
+    # survived the sidecar-shaped extractor (no Dafny keyword), and failed
+    # ast.parse — 113 syntax retries in the first jailed spec column.
+    import ast
+
+    from lemmapy.repair import _extract_annotated_source
+
+    reply = ('I\'ll pull the prior HumanEval/40 annotations so this spec '
+             'matches."""HumanEval/40 — triple summing to zero."""\n'
+             '#@ ensures result == True\n'
+             'def f(l: list[int]) -> bool:\n    return True\n')
+    out = _extract_annotated_source(reply)
+    assert out.startswith('"""HumanEval/40')
+    ast.parse(out)                    # parses as Python now
+    assert not out.lstrip().startswith("I'll")
+    # A reply that starts directly at a spec comment anchors there.
+    direct = "Here is the spec.#@ requires x > 0\ndef g(x: int): pass\n"
+    assert _extract_annotated_source(direct).startswith("#@ requires x > 0")
+    # Fenced python is taken as-is.
+    fenced = "```python\n#@ ensures True\ndef h(): pass\n```"
+    assert _extract_annotated_source(fenced).startswith("#@ ensures True")
+
+
 def test_cursor_jail_wraps_only_when_env_set(monkeypatch):
     # The measured retrieval hazard: cursor's search tool reads the answer
     # keys off disk despite ask mode + sandbox + deny-all config. The

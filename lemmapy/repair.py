@@ -385,21 +385,66 @@ _CURSOR_PERMISSIONS_CONFIG = (
 
 _FENCED_BLOCK_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 
+# A ghost-sidecar body starts at a top-level declaration keyword. Anchor
+# the cut at the first such keyword that begins the string, follows a
+# newline, or follows a sentence terminator — cursor's narration runs a
+# sentence straight into the code ("...matches what the encoder
+# expects.lemma PyModId(") — and require a following identifier, so prose
+# that merely mentions a keyword ("uses allowed ghost lemmas") does not
+# match.
+_SIDECAR_DECL_RE = re.compile(
+    r"(?:\A|\n|[.:!?])[ \t]*"
+    r"((?:opaque\s+|ghost\s+)?"
+    r"(?:least\s+|greatest\s+)?"
+    r"(?:lemma|function|predicate)\s+[A-Za-z_]\w*)")
+
 
 def _extract_fenced(text: str) -> str:
     """Chatter-tolerant reply extraction for engines that wrap the answer
     in prose. The claude engines return bare payloads (at most one leading
     fence) and keep `_strip_fences`; cursor's ask-mode replies open with
-    conversational text, which survives fence-stripping, lands in the
+    conversational narration, which survives fence-stripping, lands in the
     sidecar, and fails conformance — measured: the first grok column
-    scored 0/36 with 126/126 attempts at encode-error and the rejection
-    message naming top-level "I'll" as a non-declaration. A false zero,
-    not a capability result. When fenced blocks exist the answer is their
-    contents, all of them in order (engines sometimes split a sidecar
-    across blocks); with no fences the reply passes through unchanged."""
+    scored 0/36 with 126/126 attempts at encode-error, the whitelist
+    rejecting a top-level "I'll" (and "new" from "the new proof file") as
+    non-declarations. A false zero, not a capability result.
+
+    Three tiers, most-structured first: (1) fenced blocks, concatenated in
+    order (some engines split a sidecar across blocks); (2) no fence but
+    prose-then-code — cut at the first top-level ghost declaration
+    (cursor/grok emit unfenced Dafny after narrating); (3) neither —
+    unchanged, matching the pinned claude behavior exactly."""
     blocks = _FENCED_BLOCK_RE.findall(text)
     if blocks:
         return "\n".join(b.rstrip() for b in blocks).rstrip() + "\n"
+    decl = _SIDECAR_DECL_RE.search(text)
+    if decl:
+        return text[decl.start(1):].rstrip() + "\n"
+    return _strip_fences(text)
+
+
+# The spec-writing exam's answer is #@-annotated PYTHON, not a Dafny
+# sidecar, so its prose boundary is a Python-source construct: a
+# docstring, a spec comment, or a top-level statement keyword. Same
+# anchoring as the sidecar cut (start / newline / sentence terminator),
+# since cursor runs narration straight into the source
+# ("...nested-loop invariants.\"\"\"HumanEval/40 ...").
+_PY_SOURCE_RE = re.compile(
+    r'(?:\A|\n|[.:!?])[ \t]*'
+    r'("""|\'\'\'|\#@|def\s|async\s+def\s|class\s|from\s|import\s|@\w)')
+
+
+def _extract_annotated_source(text: str) -> str:
+    """Chatter-tolerant extraction for the spec-writing exam (see
+    `_extract_fenced` for the repair-sidecar sibling and the measured
+    grok false zero). Fenced blocks first; else cut leading narration at
+    the first Python-source boundary; else the pinned fence-strip."""
+    blocks = _FENCED_BLOCK_RE.findall(text)
+    if blocks:
+        return "\n".join(b.rstrip() for b in blocks).rstrip() + "\n"
+    src = _PY_SOURCE_RE.search(text)
+    if src:
+        return text[src.start(1):].lstrip("\n").rstrip() + "\n"
     return _strip_fences(text)
 
 

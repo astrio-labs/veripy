@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..frontend.extract import parse_source
-from ..repair import Engine, _strip_fences
+from ..repair import Engine, _extract_annotated_source
 from .exam import prepare_exam_workspace
 from .runner import TaskScore, run_task
 
@@ -608,7 +608,7 @@ def run_spec_exam(tasks_root: Path, workdir: Path,
             request = build_spec_request(stripped, task_id, attempt, errors,
                                          history)
             try:
-                proposal = _strip_fences(engine(request))
+                proposal = _extract_annotated_source(engine(request))
             except Exception as exc:
                 errors = [{"kind": "engine", "line": None,
                            "message": f"engine error: {exc}"}]
