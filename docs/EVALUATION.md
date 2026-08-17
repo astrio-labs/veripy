@@ -335,7 +335,11 @@ opposite of a proof failure's ("fix the declaration against the preamble
 signatures"). That is a plausible, testable cause for at least part of the
 instability, and it is a harness-side lever rather than a model-side one.
 
-**No pack was retrieved.** All 21 restored packs differ from their golden.
+**No pack was retrieved.** All **18** restored packs differ from their
+golden — and so do the final sidecars of the 3 cells that did not restore,
+so no cell in the matrix reproduced the answer key, whether it succeeded
+or not. (The stronger of the two statements is the one about failures: an
+engine that had found the golden would have restored.)
 The `modp` pair archived here is the sharpest illustration of how far
 apart two runs of the same task can land: trial 1 produced a four-lemma
 proof routed through `PyModStep`/`PyModAddMul`
