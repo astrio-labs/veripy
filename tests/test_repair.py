@@ -400,6 +400,47 @@ def test_cursor_engine_missing_provenance_is_marked_not_refused(monkeypatch):
     assert engine.usage_log[-1]["primary_model"] is None
 
 
+def test_extract_fenced_pulls_answer_out_of_chatter():
+    # Measured false zero: cursor ask-mode replies open with prose
+    # ("I'll restore the proof..."), which survived _strip_fences, landed
+    # in the sidecar, and failed conformance on all 126 attempts of the
+    # first grok column. The extractor must recover the fenced answer.
+    from lemmapy.repair import _extract_fenced, _strip_fences
+
+    chatty = ("I'll restore the proof pack now.\n\n"
+              "```dafny\nlemma L()\n{\n}\n```\n\n"
+              "Let me know if you need anything else!")
+    assert _extract_fenced(chatty) == "lemma L()\n{\n}\n"
+    # Multiple blocks concatenate in order (split sidecars).
+    two = "First:\n```dafny\nlemma A()\n{\n}\n```\nthen\n```\nlemma B()\n{\n}\n```"
+    assert _extract_fenced(two) == "lemma A()\n{\n}\nlemma B()\n{\n}\n"
+    # No fences: identical to the pinned claude behavior.
+    bare = "lemma L()\n{\n}\n"
+    assert _extract_fenced(bare) == _strip_fences(bare) == bare
+    # A reply that IS one fenced block: same answer as before the fix.
+    fenced = "```dafny\nlemma L()\n{\n}\n```"
+    assert _extract_fenced(fenced) == _strip_fences(fenced)
+
+
+def test_cursor_jail_wraps_only_when_env_set(monkeypatch):
+    # The measured retrieval hazard: cursor's search tool reads the answer
+    # keys off disk despite ask mode + sandbox + deny-all config. The
+    # sandbox-exec wrapper is the OS-level control; it must engage exactly
+    # when the profile env var is set, binding the workspace, and be
+    # absent otherwise (so the committed engine stays machine-agnostic).
+    from lemmapy.repair import _cursor_cmd, _wrap_cursor_jail
+
+    base = _cursor_cmd("/fake/cursor-agent", "p", model="m")
+    monkeypatch.delenv("LEMMAPY_CURSOR_JAIL", raising=False)
+    assert _wrap_cursor_jail(base, "/ws") is base  # unjailed passthrough
+
+    monkeypatch.setenv("LEMMAPY_CURSOR_JAIL", "/path/to/jail.sb")
+    wrapped = _wrap_cursor_jail(base, "/ws")
+    assert wrapped[:5] == ["sandbox-exec", "-f", "/path/to/jail.sb",
+                           "-D", "WORKSPACE=/ws"]
+    assert wrapped[5:] == base  # original command preserved after the wrap
+
+
 def test_cursor_parse_survives_non_object_nested_fields():
     # The drift-tolerant contract covers NESTED shapes too: a future CLI
     # shipping `usage` or `metadata` as a non-object must degrade

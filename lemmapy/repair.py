@@ -20,6 +20,7 @@ written (with a `.bak` of any previous content) on success with
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -382,6 +383,26 @@ _CURSOR_PERMISSIONS_CONFIG = (
 )
 
 
+_FENCED_BLOCK_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+
+
+def _extract_fenced(text: str) -> str:
+    """Chatter-tolerant reply extraction for engines that wrap the answer
+    in prose. The claude engines return bare payloads (at most one leading
+    fence) and keep `_strip_fences`; cursor's ask-mode replies open with
+    conversational text, which survives fence-stripping, lands in the
+    sidecar, and fails conformance — measured: the first grok column
+    scored 0/36 with 126/126 attempts at encode-error and the rejection
+    message naming top-level "I'll" as a non-declaration. A false zero,
+    not a capability result. When fenced blocks exist the answer is their
+    contents, all of them in order (engines sometimes split a sidecar
+    across blocks); with no fences the reply passes through unchanged."""
+    blocks = _FENCED_BLOCK_RE.findall(text)
+    if blocks:
+        return "\n".join(b.rstrip() for b in blocks).rstrip() + "\n"
+    return _strip_fences(text)
+
+
 def _cursor_cmd(exe: str, prompt: str, model: str | None = None) -> list[str]:
     """Pinned cursor-agent invocation. Bare `-p` grants ALL tools
     including shell and write (its own --help says so) — the retrieval
@@ -395,6 +416,24 @@ def _cursor_cmd(exe: str, prompt: str, model: str | None = None) -> list[str]:
     if model is not None:
         cmd += ["--model", model]
     return cmd
+
+
+# Cursor's ask mode + --sandbox + deny-all config still left its
+# machine-wide search tool open (measured: it grep'd the filesystem and
+# emitted a golden sidecar verbatim). An OS-level read deny is the only
+# control that holds. When this env var points at a sandbox-exec profile,
+# every cursor call is wrapped in it, with WORKSPACE bound to the per-call
+# empty cwd; the profile denies reads on the answer-key trees. Unset =
+# unjailed (the retrieval hazard stands — do not use for measurement).
+_CURSOR_JAIL_ENV = "LEMMAPY_CURSOR_JAIL"
+
+
+def _wrap_cursor_jail(cmd: list[str], workspace: str) -> list[str]:
+    profile = os.environ.get(_CURSOR_JAIL_ENV)
+    if not profile:
+        return cmd
+    return ["sandbox-exec", "-f", profile, "-D", f"WORKSPACE={workspace}",
+            *cmd]
 
 
 def _parse_cursor_json(stdout: str) -> tuple[str, dict[str, Any] | None]:
@@ -478,7 +517,10 @@ class _CursorEngine:
             config.parent.mkdir()
             config.write_text(_CURSOR_PERMISSIONS_CONFIG)
             proc = subprocess.run(
-                _cursor_cmd(exe, _render_prompt(request), model=self.model),
+                _wrap_cursor_jail(
+                    _cursor_cmd(exe, _render_prompt(request),
+                                model=self.model),
+                    workspace=sandbox),
                 capture_output=True, text=True, timeout=self.wall_s,
                 cwd=sandbox,
             )
@@ -489,7 +531,7 @@ class _CursorEngine:
         text, usage = _parse_cursor_json(proc.stdout)
         self._check_served_model(usage)
         self.usage_log.append(usage)
-        return _strip_fences(text)
+        return _extract_fenced(text)
 
     def _check_served_model(self, usage: dict[str, Any] | None) -> None:
         if self.model is None:
