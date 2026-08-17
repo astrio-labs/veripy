@@ -83,14 +83,17 @@ class _AblatedEngine:
 
 
 def _arm_config(spec: str, arm: str, max_iterations: int,
-                effort: str | None = None):
+                effort: str | None = None, wall_s: int | None = None):
     """(engine_factory, max_iterations) for one arm of one engine."""
+    kw: dict = {"effort": effort}
+    if wall_s is not None:
+        kw["wall_s"] = wall_s
     if arm == "full":
-        return (lambda: make_engine(spec, effort=effort)), max_iterations
+        return (lambda: make_engine(spec, **kw)), max_iterations
     if arm == "one-shot":
-        return (lambda: make_engine(spec, effort=effort)), 1
+        return (lambda: make_engine(spec, **kw)), 1
     if arm == "ablated":
-        return (lambda: _AblatedEngine(make_engine(spec, effort=effort))), \
+        return (lambda: _AblatedEngine(make_engine(spec, **kw))), \
             max_iterations
     raise ValueError(f"unknown arm {arm!r} (use one of {', '.join(ARMS)})")
 
@@ -232,6 +235,7 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
                    resume: bool = True, exam: str = "proof-repair",
                    retries: int = 2, ladder: dict[str, Any] | None = None,
                    engine_effort: str | None = None,
+                   engine_wall: int | None = None,
                    progress=None) -> list[dict[str, Any]]:
     """Run an exam over the full matrix, appending one row per
     (task, engine, arm, trial) to the ledger. Returns the rows written by
@@ -239,8 +243,12 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
     # Fail fast on config errors before any engine spends tokens.
     if exam not in EXAMS:
         raise ValueError(f"unknown exam {exam!r} (use one of {', '.join(EXAMS)})")
+    # The wall is part of the INVOCATION, not a tuning knob: exceeding it
+    # yields an UNMEASURED task rather than a failed one (Run 3's harness
+    # failure), so two runs that differ in it are not comparable rows.
     for spec in engines:
-        make_engine(spec, effort=engine_effort)
+        make_engine(spec, effort=engine_effort,
+                    **({"wall_s": engine_wall} if engine_wall is not None else {}))
     allowed = ARMS if exam == "proof-repair" else SPEC_ARMS
     for arm in arms:
         if arm not in allowed:
@@ -279,7 +287,8 @@ def run_experiment(tasks_root: Path, workdir: Path, engines: list[str],
     for spec in engines:
         for arm in arms:
             factory, arm_iters = _arm_config(spec, arm, max_iterations,
-                                             effort=engine_effort)
+                                             effort=engine_effort,
+                                             wall_s=engine_wall)
             for trial in range(trials):
                 pending = {t for t in roster
                            if (exam, t, spec, arm, trial) not in done}

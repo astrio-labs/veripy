@@ -893,6 +893,12 @@ def main(argv: list[str] | None = None) -> int:
                               help="JSONL ledger path (default: <outdir>/ledger.jsonl)")
     p_experiment.add_argument("--max-iterations", type=int, default=4)
     p_experiment.add_argument("--time-limit", type=int, default=60)
+    p_experiment.add_argument("--engine-wall", type=_engine_wall, default=None,
+                              help="wall-clock seconds per ENGINE call before "
+                                   "the harness gives up on it (default 600). "
+                                   "Part of the invocation, not a tuning knob: "
+                                   "exceeding it yields an UNMEASURED task, so "
+                                   "runs differing in it are not comparable")
     p_experiment.add_argument("--task", action="append", default=None,
                               dest="only_tasks", metavar="TASK",
                               help="restrict to this task (repeatable)")
@@ -1105,6 +1111,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.tasks, args.outdir / "cells", args.engines, arms,
                 args.trials, ledger, max_iterations=args.max_iterations,
                 time_limit=args.time_limit,
+                engine_wall=args.engine_wall,
                 only_tasks=set(args.only_tasks) if args.only_tasks else None,
                 resume=not args.no_resume, exam=args.exam,
                 retries=args.retries, engine_effort=_effort(args),

@@ -595,3 +595,41 @@ def test_ledger_still_pools_when_every_row_is_comparable(tmp_path):
     assert "spec strength: engine 25% vs golden 100%" in table
     assert "not a whole-matrix rate" not in table
     assert "25%!" not in table
+
+
+def test_engine_wall_reaches_every_arm_factory(monkeypatch):
+    # Run 3's harness failure WAS the default wall; a matrix silently run at
+    # 600s is not a repeat of a 1800s run, it is a different experiment. The
+    # wall must reach the engine every arm constructs.
+    import lemmapy.benchmark.experiment as exp_mod
+    from lemmapy.benchmark.experiment import _arm_config
+
+    seen = []
+
+    def fake_make_engine(spec, effort=None, wall_s=None):
+        seen.append(wall_s)
+
+        class E:
+            usage_log = []
+        return E()
+
+    monkeypatch.setattr(exp_mod, "make_engine", fake_make_engine)
+    for arm in ("full", "one-shot", "ablated"):
+        factory, _ = _arm_config("file:/tmp/x", arm, 4, wall_s=1800)
+        factory()
+    assert seen == [1800, 1800, 1800]
+    # Omitted -> the engine's own default, not an accidental None override.
+    seen.clear()
+    factory, _ = _arm_config("file:/tmp/x", "full", 4)
+    factory()
+    assert seen == [None]
+
+
+def test_cli_experiment_rejects_a_non_positive_engine_wall(tmp_path, capsys):
+    from lemmapy.cli import main
+
+    import pytest as _pytest
+    with _pytest.raises(SystemExit) as exc:
+        main(["experiment", "--tasks", str(tmp_path), "--engine-wall", "-5"])
+    assert exc.value.code == 2
+    assert "positive" in capsys.readouterr().err
