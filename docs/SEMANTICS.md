@@ -1,6 +1,6 @@
 # Fragment Semantics — big-step rules and the simulation statement
 
-> **Status: v1 fragment, preamble 0.4.** This is the paper-style companion to
+> **Status: v1 fragment, preamble 0.6.** This is the paper-style companion to
 > the lowering catalog ([ARCHITECTURE.md §7](ARCHITECTURE.md)): a big-step
 > operational semantics for the verified fragment and the statement of the
 > simulation claim the encoder is built to preserve. It is **not mechanized**;

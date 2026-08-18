@@ -1,11 +1,11 @@
-"""Read-only fragment conformance survey (M0 prototype).
+"""Read-only fragment conformance survey (telemetry, not the gate).
 
-This is NOT the M1 conformance checker. It runs without type information
-(basedpyright integration pending) and approximates the allowlist rules of
-ARCHITECTURE.md §3.1 at the AST level. Its M0 job is telemetry (RQ1 in
-EVALUATION.md): what fraction of real typed functions falls inside the
-candidate fragment, and which rules fire most — the fire counts rank what
-v1.5 should admit next.
+This is NOT the conformance checker. `lemmapy check` dry-runs the encoder,
+then the basedpyright type gate. This module runs without type information
+and approximates the allowlist rules of ARCHITECTURE.md §3.1 at the AST
+level. Its job is telemetry (RQ1 in EVALUATION.md): what fraction of real
+typed functions falls inside the candidate fragment, and which rules fire
+most — the fire counts rank what v1.5 should admit next.
 
 Fire unit: one fire per construct occurrence (per decorator, per call, per
 literal), so rule counts are comparable across rules. Star imports and
@@ -15,7 +15,8 @@ attributed to functions.
 Known approximations, deliberate for M0:
 - No type info: method calls are judged optimistically by *name* against the
   modeled container/str method surface; heterogeneous `==`, `Any` leaks, and
-  subclass tricks are invisible until basedpyright integration.
+  subclass tricks are invisible. The type gate is a separate pass; this
+  survey does not use it.
 - Functions are the unit of measurement; module-level statements are not
   scored (module-level escape hatches surface as file-level fires only).
 - A nested function is scored twice: once as an exclusion fire on its parent

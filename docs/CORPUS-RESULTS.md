@@ -5,7 +5,7 @@
 ## Method
 
 - Tool: `lemmapy survey` (AST-level rule pass, ~30 rules approximating the [ARCHITECTURE.md §3.1](ARCHITECTURE.md) checklist; see `lemmapy/frontend/conformance.py`).
-- **No type information yet** (basedpyright integration pending): method calls are judged *optimistically by name* against the planned Tier 2 container/str surface; `Any` leaks, heterogeneous `==`, and subclass tricks are invisible.
+- **No type information in the survey** (the basedpyright *type gate* is live for `lemmapy check` / `verify`; this survey pass does not use it): method calls are judged *optimistically by name* against the planned Tier 2 container/str surface; `Any` leaks, heterogeneous `==`, and subclass tricks are invisible. Survey acceptance is not encoder acceptance.
 - Unit of measurement: the function (including methods). A function is *accepted* iff zero rules fire. Nested functions are scored independently and also fire `X-NESTED` on their parent.
 - Package source directories only (no test suites). Corpus pinned by commit; survey at LemmaPy `c9ca858`+survey branch.
 
@@ -46,7 +46,7 @@ Top rules by fire count, pooled (full per-repo JSON in `build/survey-*.json`, re
 | `X-CLASS-INHERIT` | methods of inheriting classes | Inheritance exclusion (v2 traits); dominant in rich |
 | `T-FSTRING` | f-strings | Top *admittable* candidate — pure string interpolation is curated-model territory |
 | `U-CALL` | calls to unmodeled names | Tier 3 extern-contract demand signal |
-| `X-YIELD` / `X-RAISE` / `X-DECOR` | generators, raise, decorators | Matches the predicted v1.5 admission order in the roadmap |
+| `X-YIELD` / `X-RAISE` / `X-DECOR` | generators, raise, decorators | Matches the predicted v1.5 admission order in [ARCHITECTURE.md §7](ARCHITECTURE.md) |
 | `F-DUNDER-ATTR` | `__dict__`/`__class__` access | attrs' metaprogramming core — correctly outside any shallow fragment |
 
 ## Interpretation (initial, one run)
@@ -58,6 +58,6 @@ Top rules by fire count, pooled (full per-repo JSON in `build/survey-*.json`, re
 
 ## Next
 
-- basedpyright integration (types make `U-*` rules honest; adds `Any`-leak detection)
-- Survey a stratified sample of strict-mode-clean packages beyond these three
-- Wire rule-fire telemetry into the v1.5 admission decision in the roadmap
+- Wire the type gate into `lemmapy survey` so `U-*` rules are honest and `Any` leaks are visible
+- Survey a stratified sample of strict-mode-clean packages beyond these nine
+- Wire rule-fire telemetry into the v1.5 admission decision

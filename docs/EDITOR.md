@@ -53,7 +53,7 @@ Runs the real prover over the current buffer.
 {"textDocument": {"uri": "file:///m.py"}, "timeLimit": 20}
 // <- result
 {"status": "failed",                    // the structured payload's status
- "toolchain": {"preamble_version": "0.5", "dafny_version": "4.11.0",
+ "toolchain": {"preamble_version": "0.6", "dafny_version": "4.11.0",
                "taxonomy_version": 1},
  "functions": [{"name": "bump", "proof": "failed"}],
  "diagnostics": [ /* LSP diagnostics, also republished */ ],

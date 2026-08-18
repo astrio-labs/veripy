@@ -1,4 +1,4 @@
-"""LemmaPy CLI (M0): `lemmapy check`, `lemmapy emit`, and `lemmapy survey`."""
+"""LemmaPy CLI: check, emit, hunt, verify, guard, repair, benchmark, lsp."""
 
 from __future__ import annotations
 
@@ -736,7 +736,7 @@ def cmd_repair(path: Path, outdir: Path, engine_spec: str, max_iterations: int,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lemmapy",
-        description="Verify annotated production Python (#@ specs). "
+        description="Verify a typed Python fragment (#@ specs). "
                     "M0: runtime contracts + CrossHair counterexamples.",
     )
     sub = parser.add_subparsers(dest="command", required=True)

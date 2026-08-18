@@ -1,4 +1,7 @@
-"""M1 slice-1 encoder: the clean-bucket fragment -> Dafny method stubs.
+"""Clean-bucket fragment -> Dafny method stubs (the conformance authority).
+
+`lemmapy check` dry-runs this encoder; a construct with no lowering is a
+hard error, not a warning. There is no fragment IR — output is Dafny.
 
 Scope (deliberately small; everything else is a detected, explained
 rejection):
@@ -47,10 +50,10 @@ Semantics note baked in here: `#@ invariant` has Dafny loop-head semantics
 guard is false). The range-for lowering auto-supplies the index bounds
 invariant; range() bounds are hoisted because Python evaluates them once.
 
-Output is a single self-contained .dfy stub (preamble inlined). The
-additions-only proof discipline is enforced diff-wise, LemmaScript-benchmark
-style; the two-file stub/proof split from ARCHITECTURE arrives when the
-proof loop does.
+Output is a single self-contained .dfy stub (preamble inlined). Proof
+additions live in a sibling `<stem>.proofs.dfy` sidecar, whitelist-
+validated and concatenated after the STUB END marker. The repair loop
+may edit the sidecar only.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 # Evaluation
 
-> **Status: partial draft.** The proof-completion benchmark family (this document's core) is designed; the fragment-coverage corpus selection, success thresholds, and guard-overhead methodology are sketched but **not yet decided** — marked *open* below. Companion to the roadmap (which milestone produces what) and [ARCHITECTURE.md](ARCHITECTURE.md) (what the measurements are claims about).
+> **Status: partial draft, with measured RQ1 / RQ2 / RQ4.** Guard-overhead methodology (RQ3), a held-out private repair set, and the ablation arms of the experiment harness are still open. A second backend is a design commitment; there is no fragment IR yet, so rungs R3–R5 are Dafny-only. Companion to [ARCHITECTURE.md](ARCHITECTURE.md) (what the measurements are claims about) and [BENCHMARK.md](BENCHMARK.md) (the corpus and ladder).
 
 ## Research questions
 
@@ -54,11 +54,11 @@ full height with zero human edits), iterations and tokens per task.
 
 ## End-to-end verification benchmark (RQ2)
 
-The source side of the corpus from step 1 above: annotated Python in, verification report out, per-task. M1's exit criterion is this suite verifying end-to-end (with reference proof files where automation alone is insufficient). Metrics: fraction verified; annotation overhead (spec lines per code line); wall-clock per function. *(Open: pass threshold for M1 exit.)*
+The source side of the corpus from step 1 above: annotated Python in, verification report out, per-task. **Measured:** 16/16 golden tasks at full ladder height ([BENCHMARK.md](BENCHMARK.md)). Remaining open: annotation-overhead and wall-clock reporting as first-class metrics, and a pass threshold for *growing* the corpus rather than for M1 exit (that exit has been taken).
 
 ## Fragment coverage (RQ1)
 
-Run the conformance rules read-only over typed OSS repos; report the fraction of functions/LOC accepted and rule-fire frequencies (which drive v1.5 admission priorities, per the roadmap). Candidate corpora: `black`, `attrs`, `mypy`, `rich`, plus a stratified sample of strict-mode-clean packages. *(Open: final repo list, selection criteria, and what coverage number constitutes "enough" for the greenfield thesis — note the thesis frames the fragment as a generation target, so brownfield coverage is context, not a gate.)*
+Run the conformance rules read-only over typed OSS repos; report the fraction of functions/LOC accepted and rule-fire frequencies (which drive v1.5 admission priorities). **Measured:** nine typed OSS repos plus HumanEval/MBPP ([CORPUS-RESULTS.md](CORPUS-RESULTS.md)). The survey is still untyped, so `U-*` rates are optimistic. Remaining open: wiring the type gate into the survey, a stratified sample of strict-mode-clean packages, and what coverage number constitutes "enough" for the greenfield thesis — the thesis frames the fragment as a generation target, so brownfield coverage is context, not a gate.
 
 ## Guard overhead (RQ3)
 
