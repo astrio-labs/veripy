@@ -1,4 +1,9 @@
-"""Binary search over a sorted list — the README example."""
+"""Binary search over a sorted list — spec-surface / hunt example.
+
+Runtime contracts pass (`lemmapy emit` / hunt). `lemmapy verify` currently
+fails to maintain the two search invariants; it is not in the golden
+corpus. For an end-to-end proof with no sidecar, see `examples/isqrt.py`.
+"""
 
 
 #@ verified

@@ -1,4 +1,4 @@
-"""LemmaPy: verify annotated production Python.
+"""LemmaPy: verify a typed Python fragment.
 
 **The embedding surface is `lemmapy.api`** — one import path, deliberately:
 

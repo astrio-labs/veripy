@@ -10,7 +10,7 @@ name = "lemmapy"
 # installable by a plain `pip install lemmapy` — the alpha marker manages
 # expectations; it does not gate installation.
 version = "0.1.0a1"
-description = "Verify annotated production Python: #@ specs compile to runtime contracts and translate to Dafny for SMT proofs."
+description = "Verify a typed Python fragment: #@ specs compile to runtime contracts and translate to Dafny for SMT proofs."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

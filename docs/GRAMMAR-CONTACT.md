@@ -30,7 +30,7 @@
 
 ## Grammar verdict
 
-**Frozen as v0.1** = v0 + `<==>`. Nothing in twenty real tasks required a redesign: every value-level functional contract was expressible (two optimality contracts hit the documented executable-fragment boundary, not a grammar defect), quantifiers with dependent domains (`j in range(i+1, len(l))`) compose correctly, and the desugaring survived adversarial use. The deferred list (ghosts, `#@ define`, `old()` in invariants, unbounded quantifiers) is v1 spec-language work, tracked here and in the roadmap.
+**Frozen as v0.1** = v0 + `<==>`. Nothing in twenty real tasks required a redesign: every value-level functional contract was expressible (two optimality contracts hit the documented executable-fragment boundary, not a grammar defect), quantifiers with dependent domains (`j in range(i+1, len(l))`) compose correctly, and the desugaring survived adversarial use. The deferred list (ghosts, `#@ define`, `old()` in invariants, unbounded quantifiers) is v1 spec-language work, tracked here and in [SPEC-GRAMMAR.md](SPEC-GRAMMAR.md).
 
 ## M0 exit assessment
 

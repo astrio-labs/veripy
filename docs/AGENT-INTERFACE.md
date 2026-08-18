@@ -62,7 +62,7 @@ tool or input error.
   "schema": "lemmapy-failures/1",
   "file": "module.py",
   "toolchain": {
-    "preamble_version": "0.5",
+    "preamble_version": "0.6",
     "dafny_version": "4.11.0",
     "taxonomy_version": 1
   },

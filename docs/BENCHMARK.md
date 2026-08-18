@@ -1,6 +1,6 @@
 # lemmapy-benchmark
 
-> **Status: v0 — runner and 14-task seed corpus shipped.** `lemmapy benchmark`
+> **Status: v0 — runner and 16-task golden corpus shipped.** `lemmapy benchmark`
 > runs it; the scorecard below regenerates with `--report`.
 
 ## Why not a skeleton-completion benchmark
@@ -211,7 +211,7 @@ benchmark/tasks/<id>/
                     #   equivalent_mutants[], timeout_kills[]
 ```
 
-Seed corpus: 14 tasks (11 adapted from HumanEval, MIT; 3 project-original),
+Seed corpus: 16 tasks (12 adapted from HumanEval, MIT; 4 project-original),
 every one at full ladder height as the golden baseline. Growth is free:
 each fragment slice makes more of the 20-task contact corpus (and the 65%
 of HumanEval that surveys in-fragment) eligible — slice 6 (`sum()`/genexp
