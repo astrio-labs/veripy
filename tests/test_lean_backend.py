@@ -324,6 +324,44 @@ def test_loop_emits_fuel_recursion_and_invariant_theorem():
     assert "Int.toNat_of_nonneg" in enc.lean_source
 
 
+def test_executable_old_is_refused_not_erased():
+    # `old` exists only in spec clauses; in executable Python it is a
+    # NameError at runtime, so the spec-context erasure (old(x) -> x)
+    # would certify a function whose execution cannot happen. Every
+    # executable position refuses: loop-free bodies, if-conditions, and
+    # the loop pipeline's init/bound/step/return.
+    for src in (
+        # loop-free return
+        "#@ ensures result == x\ndef f(x: int) -> int:\n"
+        "    return old(x)\n",
+        # local initializer
+        "#@ ensures result == x\ndef f(x: int) -> int:\n"
+        "    y = old(x)\n    return y\n",
+        # if condition
+        "#@ ensures result >= 0\ndef f(x: int) -> int:\n"
+        "    if old(x) > 0:\n        return x\n    return 0\n",
+        # loop step
+        "#@ requires n >= 0\n#@ ensures result == n\n"
+        "def f(n: int) -> int:\n    s = 0\n"
+        "    for i in range(n):\n        #@ invariant s == i\n"
+        "        s = s + old(n) - n + 1\n    return s\n",
+        # loop return
+        "#@ requires n >= 0\n#@ ensures result == n\n"
+        "def f(n: int) -> int:\n    s = 0\n"
+        "    for i in range(n):\n        #@ invariant s == i\n"
+        "        s = s + 1\n    return old(s)\n",
+    ):
+        with pytest.raises(EncodeError, match="only meaningful in spec"):
+            _encode(src)
+
+    # ...while `old` in an ensures clause stays legal.
+    spec_old = ("#@ ensures result == old(x) + 1\n"
+                "def bump(x: int) -> int:\n"
+                "    return x + 1\n")
+    enc = _encode(spec_old)
+    assert "(«bump» «x») = («x» + 1)" in enc.lean_source
+
+
 def test_loop_shape_rejections():
     base = ("#@ requires n >= 0\n#@ ensures result == n\n"
             "def f(n: int) -> int:\n")

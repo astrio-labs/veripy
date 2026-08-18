@@ -300,6 +300,19 @@ def _always_returns(stmts: list[ast.stmt]) -> bool:
     return False
 
 
+def _no_old(e: ast.expr, line: int) -> None:
+    """Reject `old(...)` in EXECUTABLE positions. `old` exists only in
+    spec clauses; in Python source it is a NameError at runtime, so the
+    translator's spec-context erasure (old(x) -> x) would certify a
+    function whose execution cannot happen."""
+    for node in ast.walk(e):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id == "old":
+            raise _reject("`old(...)` is only meaningful in spec clauses "
+                          "— in executable Python it is a NameError",
+                          line)
+
+
 def _bool_expr(e: ast.expr, names: set[str], line: int) -> str:
     """A Bool-valued Lean term for a predicate function's return.
 
@@ -330,6 +343,7 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
         if rest:
             raise _reject("unreachable code after `return`",
                           rest[0].lineno)
+        _no_old(head.value, head.lineno)
         if is_bool:
             return _bool_expr(head.value, names, head.lineno)
         return _int_expr(head.value, names, head.lineno)
@@ -343,10 +357,12 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
             raise _reject(f"reassigning parameter {target!r} is outside "
                           f"slice 1 (parameters are immutable so that "
                           f"`old()` needs no snapshots)", head.lineno)
+        _no_old(head.value, head.lineno)
         value = _int_expr(head.value, names, head.lineno)
         return (f"let {_ident(target)} := {value}; "
                 + _body_expr(rest, names | {target}, params, is_bool))
     if isinstance(head, ast.If):
+        _no_old(head.test, head.lineno)
         cond = _prop_expr(head.test, names, head.lineno)
         then = _body_expr(head.body, names, params, is_bool)
         if head.orelse:
@@ -655,6 +671,11 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 taken.add(g)
             args = " ".join(_ident(p) for p in params)
             argsp = (args + " ") if args else ""
+            for expr, ln in ((loop.init, fn.lineno),
+                             (loop.bound, loop.for_line),
+                             (loop.step, loop.for_line),
+                             (loop.ret, fn.lineno)):
+                _no_old(expr, ln)
             init_t = _int_expr(loop.init, names, fn.lineno)
             bound_t = _int_expr(loop.bound, names, fn.lineno)
             step_t = _int_expr(loop.step, body_names, loop.for_line)
