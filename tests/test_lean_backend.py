@@ -754,6 +754,72 @@ def test_end_to_end_early_return_loops_verify(tmp_path):
                              backend="lean")["status"] == "failed"
 
 
+MAX_ELEMENT = ("#@ requires len(l) > 0\n"
+               "#@ ensures exists i in range(len(l)) :: result == l[i]\n"
+               "#@ ensures forall i in range(len(l)) :: l[i] <= result\n"
+               "def max_element(l: list[int]) -> int:\n"
+               "    m: int = l[0]\n"
+               "    for i in range(len(l)):\n"
+               "        #@ invariant forall k in range(i) :: l[k] <= m\n"
+               "        #@ invariant exists k in range(len(l)) "
+               ":: m == l[k]\n"
+               "        if l[i] > m:\n"
+               "            m = l[i]\n"
+               "    return m\n")
+
+
+def test_max_element_class_emits_min_max_and_witness_machinery():
+    # P2 slice 5: conditional updates compile to max/min (omega-native,
+    # no ite inside the loop atom), multiple invariants conjoin, the
+    # literal init index is licensed by the requires length bound, and
+    # the fuel-bound hypothesis (i + fuel ≤ N) rides the induction so
+    # the ∃-witness survives the tail of the fold.
+    enc = _encode(MAX_ELEMENT)
+    assert "(max «m» («l».getD («i»).toNat 0))" in enc.lean_source
+    assert "(«l».getD 0 0)" in enc.lean_source            # guarded l[0]
+    assert "∧ (∃ «k» : Int," in enc.lean_source           # conjoined invs
+    assert "+ (m' : Int) ≤" in enc.lean_source            # fuel bound,
+    # freshened: the user accumulator is named m, so the machinery
+    # binder steps aside instead of colliding («m» IS m).
+    assert "by_cases hc :" in enc.lean_source             # witness step
+    assert "have hi0" in enc.lean_source
+
+    # An unguarded literal index refuses: no requires bound, no license.
+    with pytest.raises(EncodeError, match="structurally in bounds"):
+        _encode(MAX_ELEMENT.replace("#@ requires len(l) > 0\n", ""))
+
+    # A conditional update that is not max/min-shaped refuses.
+    with pytest.raises(EncodeError, match="max/min-shaped"):
+        _encode(MAX_ELEMENT.replace("if l[i] > m:", "if l[i] > 0:"))
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_max_element_verifies(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    # The frozen-corpus max_element (HumanEval/35) shape verbatim.
+    src = tmp_path / "max_element.py"
+    src.write_text(MAX_ELEMENT)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The min dual (mirrored guard) rides the same machinery.
+    mn = tmp_path / "min_element.py"
+    mn.write_text(MAX_ELEMENT
+                  .replace("max_element", "min_element")
+                  .replace("l[i] <= result", "l[i] >= result")
+                  .replace("l[k] <= m", "l[k] >= m")
+                  .replace("if l[i] > m:", "if l[i] < m:"))
+    assert verify_structured(mn, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # Flipping the guard against the invariant fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(MAX_ELEMENT.replace("if l[i] > m:", "if l[i] < m:"))
+    assert verify_structured(bad, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against
