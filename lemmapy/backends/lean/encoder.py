@@ -468,6 +468,17 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         if fn is None:
             raise _reject(f"spec for unknown function {spec_fn.name!r}",
                           spec_fn.lineno)
+        if fn.lineno != spec_fn.lineno:
+            # Name-only pairing would let a spec attached to a NESTED
+            # def borrow a module-level body sharing the name — Lean
+            # would certify a different function than the annotated one.
+            # The def line is part of the pairing key, same as the Dafny
+            # encoder's (name, lineno) index.
+            raise _reject(
+                f"spec for {spec_fn.name!r} is attached to a definition "
+                f"at line {spec_fn.lineno}, not the module-level def at "
+                f"line {fn.lineno} — nested functions are outside the "
+                f"lean slice", spec_fn.lineno)
         a = fn.args
         # Anything beyond plain positional parameters would be silently
         # erased from the binder list — a wrong-arity artifact, or
