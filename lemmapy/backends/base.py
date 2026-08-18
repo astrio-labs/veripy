@@ -115,6 +115,7 @@ _LOCK = threading.Lock()
 # for).
 _LAZY_MODULES: dict[str, str] = {
     "dafny": "lemmapy.backends.dafny.backend",
+    "lean": "lemmapy.backends.lean.backend",
 }
 
 
