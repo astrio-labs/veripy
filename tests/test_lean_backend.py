@@ -691,6 +691,69 @@ def test_end_to_end_bool_loops_verify(tmp_path):
                              backend="lean")["status"] == "failed"
 
 
+EARLY_BT = ("#@ ensures result == "
+            "all(l[k] < t for k in range(len(l)))\n"
+            "def below_threshold(l: list[int], t: int) -> bool:\n"
+            "    for i in range(len(l)):\n"
+            "        #@ invariant all(l[k] < t for k in range(i))\n"
+            "        if l[i] >= t:\n"
+            "            return False\n"
+            "    return True\n")
+
+
+def test_early_return_loops_desugar_to_bool_accumulators():
+    # The HumanEval search-loop shape: `if TEST: return False` inside
+    # the loop desugars to the and-accumulator over not-TEST (return
+    # True on hit is the or-accumulator over TEST). Result-faithful:
+    # Python short-circuits, the fold runs on, and Bool and/or are
+    # monotone over a pure body. The accumulator is synthesized fresh,
+    # and the user's accumulator-free invariant becomes its iff-body.
+    enc = _encode(EARLY_BT)
+    assert "Nat → Int → Bool → Bool" in enc.lean_source
+    assert "(«b» && (decide (¬(" in enc.lean_source     # not-TEST step
+    assert "((«b» = true) ↔ (∀ «k» : Int," in enc.lean_source
+    # The omega leaves bridge `l[i] >= t` against the invariant's
+    # `l[k] < t` — same linear fact, different spelling.
+    assert "first | exact hpi | omega" in enc.lean_source
+
+    hit_true = ("#@ ensures result == "
+                "any(l[k] == v for k in range(len(l)))\n"
+                "def has(l: list[int], v: int) -> bool:\n"
+                "    for i in range(len(l)):\n"
+                "        #@ invariant all(l[k] != v for k in range(i))\n"
+                "        if l[i] == v:\n"
+                "            return True\n"
+                "    return False\n")
+    enc2 = _encode(hit_true)
+    assert "(«b» || (decide ((" in enc2.lean_source     # TEST step
+
+    # Non-literal returns and agreeing literals stay out.
+    with pytest.raises(EncodeError, match="bool literals"):
+        _encode(EARLY_BT.replace("return False", "return t > 0"))
+    with pytest.raises(EncodeError, match="must differ"):
+        _encode(EARLY_BT.replace("return True", "return False"))
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_early_return_loops_verify(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    # The frozen-corpus below_threshold (HumanEval/52) verbatim: the
+    # first corpus task whose Lean column moved from encode-error to
+    # proved by the early-return desugaring.
+    src = tmp_path / "bt.py"
+    src.write_text(EARLY_BT)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The invariant states the wrong prefix property: fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(EARLY_BT.replace("l[k] < t for k in range(i)",
+                                    "l[k] > t for k in range(i)"))
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against

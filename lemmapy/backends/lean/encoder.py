@@ -578,6 +578,104 @@ class _LoopShape:
     acc_bool: bool      # Bool accumulator (True/False init, and/or step)
 
 
+def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
+                       spec_fn: FunctionSpec) -> _LoopShape | None:
+    """Match `for i in range(N): if TEST: return V; return W` (V, W
+    complementary bool literals) — the search-loop shape HumanEval
+    favors (below_threshold, contains-style membership).
+
+    Python short-circuits at the first hit; the fold model runs every
+    index. The RESULT is identical (Bool `or`/`and` are monotone and
+    the body is pure), so the desugaring into the slice-3 accumulator
+    machinery is faithful: `return True` on hit is the or-accumulator
+    over TEST, `return False` on hit is the and-accumulator over
+    not-TEST. The invariant mentions no accumulator in this shape, so
+    it becomes the iff-body of a synthesized one."""
+    if len(stmts) != 2 or not isinstance(stmts[0], ast.For) \
+            or not isinstance(stmts[1], ast.Return):
+        return None
+    loop, ret_stmt = stmts
+    body = list(loop.body)
+    if len(body) != 1 or not isinstance(body[0], ast.If) \
+            or body[0].orelse or len(body[0].body) != 1 \
+            or not isinstance(body[0].body[0], ast.Return):
+        return None
+    hit_ret = body[0].body[0].value
+    end_ret = ret_stmt.value
+    if not (isinstance(hit_ret, ast.Constant)
+            and isinstance(hit_ret.value, bool)
+            and isinstance(end_ret, ast.Constant)
+            and isinstance(end_ret.value, bool)):
+        raise _reject("an early-return loop returns bool literals in "
+                      "this slice", loop.lineno)
+    if hit_ret.value == end_ret.value:
+        raise _reject("the early return and the final return must "
+                      "differ (a constant function needs no loop)",
+                      loop.lineno)
+    if not isinstance(loop.target, ast.Name):
+        raise _reject("destructuring loop targets are outside this slice",
+                      loop.lineno)
+    it = loop.iter
+    if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
+            and it.func.id == "range" and len(it.args) == 1
+            and not it.keywords):
+        raise _reject("loops must iterate `range(<bound>)` in this slice",
+                      loop.lineno)
+    if loop.orelse:
+        raise _reject("`for ... else` is outside the fragment", loop.lineno)
+    test = body[0].test
+    _no_old(test, body[0].lineno)
+    index = loop.target.id
+    # A fresh accumulator name: never a source binding, so freshness
+    # only needs to dodge every name the function or its spec mentions.
+    used = {index} | {a.arg for a in fn.args.args}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name):
+            used.add(node.id)
+    acc = "b"
+    while acc in used:
+        acc += "'"
+    if hit_ret.value:  # return True on hit: any(TEST) — or-accumulator
+        step: ast.expr = ast.BoolOp(op=ast.Or(),
+                                    values=[ast.Name(id=acc), test])
+    else:              # return False on hit: all(not TEST) — and-acc
+        step = ast.BoolOp(op=ast.And(),
+                          values=[ast.Name(id=acc),
+                                  ast.UnaryOp(op=ast.Not(), operand=test)])
+    ast.copy_location(step, test)
+    ast.fix_missing_locations(step)
+    last_body_line = max(getattr(s, "end_lineno", s.lineno)
+                         for s in loop.body)
+    invs = [c for c in spec_fn.by_kind("invariant")
+            if loop.lineno <= c.line <= last_body_line]
+    if len(invs) != 1:
+        raise _reject("exactly one `#@ invariant` per loop in this slice "
+                      f"(found {len(invs)})", loop.lineno)
+    inv = invs[0]
+    text = inv.desugared if inv.desugared is not None else inv.raw
+    try:
+        inv_expr = ast.parse(text, mode="eval").body
+    except SyntaxError as exc:
+        raise _reject(f"cannot parse invariant: {exc.msg}", inv.line)
+    for node in ast.walk(inv_expr):
+        if isinstance(node, ast.Name) and node.id == acc:
+            raise _reject(f"synthesized accumulator {acc!r} collides "
+                          f"inside the invariant", inv.line)
+    # The user's invariant states the still-searching prefix property;
+    # the synthesized accumulator tracks exactly that, so the generated
+    # invariant is their iff (`acc == <inv>` through the Bool bridge).
+    wrapped = ast.Compare(left=ast.Name(id=acc), ops=[ast.Eq()],
+                          comparators=[inv_expr])
+    ast.copy_location(wrapped, inv_expr)
+    ast.fix_missing_locations(wrapped)
+    return _LoopShape(index=index, acc=acc,
+                      init=ast.Constant(value=end_ret.value),
+                      bound=it.args[0], step=step,
+                      ret=ast.Name(id=acc), inv=wrapped,
+                      inv_line=inv.line, for_line=loop.lineno,
+                      acc_bool=True)
+
+
 def _split_loop(fn: ast.FunctionDef,
                 spec_fn: FunctionSpec) -> _LoopShape | None:
     """Match the P2 slice-1 loop shape, or None for the loop-free path.
@@ -592,12 +690,15 @@ def _split_loop(fn: ast.FunctionDef,
         return None
     if len(fors) > 1:
         raise _reject("one loop per function in this slice", fors[1].lineno)
+    early = _early_return_loop(stmts, fn, spec_fn)
+    if early is not None:
+        return early
     if len(stmts) != 3 or not isinstance(stmts[0], ast.Assign) \
             or not isinstance(stmts[1], ast.For) \
             or not isinstance(stmts[2], ast.Return):
         raise _reject("a loop function must be exactly `acc = init; "
-                      "for ...: ...; return expr` in this slice",
-                      fors[0].lineno)
+                      "for ...: ...; return expr` (or an early-return "
+                      "search loop) in this slice", fors[0].lineno)
     init_stmt, loop, ret_stmt = stmts
     if len(init_stmt.targets) != 1 \
             or not isinstance(init_stmt.targets[0], ast.Name):
@@ -992,6 +1093,11 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                      f"simp only [LemmaPy.PySum_take_succ]; omega))",
                      loop.inv_line)
             elif isinstance(loop.step.op, ast.And):
+                # The `first | exact ... | omega` leaves bridge the
+                # syntactic gap between the invariant body and the step
+                # predicate (an early-return loop tests `l[i] >= t`
+                # while its invariant states `l[k] < t` — same linear
+                # fact, different spelling).
                 for tl in (
                     "        (by",
                     f"          simp only [{_ident(gen_inv)}, "
@@ -1003,11 +1109,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     f"               rcases (by omega : j < {iv} ∨ "
                     f"j = {iv}) with hlt | rfl",
                     "               · exact (h.mp hb) j ⟨hj.1, hlt⟩",
-                    "               · exact hlast",
+                    "               · first | exact hlast | omega",
                     "             · intro hall",
-                    "               exact ⟨h.mpr (fun j hj => hall j "
-                    "⟨hj.1, by omega⟩),",
-                    f"                      hall {iv} ⟨hi, by omega⟩⟩))",
+                    "               refine ⟨h.mpr (fun j hj => hall j "
+                    "⟨hj.1, by omega⟩), ?_⟩",
+                    f"               have hpi := hall {iv} "
+                    f"⟨hi, by omega⟩",
+                    "               first | exact hpi | omega))",
                 ):
                     emit(tl, loop.inv_line)
             else:
@@ -1021,14 +1129,16 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "             · rintro (hb | hlast)",
                     "               · obtain ⟨j, hj, hpj⟩ := h.mp hb",
                     "                 exact ⟨j, ⟨hj.1, by omega⟩, hpj⟩",
-                    f"               · exact ⟨{iv}, ⟨hi, by omega⟩, "
-                    f"hlast⟩",
+                    f"               · refine ⟨{iv}, ⟨hi, by omega⟩, "
+                    f"?_⟩",
+                    "                 first | exact hlast | omega",
                     "             · rintro ⟨j, hj, hpj⟩",
                     f"               rcases (by omega : j < {iv} ∨ "
                     f"j = {iv}) with hlt | rfl",
                     "               · exact Or.inl (h.mpr ⟨j, "
                     "⟨hj.1, hlt⟩, hpj⟩)",
-                    "               · exact Or.inr hpj))",
+                    "               · refine Or.inr ?_",
+                    "                 first | exact hpj | omega))",
                 ):
                     emit(tl, loop.inv_line)
             emit("        (by omega)", loop.inv_line)
