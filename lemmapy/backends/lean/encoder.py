@@ -210,8 +210,14 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
             binder += "'"
     if binder != v:
         body_rename[v] = binder
+    # The body's avoid set grows by THIS binder's emitted name: a
+    # nested quantifier reusing an alpha-renamed name would otherwise
+    # land on the outer binder's emitted name and capture it (the same
+    # transitive-capture class as the theorem-rename hole, one scope
+    # deeper).
+    body_avoid = (avoid or frozenset()) | {binder}
     body = _prop_expr(gen.elt, names | {v}, line, result,
-                      body_rename or None, result_is_bool, avoid)
+                      body_rename or None, result_is_bool, body_avoid)
     bound = f"({lo} ≤ {_ident(binder)} ∧ {_ident(binder)} < {hi})"
     if e.func.id == "all":
         return f"(∀ {_ident(binder)} : Int, {bound} → {body})"
@@ -456,6 +462,26 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         is_bool = ret.id == "bool"
         params = tuple(arg.arg for arg in a.args)
         names = set(params)
+
+        # Python scoping: a name ASSIGNED anywhere in the function is
+        # local for the whole function, so a call BEFORE the assignment
+        # raises UnboundLocalError at runtime. The sequential shadow
+        # check in _int_expr only sees prior assignments; this pre-scan
+        # closes the call-before-assign half (Lean would otherwise
+        # verify the mathematical builtin on a path Python never
+        # executes).
+        assigned_anywhere = {
+            tgt.id for node in ast.walk(fn) if isinstance(node, ast.Assign)
+            for tgt in node.targets if isinstance(tgt, ast.Name)}
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call) \
+                    and isinstance(node.func, ast.Name) \
+                    and node.func.id in assigned_anywhere:
+                raise _reject(
+                    f"call to {node.func.id!r}, which is assigned later "
+                    f"in this function — Python treats it as local "
+                    f"throughout (UnboundLocalError here), so the call "
+                    f"cannot mean the builtin", node.lineno)
 
         binders = " ".join(f"({_ident(p)} : Int)" for p in params)
         body = _body_expr([s for s in fn.body
