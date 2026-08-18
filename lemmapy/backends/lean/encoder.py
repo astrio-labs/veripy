@@ -87,9 +87,13 @@ _ARITH = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*"}
 
 
 def _int_expr(e: ast.expr, names: set[str], line: int,
-              result: str | None = None) -> str:
+              result: str | None = None,
+              rename: dict[str, str] | None = None) -> str:
     """An integer-valued Lean term. `result` is the application expression
-    substituted for the reserved name `result` in ensures clauses."""
+    substituted for the reserved name `result` in ensures clauses;
+    `rename` alpha-renames binders in theorem context (a parameter named
+    after its own function would otherwise be captured by the function
+    reference in the theorem statement)."""
     if isinstance(e, ast.Name):
         if e.id == "result":
             if result is None:
@@ -99,15 +103,17 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
         if e.id not in names:
             raise _reject(f"unknown name {e.id!r} in this slice "
                           f"(parameters and prior assignments only)", line)
+        if rename and e.id in rename:
+            return _ident(rename[e.id])
         return _ident(e.id)
     if isinstance(e, ast.Constant) and isinstance(e.value, int) \
             and not isinstance(e.value, bool):
         return str(e.value) if e.value >= 0 else f"({e.value})"
     if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.USub):
-        return f"(-{_int_expr(e.operand, names, line, result)})"
+        return f"(-{_int_expr(e.operand, names, line, result, rename)})"
     if isinstance(e, ast.BinOp) and type(e.op) in _ARITH:
-        a = _int_expr(e.left, names, line, result)
-        b = _int_expr(e.right, names, line, result)
+        a = _int_expr(e.left, names, line, result, rename)
+        b = _int_expr(e.right, names, line, result, rename)
         return f"({a} {_ARITH[type(e.op)]} {b})"
     if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):
         args = e.args
@@ -115,16 +121,16 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             raise _reject(f"keyword arguments to {e.func.id!r} are not in "
                           f"the fragment", line)
         if e.func.id in ("min", "max") and len(args) == 2:
-            a = _int_expr(args[0], names, line, result)
-            b = _int_expr(args[1], names, line, result)
+            a = _int_expr(args[0], names, line, result, rename)
+            b = _int_expr(args[1], names, line, result, rename)
             return f"({e.func.id} {a} {b})"
         if e.func.id == "abs" and len(args) == 1:
-            return f"(PyAbs {_int_expr(args[0], names, line, result)})"
+            return f"(PyAbs {_int_expr(args[0], names, line, result, rename)})"
         if e.func.id == "old" and len(args) == 1 \
                 and isinstance(args[0], ast.Name):
             # Parameters are immutable in this slice (reassignment is
             # rejected), so entry value == current value.
-            return _int_expr(args[0], names, line, result)
+            return _int_expr(args[0], names, line, result, rename)
         raise _reject(f"call to {e.func.id!r} is outside slice 1 "
                       f"(min/max/abs/old only)", line)
     raise _reject(f"expression {ast.dump(e)[:60]}... is outside slice 1",
@@ -132,7 +138,8 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
 
 
 def _prop_expr(e: ast.expr, names: set[str], line: int,
-               result: str | None = None) -> str:
+               result: str | None = None,
+               rename: dict[str, str] | None = None) -> str:
     """A proposition-valued Lean term (spec clauses, `if` conditions)."""
     if isinstance(e, ast.Compare):
         parts = []
@@ -141,17 +148,17 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
             if type(op) not in _CMP:
                 raise _reject("only =/≠/</≤/>/≥ comparisons are in slice 1",
                               line)
-            a = _int_expr(left, names, line, result)
-            b = _int_expr(right, names, line, result)
+            a = _int_expr(left, names, line, result, rename)
+            b = _int_expr(right, names, line, result, rename)
             parts.append(f"{a} {_CMP[type(op)]} {b}")
             left = right
         return "(" + " ∧ ".join(parts) + ")"
     if isinstance(e, ast.BoolOp):
         op = "∧" if isinstance(e.op, ast.And) else "∨"
-        parts = [_prop_expr(v, names, line, result) for v in e.values]
+        parts = [_prop_expr(v, names, line, result, rename) for v in e.values]
         return "(" + f" {op} ".join(parts) + ")"
     if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not):
-        return f"(¬{_prop_expr(e.operand, names, line, result)})"
+        return f"(¬{_prop_expr(e.operand, names, line, result, rename)})"
     if isinstance(e, ast.Constant) and e.value is True:
         return "True"
     if isinstance(e, ast.Constant) and e.value is False:
@@ -294,7 +301,11 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             if not (isinstance(ann, ast.Name) and ann.id == "int"):
                 raise _reject(f"parameter {arg.arg!r} must be `int` in "
                               f"slice 1", fn.lineno)
-            _check_name(arg.arg, "parameter", fn.lineno, taken)
+            # No module-wide check for parameters: a binder shadowing a
+            # top-level name is legal Lean (and matches Python scoping).
+            # The one genuine capture — a parameter named after its OWN
+            # function, which the theorem statement must reference beside
+            # it — is alpha-renamed in theorem context below.
         ret = fn.returns
         if not (isinstance(ret, ast.Name) and ret.id == "int"):
             raise _reject("return type must be `int` in slice 1", fn.lineno)
@@ -313,15 +324,29 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         ensures = _parse_clause(spec_fn, "ensures")
         if not ensures:
             continue
+        # Theorem context: the statement references the function AND its
+        # parameters by name, so a parameter named after its own function
+        # would capture the function reference. Binder names in a theorem
+        # are arbitrary — alpha-rename that one parameter (p -> p').
+        rename = ({spec_fn.name: spec_fn.name + "'"}
+                  if spec_fn.name in params else None)
+
+        def _tname(p: str) -> str:
+            return rename[p] if rename and p in rename else p
+
+        thm_binders = " ".join(f"({_ident(_tname(p))} : Int)"
+                               for p in params)
         app = ("(" + " ".join([_ident(spec_fn.name),
-                               *map(_ident, params)]) + ")")
+                               *(_ident(_tname(p)) for p in params)]) + ")")
         hyps = []
         for i, (expr, line) in enumerate(_parse_clause(spec_fn, "requires")):
-            hyps.append(f"(h{i} : {_prop_expr(expr, names, line)})")
-        posts = [(_prop_expr(expr, names, line, result=app), line)
+            hyps.append(
+                f"(h{i} : {_prop_expr(expr, names, line, rename=rename)})")
+        posts = [(_prop_expr(expr, names, line, result=app, rename=rename),
+                  line)
                  for expr, line in ensures]
         goal = " ∧ ".join(p for p, _ in posts)
-        sig = " ".join(x for x in [binders, *hyps] if x)
+        sig = " ".join(x for x in [thm_binders, *hyps] if x)
         first_ensures_line = posts[0][1]
         theorem = f"{spec_fn.name}_spec"
         theorems.append(theorem)

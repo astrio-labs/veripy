@@ -113,6 +113,34 @@ def test_escaped_identifiers_make_keyword_collisions_unrepresentable():
     assert "(PyAbs «a»)" in enc2.lean_source     # abs() -> prelude, bare
 
 
+def test_param_shadowing_is_allowed_and_alpha_renamed_in_theorems():
+    # A binder shadowing a top-level name is legal Lean and matches
+    # Python scoping, so `def f(f: int)` and a parameter named after a
+    # DIFFERENT function must encode (the first draft rejected both
+    # against the module-wide reservation set). The one genuine capture —
+    # the theorem references the function AND its parameters by name —
+    # is alpha-renamed: the theorem binds «f'» beside the function «f».
+    own = ("#@ requires f >= 0\n"
+           "#@ ensures result == f + 1\n"
+           "def f(f: int) -> int:\n"
+           "    return f + 1\n")
+    enc = _encode(own)
+    assert "def «f» («f» : Int)" in enc.lean_source       # def: shadow ok
+    assert "theorem «f_spec» («f'» : Int)" in enc.lean_source
+    assert "(«f» «f'») = («f'» + 1)" in enc.lean_source   # app + renamed use
+    assert "(h0 : («f'» ≥ 0))" in enc.lean_source
+
+    other = ("#@ ensures result == g\n"
+             "def f(g: int) -> int:\n"
+             "    return g\n"
+             "\n"
+             "#@ ensures result == x\n"
+             "def g(x: int) -> int:\n"
+             "    return x\n")
+    enc2 = _encode(other)  # must not raise
+    assert "def «f» («g» : Int)" in enc2.lean_source
+
+
 def test_encoder_rejects_cross_declaration_collisions():
     # The one collision escaping cannot remove: two EMITTED declarations
     # with the same name (`def f` beside `def f_spec`, whose generated
