@@ -193,17 +193,42 @@ def test_quantifier_binder_capture_is_alpha_renamed_transitively():
     assert "∀ «f''» : Int" in enc.lean_source
     assert "(«f» «f'») ≥ («f''» + 5)" in enc.lean_source
 
+    # NESTED quantifiers reusing the name must keep renaming past every
+    # enclosing EMITTED binder (outer lands on f'', inner on f''' —
+    # measured class: the inner binder landing on f'' captured the
+    # outer one).
+    nested = ("#@ requires f == 5\n"
+              "#@ ensures forall f in range(0, 1) :: "
+              "(forall f in range(0, 1) :: result >= f)\n"
+              "def f(f: int) -> int:\n"
+              "    return f\n")
+    enc2 = _encode(nested)
+    assert "∀ «f''» : Int" in enc2.lean_source
+    assert "∀ «f'''» : Int" in enc2.lean_source
+    # The inner body references the INNER binder (Python shadowing).
+    assert "(«f» «f'») ≥ «f'''»" in enc2.lean_source
+
 
 def test_shadowed_builtins_are_refused_not_mistranslated():
     # Soundness: Python calls the shadowing binding; translating to the
     # builtin would certify mathematical abs/min/max for a program that
     # never runs them.
+    # Caught by the assigned-anywhere pre-scan (which also covers the
+    # call-BEFORE-assign half Python treats as UnboundLocalError).
     local_shadow = ("#@ ensures result >= 0\n"
                     "def h(x: int) -> int:\n"
                     "    abs = x\n"
                     "    return abs(x)\n")
-    with pytest.raises(EncodeError, match="shadowed"):
+    with pytest.raises(EncodeError, match="cannot mean the builtin"):
         _encode(local_shadow)
+
+    call_before_assign = ("#@ ensures result >= 0\n"
+                          "def k(x: int) -> int:\n"
+                          "    y = abs(x)\n"
+                          "    abs = y\n"
+                          "    return abs\n")
+    with pytest.raises(EncodeError, match="cannot mean the builtin"):
+        _encode(call_before_assign)
 
     module_shadow = ("#@ ensures result == x\n"
                      "def abs(x: int) -> int:\n"
