@@ -178,6 +178,46 @@ def test_encoder_emits_bool_predicates_and_quantifiers():
                 "    return xs\n")
 
 
+def test_quantifier_binder_capture_is_alpha_renamed_transitively():
+    # Soundness: a binder sharing a name with the function, a parameter,
+    # or — the residual bug — a RENAMED theorem binder would capture the
+    # `result` application and make Lean verify a different contract.
+    # def f(f) renames the theorem param to f'; a quantifier binder f
+    # must therefore land on f'' (measured: f' captured the renamed
+    # param and a TRUE spec failed while proving the wrong goal).
+    src = ("#@ requires f == 5\n"
+           "#@ ensures forall f in range(0, 1) :: result >= f + 5\n"
+           "def f(f: int) -> int:\n"
+           "    return f\n")
+    enc = _encode(src)
+    assert "∀ «f''» : Int" in enc.lean_source
+    assert "(«f» «f'») ≥ («f''» + 5)" in enc.lean_source
+
+
+def test_shadowed_builtins_are_refused_not_mistranslated():
+    # Soundness: Python calls the shadowing binding; translating to the
+    # builtin would certify mathematical abs/min/max for a program that
+    # never runs them.
+    local_shadow = ("#@ ensures result >= 0\n"
+                    "def h(x: int) -> int:\n"
+                    "    abs = x\n"
+                    "    return abs(x)\n")
+    with pytest.raises(EncodeError, match="shadowed"):
+        _encode(local_shadow)
+
+    module_shadow = ("#@ ensures result == x\n"
+                     "def abs(x: int) -> int:\n"
+                     "    return x\n")
+    with pytest.raises(EncodeError, match="encoder builtin"):
+        _encode(module_shadow)
+
+    range_shadow = ("#@ ensures forall i in range(0, range) :: result >= 0\n"
+                    "def r(range: int) -> int:\n"
+                    "    return 1\n")
+    with pytest.raises(EncodeError, match="shadow"):
+        _encode(range_shadow)
+
+
 def test_classifier_maps_endgame_tactic_failures():
     # The endgame combinator reports its LAST sub-tactic's failure, not
     # omega's phrasing (measured: false specs reclassified as unknown

@@ -124,6 +124,15 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
         return f"({a} {_ARITH[type(e.op)]} {b})"
     if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):
         args = e.args
+        if e.func.id in names:
+            # The name is a parameter or local here: Python calls THAT
+            # binding, not the builtin. Translating to the builtin would
+            # let Lean verify mathematical abs/min/max while Python
+            # invokes an integer — a certified different program (the
+            # builtin-shadow class the Dafny encoder also refuses).
+            raise _reject(f"call to {e.func.id!r}, which is shadowed by a "
+                          f"parameter or local binding here — builtin "
+                          f"shadowing is outside the fragment", line)
         if e.keywords:
             raise _reject(f"keyword arguments to {e.func.id!r} are not in "
                           f"the fragment", line)
@@ -150,13 +159,15 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
 
 def _quantifier(e: ast.Call, names: set[str], line: int,
                 result: str | None, rename: dict[str, str] | None,
-                result_is_bool: bool) -> str | None:
+                result_is_bool: bool,
+                avoid: frozenset[str] | None = None) -> str | None:
     """`all((body) for v in (range(a, b)))` -> a bounded ∀ (any -> ∃).
 
     The desugared form the frontend emits for `forall`/`exists` spec
     clauses. Only a single binder over `range` is in slice 2; anything
     else falls through to the caller's rejection."""
     if not (isinstance(e.func, ast.Name) and e.func.id in ("all", "any")
+            and e.func.id not in names
             and len(e.args) == 1 and not e.keywords
             and isinstance(e.args[0], ast.GeneratorExp)):
         return None
@@ -170,10 +181,11 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
                       "outside slice 2", line)
     it = comp.iter
     if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
-            and it.func.id == "range" and not it.keywords
-            and len(it.args) in (1, 2)):
+            and it.func.id == "range" and it.func.id not in names
+            and not it.keywords and len(it.args) in (1, 2)):
         raise _reject("quantifier domains must be `range(a, b)` or "
-                      "`range(b)` in slice 2", line)
+                      "`range(b)` in slice 2 (and `range` must not be "
+                      "shadowed)", line)
     if len(it.args) == 2:
         lo = _int_expr(it.args[0], names, line, result, rename)
         hi = _int_expr(it.args[1], names, line, result, rename)
@@ -181,18 +193,36 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         lo = "0"
         hi = _int_expr(it.args[0], names, line, result, rename)
     v = comp.target.id
-    body = _prop_expr(gen.elt, names | {v}, line, result, rename,
-                      result_is_bool)
-    bound = f"({lo} ≤ {_ident(v)} ∧ {_ident(v)} < {hi})"
+    # Two capture hazards at the binder, both measured classes:
+    # 1. The theorem's rename map (param named after its own function)
+    #    must NOT apply under a binder that reuses the renamed name —
+    #    the body would reference the OUTER parameter and Lean would
+    #    verify a different contract than the source spec.
+    # 2. The body may contain `result`, whose translation embeds the
+    #    function and parameter names — a binder sharing any of those
+    #    names would capture them. `avoid` carries that set from theorem
+    #    emission; the binder is alpha-renamed off it (fresh primes),
+    #    sound because comprehension binder names are arbitrary.
+    body_rename = {k: r for k, r in (rename or {}).items() if k != v}
+    binder = v
+    if avoid:
+        while binder in avoid:
+            binder += "'"
+    if binder != v:
+        body_rename[v] = binder
+    body = _prop_expr(gen.elt, names | {v}, line, result,
+                      body_rename or None, result_is_bool, avoid)
+    bound = f"({lo} ≤ {_ident(binder)} ∧ {_ident(binder)} < {hi})"
     if e.func.id == "all":
-        return f"(∀ {_ident(v)} : Int, {bound} → {body})"
-    return f"(∃ {_ident(v)} : Int, {bound} ∧ {body})"
+        return f"(∀ {_ident(binder)} : Int, {bound} → {body})"
+    return f"(∃ {_ident(binder)} : Int, {bound} ∧ {body})"
 
 
 def _prop_expr(e: ast.expr, names: set[str], line: int,
                result: str | None = None,
                rename: dict[str, str] | None = None,
-               result_is_bool: bool = False) -> str:
+               result_is_bool: bool = False,
+               avoid: frozenset[str] | None = None) -> str:
     """A proposition-valued Lean term (spec clauses, `if` conditions).
 
     With `result_is_bool`, the reserved name `result` denotes a Bool
@@ -213,11 +243,12 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
                 raise _reject("`result` is only meaningful in `ensures`",
                               line)
             prop = _prop_expr(others[0], names, line, result, rename,
-                              result_is_bool)
+                              result_is_bool, avoid)
             iff = f"(({result} = true) ↔ {prop})"
             return iff if isinstance(e.ops[0], ast.Eq) else f"(¬{iff})"
     if isinstance(e, ast.Call):
-        q = _quantifier(e, names, line, result, rename, result_is_bool)
+        q = _quantifier(e, names, line, result, rename, result_is_bool,
+                        avoid)
         if q is not None:
             return q
     if isinstance(e, ast.Compare):
@@ -234,12 +265,13 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
         return "(" + " ∧ ".join(parts) + ")"
     if isinstance(e, ast.BoolOp):
         op = "∧" if isinstance(e.op, ast.And) else "∨"
-        parts = [_prop_expr(v, names, line, result, rename, result_is_bool)
+        parts = [_prop_expr(v, names, line, result, rename,
+                            result_is_bool, avoid)
                  for v in e.values]
         return "(" + f" {op} ".join(parts) + ")"
     if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not):
         inner = _prop_expr(e.operand, names, line, result, rename,
-                           result_is_bool)
+                           result_is_bool, avoid)
         return f"(¬{inner})"
     if isinstance(e, ast.Constant) and e.value is True:
         return "True"
@@ -355,6 +387,17 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     module = ast.parse(source)
     by_name = {n.name: n for n in module.body
                if isinstance(n, ast.FunctionDef)}
+    # Builtin-shadow check, the Dafny encoder's discipline applied here:
+    # a module-level def named after an encoder builtin would vanish from
+    # the model while call sites translate to the builtin — Lean would
+    # verify mathematical abs/min/max while Python calls the user's def.
+    for shadow in by_name:
+        if shadow in ("abs", "min", "max", "old", "all", "any", "range",
+                      "result"):
+            raise _reject(
+                f"module-level def {shadow!r} shadows an encoder builtin "
+                f"— call sites would verify the builtin while Python "
+                f"calls this def", by_name[shadow].lineno)
 
     lines: list[str] = PRELUDE.split("\n")
     line_map: dict[int, int] = {}
@@ -442,12 +485,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                for p in params)
         app = ("(" + " ".join([_ident(spec_fn.name),
                                *(_ident(_tname(p)) for p in params)]) + ")")
+        # The binder-avoid set must cover the RENAMED theorem binders
+        # too: with rename {f: f'}, a quantifier binder f fresh-renames
+        # to f' — precisely the renamed parameter, capture one level up
+        # (measured: the binder==fn==param case proved the WRONG goal,
+        # ∀ f', f(f') ≥ f'+5, and failed a true spec).
+        avoid = (frozenset(params) | {spec_fn.name}
+                 | frozenset((rename or {}).values()))
         hyps = []
         for i, (expr, line) in enumerate(_parse_clause(spec_fn, "requires")):
             hyps.append(
-                f"(h{i} : {_prop_expr(expr, names, line, rename=rename)})")
+                f"(h{i} : "
+                f"{_prop_expr(expr, names, line, rename=rename, avoid=avoid)})")
         posts = [(_prop_expr(expr, names, line, result=app,
-                             rename=rename, result_is_bool=is_bool), line)
+                             rename=rename, result_is_bool=is_bool,
+                             avoid=avoid), line)
                  for expr, line in ensures]
         goal = " ∧ ".join(p for p, _ in posts)
         sig = " ".join(x for x in [thm_binders, *hyps] if x)
