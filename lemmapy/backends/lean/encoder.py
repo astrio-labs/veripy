@@ -476,8 +476,7 @@ class _SubstName(ast.NodeTransformer):
 
     def visit_Name(self, node: ast.Name) -> ast.Name:
         if node.id == self.old:
-            return ast.copy_location(ast.Name(id="result", ctx=node.ctx),
-                                     node)
+            node.id = "result"
         return node
 
 
@@ -734,11 +733,11 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
     while acc in used:
         acc += "'"
     if hit_ret.value:  # return True on hit: any(TEST) — or-accumulator
-        step: ast.expr = ast.BoolOp(op=ast.Or(),
-                                    values=[ast.Name(id=acc), test])
+        step: ast.expr = ast.BoolOp(
+            op=ast.Or(), values=[ast.Name(id=acc, ctx=ast.Load()), test])
     else:              # return False on hit: all(not TEST) — and-acc
         step = ast.BoolOp(op=ast.And(),
-                          values=[ast.Name(id=acc),
+                          values=[ast.Name(id=acc, ctx=ast.Load()),
                                   ast.UnaryOp(op=ast.Not(), operand=test)])
     ast.copy_location(step, test)
     ast.fix_missing_locations(step)
@@ -750,14 +749,15 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
     # The user's invariant states the still-searching prefix property;
     # the synthesized accumulator tracks exactly that, so the generated
     # invariant is their iff (`acc == <inv>` through the Bool bridge).
-    wrapped = ast.Compare(left=ast.Name(id=acc), ops=[ast.Eq()],
-                          comparators=[inv_expr])
+    wrapped = ast.Compare(left=ast.Name(id=acc, ctx=ast.Load()),
+                          ops=[ast.Eq()], comparators=[inv_expr])
     ast.copy_location(wrapped, inv_expr)
     ast.fix_missing_locations(wrapped)
     return _LoopShape(index=index, acc=acc,
                       init=ast.Constant(value=end_ret.value),
                       bound=it.args[0], step=step,
-                      ret=ast.Name(id=acc), inv=wrapped,
+                      ret=ast.Name(id=acc, ctx=ast.Load()),
+                      inv=wrapped,
                       inv_line=inv_line, for_line=loop.lineno,
                       acc_bool=True)
 
@@ -860,8 +860,9 @@ def _split_loop(fn: ast.FunctionDef,
                 raise _reject(f"the update expression must not read the "
                               f"accumulator {acc!r} in a conditional "
                               f"update", loop.lineno)
-        step_expr = ast.Call(func=ast.Name(id=fn_name),
-                             args=[ast.Name(id=acc), e_new], keywords=[])
+        step_expr = ast.Call(
+            func=ast.Name(id=fn_name, ctx=ast.Load()),
+            args=[ast.Name(id=acc, ctx=ast.Load()), e_new], keywords=[])
         ast.copy_location(step_expr, e_new)
         ast.fix_missing_locations(step_expr)
     elif len(body) != 1 or not isinstance(body[0], ast.Assign) \
