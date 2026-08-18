@@ -479,6 +479,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 f"at line {spec_fn.lineno}, not the module-level def at "
                 f"line {fn.lineno} — nested functions are outside the "
                 f"lean slice", spec_fn.lineno)
+        if fn.decorator_list:
+            # A decorator can replace or wrap the callable, so proving
+            # fn.body would certify a contract for a function Python
+            # never runs (the survey's X-DECOR exclusion, enforced here).
+            raise _reject(
+                f"decorated functions are outside the lean slice — the "
+                f"decorator may replace the callable, so the modeled "
+                f"body is not what Python executes",
+                fn.decorator_list[0].lineno)
         a = fn.args
         # Anything beyond plain positional parameters would be silently
         # erased from the binder list — a wrong-arity artifact, or

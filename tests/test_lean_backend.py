@@ -285,6 +285,17 @@ def test_nested_spec_cannot_borrow_a_module_level_body():
         _encode(nested)
 
 
+def test_decorated_functions_are_refused():
+    # A decorator can replace the callable; proving fn.body would
+    # certify a contract for a function Python never runs.
+    decorated = ("#@ ensures result == x\n"
+                 "@staticmethod\n"
+                 "def f(x: int) -> int:\n"
+                 "    return x\n")
+    with pytest.raises(EncodeError, match="decorat"):
+        _encode(decorated)
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against
