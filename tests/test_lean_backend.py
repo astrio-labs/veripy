@@ -268,6 +268,20 @@ def test_shadowed_builtins_are_refused_not_mistranslated():
     assert "def «bump»" in enc.lean_source
 
 
+def test_duplicate_defs_are_refused_not_mispaired():
+    # Specs attach to the FIRST def, the name map keeps the LAST (and
+    # CPython runs the last) — encoding would prove one body against
+    # another definition's contract. Same refusal as the Dafny encoder.
+    dup = ("#@ ensures result == x + 1\n"
+           "def f(x: int) -> int:\n"
+           "    return x + 1\n"
+           "\n"
+           "def f(x: int) -> int:\n"
+           "    return x\n")
+    with pytest.raises(EncodeError, match="duplicate definition"):
+        _encode(dup)
+
+
 def test_classifier_maps_endgame_tactic_failures():
     # The endgame combinator reports its LAST sub-tactic's failure, not
     # omega's phrasing (measured: false specs reclassified as unknown

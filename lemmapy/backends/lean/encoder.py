@@ -409,6 +409,20 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             f"slice (function definitions and a docstring only — a "
             f"module binding could shadow a builtin the encoder "
             f"translates)", stmt.lineno)
+    # Duplicate defs mispair contract and body: specs attach to the
+    # FIRST definition, the name map would keep the LAST (and CPython
+    # runs the last), so the encoder would prove a body against another
+    # definition's contract. Same refusal as the Dafny encoder's.
+    seen_defs: dict[str, int] = {}
+    for n in module.body:
+        if isinstance(n, ast.FunctionDef):
+            if n.name in seen_defs:
+                raise _reject(
+                    f"duplicate definition of {n.name!r} (first at line "
+                    f"{seen_defs[n.name]}) — CPython runs the last def; "
+                    f"the verifier would pair the first def's contract "
+                    f"with the last def's body", n.lineno)
+            seen_defs[n.name] = n.lineno
     by_name = {n.name: n for n in module.body
                if isinstance(n, ast.FunctionDef)}
     # Builtin-shadow check, the Dafny encoder's discipline applied here:
