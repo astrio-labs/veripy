@@ -105,12 +105,17 @@ def test_escaped_identifiers_make_keyword_collisions_unrepresentable():
     assert "def «theorem» («then» : Int)" in enc.lean_source
     assert "let «have» :=" in enc.lean_source
 
+    # Escaping does NOT separate user names from the prelude («PyAbs» IS
+    # the identifier PyAbs — measured: "`PyAbs` has already been
+    # declared"); the NAMESPACE does. A user `def PyAbs` coexists with
+    # the prelude because call sites reference LemmaPy.PyAbs qualified,
+    # which no top-level def redeclares and no binder captures.
     shadows_prelude = ("#@ ensures result == abs(a)\n"
                        "def PyAbs(a: int) -> int:\n"
                        "    return abs(a)\n")
     enc2 = _encode(shadows_prelude)
-    assert "def «PyAbs»" in enc2.lean_source     # user def, escaped
-    assert "(PyAbs «a»)" in enc2.lean_source     # abs() -> prelude, bare
+    assert "def «PyAbs»" in enc2.lean_source          # user def, escaped
+    assert "(LemmaPy.PyAbs «a»)" in enc2.lean_source  # abs() -> qualified
 
 
 def test_param_shadowing_is_allowed_and_alpha_renamed_in_theorems():
@@ -242,6 +247,19 @@ def test_end_to_end_true_spec_verifies(tmp_path):
                      "    return y + 1\n")
     payload2 = verify_structured(local, tmp_path / "out2", backend="lean")
     assert payload2["status"] == "ok"
+
+    # A module that SHADOWS the prelude while USING it: `def PyAbs`
+    # calling abs(). Exercises the namespace separation (measured
+    # collision without it) AND the tactic script's prelude unfold
+    # (measured: every abs()-using module failed as postcondition until
+    # `try unfold LemmaPy.PyAbs` — no earlier live case called abs).
+    shadow = tmp_path / "shadow.py"
+    shadow.write_text("#@ requires a >= 0\n"
+                      "#@ ensures result == a\n"
+                      "def PyAbs(a: int) -> int:\n"
+                      "    return abs(a)\n")
+    payload3 = verify_structured(shadow, tmp_path / "out3", backend="lean")
+    assert payload3["status"] == "ok"
 
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
