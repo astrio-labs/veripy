@@ -391,6 +391,24 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                       "slice proves with its fixed tactic script only",
                       None)
     module = ast.parse(source)
+    # Module level admits ONLY function definitions and a docstring.
+    # Anything else — an assignment (`abs = ...`), an import binding
+    # (`import numpy as abs`), a class — could rebind a name call sites
+    # translate as a builtin, and enumerating the dangerous forms would
+    # rebuild the blocklist mistake: rejection of the whole statement
+    # class makes the module-binding shadow unrepresentable.
+    for i, stmt in enumerate(module.body):
+        if isinstance(stmt, ast.FunctionDef):
+            continue
+        if i == 0 and isinstance(stmt, ast.Expr) \
+                and isinstance(stmt.value, ast.Constant) \
+                and isinstance(stmt.value.value, str):
+            continue  # module docstring
+        raise _reject(
+            f"module-level `{type(stmt).__name__}` is outside the lean "
+            f"slice (function definitions and a docstring only — a "
+            f"module binding could shadow a builtin the encoder "
+            f"translates)", stmt.lineno)
     by_name = {n.name: n for n in module.body
                if isinstance(n, ast.FunctionDef)}
     # Builtin-shadow check, the Dafny encoder's discipline applied here:
