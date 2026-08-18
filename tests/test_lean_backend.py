@@ -397,7 +397,7 @@ def test_loop_shape_rejections():
                 "        #@ invariant s == i\n"
                 "        s = s + 1\n"
                 "    return s >= 0\n")
-    with pytest.raises(EncodeError, match="return `int`"):
+    with pytest.raises(EncodeError, match="match its return type"):
         _encode(boolloop)
 
 
@@ -577,6 +577,118 @@ def test_end_to_end_lists_verify(tmp_path):
                                     "result == sum(xs) + 1"))
     payload = verify_structured(bad, tmp_path / "o4", backend="lean")
     assert payload["status"] == "failed"
+
+
+BELOW_T = ("#@ ensures result == all(xs[k] < t for k in range(len(xs)))\n"
+           "def below_threshold(xs: list[int], t: int) -> bool:\n"
+           "    b = True\n"
+           "    for i in range(len(xs)):\n"
+           "        #@ invariant b == all(xs[k] < t for k in range(i))\n"
+           "        b = b and (xs[i] < t)\n"
+           "    return b\n")
+
+CONTAINS = ("#@ ensures result == any(xs[k] == v for k in range(len(xs)))\n"
+            "def contains(xs: list[int], v: int) -> bool:\n"
+            "    b = False\n"
+            "    for i in range(len(xs)):\n"
+            "        #@ invariant b == any(xs[k] == v for k in range(i))\n"
+            "        b = b or (xs[i] == v)\n"
+            "    return b\n")
+
+
+def test_bool_loops_emit_bool_fuel_recursion_and_iff_invariant():
+    # P2 slice 3: True/False-initialized accumulators with `and`/`or`
+    # steps compile to Bool fuel recursion; the invariant's
+    # `b == all(...)` rides the SAME Bool/Prop bridge as a bool
+    # ensures ((b = true) ↔ ∀ ...), and the induction theorem's
+    # inductive step is a generated constructor script that splits the
+    # fresh index off the quantified prefix.
+    enc = _encode(BELOW_T)
+    assert ("def «below_threshold_loop» («xs» : List Int) («t» : Int) : "
+            "Nat → Int → Bool → Bool") in enc.lean_source
+    assert "(«b» && (decide" in enc.lean_source
+    assert "((«b» = true) ↔ (∀ «k» : Int," in enc.lean_source
+    assert "Bool.and_eq_true" in enc.lean_source
+    assert "rintro ⟨hb, hlast⟩" in enc.lean_source
+
+    enc2 = _encode(CONTAINS)
+    assert "(«b» || (decide" in enc2.lean_source
+    assert "((«b» = true) ↔ (∃ «k» : Int," in enc2.lean_source
+    assert "Bool.or_eq_true" in enc2.lean_source
+    # The invariant's binder domain is range(i) — the index PREFIX, in
+    # bounds only as proof scaffolding (never executed), which is what
+    # the scaffold mode of the list context licenses.
+    assert "«k» < «i»" in enc2.lean_source
+
+
+def test_bool_loop_misuse_is_refused():
+    head = ("#@ ensures result == all(xs[k] < t for k in range(len(xs)))\n"
+            "def f(xs: list[int], t: int) -> bool:\n")
+    cases = [
+        # step must be `acc and P` / `acc or P`
+        (head + "    b = True\n    for i in range(len(xs)):\n"
+                "        #@ invariant b == all(xs[k] < t for k in range(i))\n"
+                "        b = xs[i] < t\n    return b\n",
+         "updates as"),
+        # the accumulator appears only as the left operand
+        (head + "    b = True\n    for i in range(len(xs)):\n"
+                "        #@ invariant b == all(xs[k] < t for k in range(i))\n"
+                "        b = b and (b or xs[i] < t)\n    return b\n",
+         "left operand"),
+        # bool loops return the bare accumulator
+        (head + "    b = True\n    for i in range(len(xs)):\n"
+                "        #@ invariant b == all(xs[k] < t for k in range(i))\n"
+                "        b = b and (xs[i] < t)\n    return b and True\n",
+         "bare accumulator"),
+        # a True-initialized accumulator in an int-returning function
+        ("#@ ensures result >= 0\ndef f(xs: list[int]) -> int:\n"
+         "    b = True\n    for i in range(len(xs)):\n"
+         "        #@ invariant b == True\n"
+         "        b = b and (xs[i] >= 0)\n    return b\n",
+         "match its return type"),
+        # `result` has no meaning in an invariant
+        (head + "    b = True\n    for i in range(len(xs)):\n"
+                "        #@ invariant result == True\n"
+                "        b = b and (xs[i] < t)\n    return b\n",
+         "only meaningful in `ensures`"),
+        # a quantifier binder shadowing the accumulator would be
+        # captured by the result substitution
+        (head + "    b = True\n    for i in range(len(xs)):\n"
+                "        #@ invariant b == all(b < t for b in range(i))\n"
+                "        b = b and (xs[i] < t)\n    return b\n",
+         "shadows the accumulator"),
+    ]
+    for src, needle in cases:
+        with pytest.raises(EncodeError, match=needle):
+            _encode(src)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_bool_loops_verify(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    # The all-accumulator (below_threshold) and or-accumulator
+    # (contains) classes both prove with the fixed cocktail. contains
+    # is the first ∃-postcondition the backend PROVES: the invariant
+    # induction carries the witness through the loop, where P1's fixed
+    # script had none to offer.
+    bt = tmp_path / "below_threshold.py"
+    bt.write_text(BELOW_T)
+    assert verify_structured(bt, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    ct = tmp_path / "contains.py"
+    ct.write_text(CONTAINS)
+    assert verify_structured(ct, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # A wrong bool spec still fails honestly (>= in the ensures, < in
+    # the loop).
+    bad = tmp_path / "bad.py"
+    bad.write_text(BELOW_T.replace("all(xs[k] < t for k in range(len(xs)))",
+                                   "all(xs[k] >= t for k in range(len(xs)))"))
+    assert verify_structured(bad, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
 
 
 def test_duplicate_defs_are_refused_not_mispaired():

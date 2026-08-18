@@ -123,9 +123,20 @@ class _ListCtx:
     lists: frozenset[str]
     safe_idx: dict[str, str]
     take_idx: str | None
+    # Scaffold mode (invariant clauses only): the translated Prop is
+    # proof machinery, never executed and not part of the contract, so
+    # `getD`'s totalization cannot break ensures fidelity. Quantifier
+    # binders become safe indices into ANY list (recorded as "*"),
+    # which is what prefix invariants like
+    # `b == all(xs[k] < t for k in range(i))` need — k's domain is the
+    # index prefix, not range(len(xs)).
+    scaffold: bool = False
 
     def safe(self, idx: str) -> str | None:
         return self.safe_idx.get(idx)
+
+    def safe_for(self, idx: str, lst: str) -> bool:
+        return self.safe_idx.get(idx) in (lst, "*")
 
 
 _NO_LISTS = _ListCtx(frozenset(), {}, None)
@@ -173,7 +184,7 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             raise _reject("a list slice appears only as `sum(xs[:i])` "
                           "inside an invariant in this slice", line)
         idx = e.slice
-        if isinstance(idx, ast.Name) and lc.safe(idx.id) == e.value.id:
+        if isinstance(idx, ast.Name) and lc.safe_for(idx.id, e.value.id):
             # In bounds by construction, so Lean's total `getD` and
             # Python's partial indexing agree on every observed index.
             return (f"({_lref(e.value.id, rename)}.getD "
@@ -300,7 +311,9 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     hi_arg = it.args[-1]
     lo_is_zero = len(it.args) == 1 \
         or (isinstance(it.args[0], ast.Constant) and it.args[0].value == 0)
-    if lo_is_zero and isinstance(hi_arg, ast.Call) \
+    if lc.scaffold:
+        safe[v] = "*"
+    elif lo_is_zero and isinstance(hi_arg, ast.Call) \
             and isinstance(hi_arg.func, ast.Name) \
             and hi_arg.func.id == "len" and not hi_arg.keywords \
             and len(hi_arg.args) == 1 \
@@ -308,7 +321,8 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
             and hi_arg.args[0].id in lc.lists:
         safe[v] = hi_arg.args[0].id
     body_lc = _ListCtx(lc.lists, safe,
-                       None if lc.take_idx == v else lc.take_idx)
+                       None if lc.take_idx == v else lc.take_idx,
+                       lc.scaffold)
     # Two capture hazards at the binder, both measured classes:
     # 1. The theorem's rename map (param named after its own function)
     #    must NOT apply under a binder that reuses the renamed name —
@@ -431,6 +445,24 @@ def _no_old(e: ast.expr, line: int) -> None:
                           line)
 
 
+class _SubstName(ast.NodeTransformer):
+    """Rewrite free occurrences of one name (the bool accumulator) into
+    the reserved name `result`, so an invariant like `b == all(...)`
+    rides the SAME pinned Bool/Prop bridge as a bool ensures clause.
+    Callers pre-check that `result` does not already occur and that no
+    quantifier binder shadows the accumulator, so the substitution is
+    capture-free."""
+
+    def __init__(self, old: str) -> None:
+        self.old = old
+
+    def visit_Name(self, node: ast.Name) -> ast.Name:
+        if node.id == self.old:
+            return ast.copy_location(ast.Name(id="result", ctx=node.ctx),
+                                     node)
+        return node
+
+
 def _bool_expr(e: ast.expr, names: set[str], line: int,
                lc: _ListCtx | None = None) -> str:
     """A Bool-valued Lean term for a predicate function's return.
@@ -525,6 +557,13 @@ class _LoopShape:
     `termination_by`), the invariant as a generated Prop, and an
     induction theorem whose inductive step IS the invariant-preservation
     VC — omega-dischargeable when invariant and step are linear.
+
+    With `acc_bool` (P2 slice 3), the accumulator is a Bool: INIT is a
+    True/False literal, STEP is `acc and P` / `acc or P` (the
+    below_threshold / contains classes), RET is the bare accumulator,
+    and the invariant's `acc == all(...)` becomes
+    `(acc = true) ↔ ∀ ...` — proved by a generated constructor script
+    whose inductive step splits the fresh index off the prefix.
     """
 
     index: str          # the range variable
@@ -536,6 +575,7 @@ class _LoopShape:
     inv: ast.expr       # the single #@ invariant (params, index, acc)
     inv_line: int
     for_line: int
+    acc_bool: bool      # Bool accumulator (True/False init, and/or step)
 
 
 def _split_loop(fn: ast.FunctionDef,
@@ -608,10 +648,33 @@ def _split_loop(fn: ast.FunctionDef,
         inv_expr = ast.parse(text, mode="eval").body
     except SyntaxError as exc:
         raise _reject(f"cannot parse invariant: {exc.msg}", inv.line)
+    # A True/False initializer marks the BOOL accumulator shape (slice
+    # 3): step must be `acc and P` / `acc or P`, return the bare
+    # accumulator. The pairing with the annotated return type is
+    # checked by the caller, which knows it.
+    acc_bool = isinstance(init_stmt.value, ast.Constant) \
+        and isinstance(init_stmt.value.value, bool)
+    if acc_bool:
+        step = body[0].value
+        if not (isinstance(step, ast.BoolOp) and len(step.values) == 2
+                and isinstance(step.values[0], ast.Name)
+                and step.values[0].id == acc):
+            raise _reject(
+                f"a bool accumulator updates as `{acc} = {acc} and <pred>`"
+                f" or `{acc} = {acc} or <pred>` in this slice", loop.lineno)
+        for node in ast.walk(step.values[1]):
+            if isinstance(node, ast.Name) and node.id == acc:
+                raise _reject(f"the accumulator {acc!r} appears only as "
+                              f"the left operand of its own update",
+                              loop.lineno)
+        if not (isinstance(ret_stmt.value, ast.Name)
+                and ret_stmt.value.id == acc):
+            raise _reject("a bool loop returns the bare accumulator in "
+                          "this slice", ret_stmt.lineno)
     return _LoopShape(index=index, acc=acc, init=init_stmt.value,
                       bound=it.args[0], step=body[0].value,
                       ret=ret_stmt.value, inv=inv_expr, inv_line=inv.line,
-                      for_line=loop.lineno)
+                      for_line=loop.lineno, acc_bool=acc_bool)
 
 
 def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
@@ -782,10 +845,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
 
         binders = " ".join(f"({_ident(p)} : {ptypes[p]})" for p in params)
         loop = _split_loop(fn, spec_fn)
-        if loop is not None and is_bool:
-            raise _reject("loop functions must return `int` in this slice "
-                          "(bool-returning loops arrive with early-exit "
-                          "support)", fn.lineno)
+        if loop is not None and is_bool != loop.acc_bool:
+            raise _reject(
+                "a loop function's accumulator must match its return "
+                "type in this slice: True/False-initialized accumulators "
+                "return `bool`, integer accumulators return `int`",
+                fn.lineno)
         if loop is not None:
             for nm, what in ((loop.index, "loop index"),
                              (loop.acc, "accumulator")):
@@ -820,27 +885,59 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     and b.args[0].id in lc0.lists:
                 safe[loop.index] = b.args[0].id
             step_lc = _ListCtx(lc0.lists, safe, None)
-            inv_lc = _ListCtx(lc0.lists, dict(safe), loop.index)
-            init_t = _int_expr(loop.init, names, fn.lineno, lc=lc0)
-            bound_t = _int_expr(loop.bound, names, fn.lineno, lc=lc0)
-            step_t = _int_expr(loop.step, body_names, loop.for_line,
-                               lc=step_lc)
-            inv_t = _prop_expr(loop.inv, body_names, loop.inv_line,
-                               lc=inv_lc)
+            inv_lc = _ListCtx(lc0.lists, dict(safe), loop.index,
+                              scaffold=True)
             iv, av = _ident(loop.index), _ident(loop.acc)
+            acc_ty = "Bool" if loop.acc_bool else "Int"
+            bound_t = _int_expr(loop.bound, names, fn.lineno, lc=lc0)
+            if loop.acc_bool:
+                init_t = "true" if loop.init.value else "false"
+                # Step: `acc and P` / `acc or P` — P bridges into Bool
+                # via decide, mirroring the loop-free predicate path.
+                bool_op = "&&" if isinstance(loop.step.op, ast.And) \
+                    else "||"
+                pred_t = _prop_expr(loop.step.values[1], body_names,
+                                    loop.for_line, lc=step_lc)
+                step_t = f"({av} {bool_op} (decide {pred_t}))"
+                # The invariant mentions the Bool accumulator by name;
+                # rewriting it to the reserved `result` rides the SAME
+                # pinned bridge as a bool ensures clause
+                # ((acc = true) ↔ prop). Capture-free by the checks.
+                for node in ast.walk(loop.inv):
+                    if isinstance(node, ast.Name) and node.id == "result":
+                        raise _reject("`result` is only meaningful in "
+                                      "`ensures`", loop.inv_line)
+                    if isinstance(node, ast.comprehension) \
+                            and isinstance(node.target, ast.Name) \
+                            and node.target.id == loop.acc:
+                        raise _reject(
+                            f"a quantifier binder shadows the "
+                            f"accumulator {loop.acc!r} — outside this "
+                            f"slice", loop.inv_line)
+                inv_sub = _SubstName(loop.acc).visit(loop.inv)
+                inv_t = _prop_expr(inv_sub, body_names, loop.inv_line,
+                                   result=av, result_is_bool=True,
+                                   lc=inv_lc)
+            else:
+                init_t = _int_expr(loop.init, names, fn.lineno, lc=lc0)
+                step_t = _int_expr(loop.step, body_names, loop.for_line,
+                                   lc=step_lc)
+                inv_t = _prop_expr(loop.inv, body_names, loop.inv_line,
+                                   lc=inv_lc)
             emit("", None)
             # Fuel recursion on Nat: structurally terminating, so no
             # termination_by; range(N) with negative N is the empty loop
             # via .toNat clamping, matching CPython.
             emit(f"def {_ident(gen_loop)} {binders} : "
-                 f"Nat → Int → Int → Int", loop.for_line)
+                 f"Nat → Int → {acc_ty} → {acc_ty}", loop.for_line)
             emit(f"  | 0, _, {av} => {av}", loop.for_line)
             emit(f"  | (m + 1), {iv}, {av} => "
                  f"{_ident(gen_loop)} {argsp}m ({iv} + 1) {step_t}",
                  loop.for_line)
             emit("", None)
             emit(f"def {_ident(gen_inv)} {binders} "
-                 f"({iv} {av} : Int) : Prop :=", loop.inv_line)
+                 f"({iv} : Int) ({av} : {acc_ty}) : Prop :=",
+                 loop.inv_line)
             emit(f"  {inv_t}", loop.inv_line)
             emit("", None)
             # The induction theorem: its inductive step IS the
@@ -848,7 +945,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # The loop application is one opaque atom to omega, so the
             # index arithmetic (i+1)+k vs i+(k+1) closes linearly.
             emit(f"theorem {_ident(gen_thm)} {binders} : "
-                 f"∀ (m : Nat) ({iv} {av} : Int),", loop.inv_line)
+                 f"∀ (m : Nat) ({iv} : Int) ({av} : {acc_ty}),",
+                 loop.inv_line)
             emit(f"    {_ident(gen_inv)} {argsp}{iv} {av} → 0 ≤ {iv} →",
                  loop.inv_line)
             emit(f"    {_ident(gen_inv)} {argsp}({iv} + m) "
@@ -881,23 +979,78 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # invariants close on omega alone; take-slice invariants
             # need (i+1).toNat unfolded to i.toNat+1 (sound under hi)
             # so PySum_take_succ can peel the (i+1)-prefix into the
-            # i-prefix plus the getD element omega can then match.
-            emit(f"      have hstep := ih ({iv} + 1) {step_t} "
-                 f"(by simp only [{_ident(gen_inv)}] at h ⊢; "
-                 f"first | omega | (rw [show ({iv} + 1).toNat = "
-                 f"({iv}).toNat + 1 from by omega]; "
-                 f"simp only [LemmaPy.PySum_take_succ]; omega)) "
-                 f"(by omega)", loop.inv_line)
+            # i-prefix plus the getD element omega can then match; the
+            # Bool shapes get a constructor script that splits the
+            # fresh index off the ∀/∃ prefix (below_threshold/contains
+            # classes, both live-measured).
+            emit(f"      have hstep := ih ({iv} + 1)", loop.inv_line)
+            emit(f"        {step_t}", loop.inv_line)
+            if not loop.acc_bool:
+                emit(f"        (by simp only [{_ident(gen_inv)}] at h ⊢; "
+                     f"first | omega | (rw [show ({iv} + 1).toNat = "
+                     f"({iv}).toNat + 1 from by omega]; "
+                     f"simp only [LemmaPy.PySum_take_succ]; omega))",
+                     loop.inv_line)
+            elif isinstance(loop.step.op, ast.And):
+                for tl in (
+                    "        (by",
+                    f"          simp only [{_ident(gen_inv)}, "
+                    f"Bool.and_eq_true, decide_eq_true_eq] at h ⊢",
+                    "          first",
+                    "          | omega",
+                    "          | (constructor",
+                    "             · rintro ⟨hb, hlast⟩ j hj",
+                    f"               rcases (by omega : j < {iv} ∨ "
+                    f"j = {iv}) with hlt | rfl",
+                    "               · exact (h.mp hb) j ⟨hj.1, hlt⟩",
+                    "               · exact hlast",
+                    "             · intro hall",
+                    "               exact ⟨h.mpr (fun j hj => hall j "
+                    "⟨hj.1, by omega⟩),",
+                    f"                      hall {iv} ⟨hi, by omega⟩⟩))",
+                ):
+                    emit(tl, loop.inv_line)
+            else:
+                for tl in (
+                    "        (by",
+                    f"          simp only [{_ident(gen_inv)}, "
+                    f"Bool.or_eq_true, decide_eq_true_eq] at h ⊢",
+                    "          first",
+                    "          | omega",
+                    "          | (constructor",
+                    "             · rintro (hb | hlast)",
+                    "               · obtain ⟨j, hj, hpj⟩ := h.mp hb",
+                    "                 exact ⟨j, ⟨hj.1, by omega⟩, hpj⟩",
+                    f"               · exact ⟨{iv}, ⟨hi, by omega⟩, "
+                    f"hlast⟩",
+                    "             · rintro ⟨j, hj, hpj⟩",
+                    f"               rcases (by omega : j < {iv} ∨ "
+                    f"j = {iv}) with hlt | rfl",
+                    "               · exact Or.inl (h.mpr ⟨j, "
+                    "⟨hj.1, hlt⟩, hpj⟩)",
+                    "               · exact Or.inr hpj))",
+                ):
+                    emit(tl, loop.inv_line)
+            emit("        (by omega)", loop.inv_line)
             emit(f"      simp only [{_ident(gen_inv)}] at hstep ⊢",
                  loop.inv_line)
             emit("      all_goals (try push_cast at hstep ⊢)",
                  loop.inv_line)
+            # Shape-independent transport: after the index rewrite
+            # ((i+1)+k = i+(k+1), sound by omega), hstep IS the goal —
+            # this closes iff-of-quantifier invariants the arithmetic
+            # ladder cannot touch, and short-circuits the linear ones.
+            emit(f"      all_goals (try (rw [show ({iv} + 1 + "
+                 f"(k : Int)) = ({iv} + ((k : Int) + 1)) from by omega] "
+                 f"at hstep))", loop.inv_line)
+            emit("      all_goals (try (exact hstep))", loop.inv_line)
             for step_line in ladder:
                 emit(step_line, loop.inv_line)
-            ret_t = _int_expr(loop.ret, names | {loop.acc}, fn.lineno,
-                              lc=lc0)
+            ret_t = av if loop.acc_bool \
+                else _int_expr(loop.ret, names | {loop.acc}, fn.lineno,
+                               lc=lc0)
             emit("", None)
-            emit(f"def {_ident(spec_fn.name)} {binders} : Int :=",
+            emit(f"def {_ident(spec_fn.name)} {binders} : {acc_ty} :=",
                  fn.lineno)
             emit(f"  let {av} := {_ident(gen_loop)} {argsp}"
                  f"({bound_t}).toNat 0 {init_t}; {ret_t}", fn.lineno)
@@ -969,7 +1122,9 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # one shared atom for omega.
             targs = " ".join(_ident(_tname(p)) for p in params)
             targsp = (targs + " ") if targs else ""
-            t_init = _int_expr(loop.init, names, fn.lineno,
+            t_init = ("true" if loop.init.value else "false") \
+                if loop.acc_bool \
+                else _int_expr(loop.init, names, fn.lineno,
                                rename=rename, lc=lc0)
             t_bound = _int_expr(loop.bound, names, fn.lineno,
                                 rename=rename, lc=lc0)
@@ -983,6 +1138,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                  f"simp only [{_ident(f'{spec_fn.name}_inv')}]; "
                  f"all_goals (try push_cast); all_goals (try omega); "
                  f"all_goals (try simp_all [LemmaPy.PySum]); "
+                 f"all_goals (try intros); "
                  f"all_goals (first | omega | trivial)",
                  first_ensures_line)
             emit(f"  have hfin := {_ident(f'{spec_fn.name}_loop_inv')} "
@@ -1001,6 +1157,11 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("  all_goals (try simp only [Int.toNat_natCast, "
                  "Int.zero_add, List.take_length] at hfin)",
                  first_ensures_line)
+            # After normalization hfin often IS the ensures goal
+            # (measured on the contains class, whose ∃-postcondition no
+            # fixed script could otherwise witness — the invariant
+            # induction carries the witness through the loop).
+            emit("  all_goals (try (exact hfin))", first_ensures_line)
         # Prelude definitions are opaque to omega — a goal containing
         # LemmaPy.PyAbs is unprovable until it unfolds to its
         # if-then-else (measured: every abs()-using module failed as
