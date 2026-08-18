@@ -268,6 +268,23 @@ def test_shadowed_builtins_are_refused_not_mistranslated():
     assert "def «bump»" in enc.lean_source
 
 
+def test_nested_spec_cannot_borrow_a_module_level_body():
+    # A spec'd NESTED def sharing a name with an unspecified module-level
+    # function paired by name alone — Lean would prove the module-level
+    # body against the nested contract. The def line is now part of the
+    # pairing key.
+    nested = ("def outer(x: int) -> int:\n"
+              "    #@ ensures result == y + 1\n"
+              "    def g(y: int) -> int:\n"
+              "        return y + 1\n"
+              "    return x\n"
+              "\n"
+              "def g(y: int) -> int:\n"
+              "    return y\n")
+    with pytest.raises(EncodeError, match="nested"):
+        _encode(nested)
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against
