@@ -649,14 +649,30 @@ def _requires_min_len(spec_fn: FunctionSpec,
 
 def _loop_invariants(spec_fn: FunctionSpec,
                      loop: ast.For) -> tuple[ast.expr, int]:
-    """Collect every `#@ invariant` inside the loop and conjoin them
+    """Collect every `#@ invariant` at the loop HEAD and conjoin them
     (slice 5: max_element-class tasks state a prefix bound AND a
     witness). One generated Prop carries the conjunction; the
-    preservation script splits it constructor-wise."""
-    last_body_line = max(getattr(s, "end_lineno", s.lineno)
-                         for s in loop.body)
-    invs = [c for c in spec_fn.by_kind("invariant")
-            if loop.lineno <= c.line <= last_body_line]
+    preservation script splits it constructor-wise.
+
+    Placement is the Dafny backend's rule verbatim: strictly between
+    the `for` header and the first body statement (loop-head
+    semantics). With multi-statement bodies, an invariant deeper in
+    the span is REJECTED, not silently adopted or ignored — the
+    encoder would otherwise accept source the documented fragment and
+    the sibling backend refuse."""
+    every = spec_fn.by_kind("invariant")
+    invs = [c for c in every
+            if loop.lineno < c.line < loop.body[0].lineno]
+    misplaced = [c for c in every if c not in invs]
+    if misplaced:
+        # This slice admits one loop per function, so EVERY invariant
+        # in the function must sit at that loop's head — a stray one
+        # anywhere else would otherwise be silently ignored.
+        raise _reject("`invariant` must sit at the top of the loop "
+                      "body, before its first statement (Dafny "
+                      "loop-head semantics — the same rule the "
+                      "conformance backend enforces)",
+                      misplaced[0].line)
     if not invs:
         raise _reject("a loop needs at least one `#@ invariant` in this "
                       "slice", loop.lineno)
@@ -1085,6 +1101,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
 
         binders = " ".join(f"({_ident(p)} : {ptypes[p]})" for p in params)
         loop = _split_loop(fn, spec_fn)
+        if loop is None and spec_fn.by_kind("invariant"):
+            # No loop claims it, so it would be silently dropped — the
+            # Dafny backend's unclaimed-clause error, mirrored.
+            raise _reject("`invariant` must sit at the top of a loop "
+                          "body, and this function has no loop",
+                          spec_fn.by_kind("invariant")[0].line)
         if loop is not None and is_bool != loop.acc_bool:
             raise _reject(
                 "a loop function's accumulator must match its return "

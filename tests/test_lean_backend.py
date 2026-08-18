@@ -820,6 +820,47 @@ def test_end_to_end_max_element_verifies(tmp_path):
                              backend="lean")["status"] == "failed"
 
 
+def test_invariants_must_sit_at_the_loop_head():
+    # The Dafny backend's placement rule verbatim: strictly between the
+    # `for` header and the first body statement. Multi-statement bodies
+    # (early-return, conditional update) opened a span where an
+    # invariant after an executable statement or inside a nested block
+    # would otherwise be silently adopted — source the documented
+    # fragment and the sibling backend refuse.
+    inside_if = ("#@ ensures result == "
+                 "all(l[k] < t for k in range(len(l)))\n"
+                 "def f(l: list[int], t: int) -> bool:\n"
+                 "    for i in range(len(l)):\n"
+                 "        if l[i] >= t:\n"
+                 "            #@ invariant all(l[k] < t for k in range(i))\n"
+                 "            return False\n"
+                 "    return True\n")
+    with pytest.raises(EncodeError, match="top of the loop body"):
+        _encode(inside_if)
+
+    after_stmt = ("#@ requires len(l) > 0\n"
+                  "#@ ensures forall i in range(len(l)) "
+                  ":: l[i] <= result\n"
+                  "def f(l: list[int]) -> int:\n"
+                  "    m: int = l[0]\n"
+                  "    for i in range(len(l)):\n"
+                  "        if l[i] > m:\n"
+                  "            m = l[i]\n"
+                  "        #@ invariant forall k in range(i) :: l[k] <= m\n"
+                  "    return m\n")
+    with pytest.raises(EncodeError, match="top of the loop body"):
+        _encode(after_stmt)
+
+    # ...and an invariant in a loop-free function has no loop to claim
+    # it: rejected, never silently dropped.
+    no_loop = ("#@ ensures result == x\n"
+               "def f(x: int) -> int:\n"
+               "    #@ invariant x >= 0\n"
+               "    return x\n")
+    with pytest.raises(EncodeError, match="no loop"):
+        _encode(no_loop)
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against
