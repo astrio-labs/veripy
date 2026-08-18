@@ -56,7 +56,7 @@ def test_encoder_emits_def_and_spec_theorem():
     # points at the contract, not at Lean plumbing.
     tactic_line = next(i for i, text in
                        enumerate(enc.lean_source.split("\n"), start=1)
-                       if "all_goals omega" in text)
+                       if "first | omega" in text)  # the endgame line
     assert enc.line_map[tactic_line] == 1  # ensures is source line 1
 
 
@@ -144,6 +144,49 @@ def test_param_shadowing_is_allowed_and_alpha_renamed_in_theorems():
              "    return x\n")
     enc2 = _encode(other)  # must not raise
     assert "def «f» («g» : Int)" in enc2.lean_source
+
+
+def test_encoder_emits_bool_predicates_and_quantifiers():
+    # Slice 2: predicate functions bridge Bool via decide, ensures
+    # `result == X` becomes an iff against X-as-Prop, and forall/exists
+    # over ranges become bounded ∀/∃.
+    pred = ("#@ ensures result == (x > 0)\n"
+            "def pos(x: int) -> bool:\n"
+            "    return x > 0\n")
+    enc = _encode(pred)
+    assert "def «pos» («x» : Int) : Bool :=" in enc.lean_source
+    assert "(decide (" in enc.lean_source
+    assert "((«pos» «x») = true) ↔" in enc.lean_source
+
+    quant = ("#@ requires n >= 0\n"
+             "#@ ensures forall i in range(0, n) :: result >= i - n + 1\n"
+             "def top(n: int) -> int:\n"
+             "    return n\n")
+    enc2 = _encode(quant)
+    assert "(∀ «i» : Int, (0 ≤ «i» ∧ «i» < «n») →" in enc2.lean_source
+
+    ex = ("#@ ensures exists i in range(0, 3) :: result == i\n"
+          "def z(n: int) -> int:\n"
+          "    return 0\n")
+    enc3 = _encode(ex)
+    assert "(∃ «i» : Int, (0 ≤ «i» ∧ «i» < 3) ∧" in enc3.lean_source
+
+    # Out-of-slice quantifier shapes refuse loudly.
+    with pytest.raises(EncodeError, match="range"):
+        _encode("#@ ensures forall v in xs :: v >= 0\n"
+                "def f(xs: int) -> int:\n"
+                "    return xs\n")
+
+
+def test_classifier_maps_endgame_tactic_failures():
+    # The endgame combinator reports its LAST sub-tactic's failure, not
+    # omega's phrasing (measured: false specs reclassified as unknown
+    # when the cocktail grew `first | omega | trivial`). The turnstile
+    # needle is the robust form: any displayed unsolved goal is the spec
+    # theorem failing.
+    assert classify_lean_message(
+        "Tactic `assumption` failed\n\nx : Int\n⊢ False") == "postcondition"
+    assert classify_lean_message("some tactic\n⊢ x + 1 = x + 2") == "postcondition"
 
 
 def test_encoder_rejects_cross_declaration_collisions():
@@ -260,6 +303,37 @@ def test_end_to_end_true_spec_verifies(tmp_path):
                       "    return abs(a)\n")
     payload3 = verify_structured(shadow, tmp_path / "out3", backend="lean")
     assert payload3["status"] == "ok"
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_bool_predicates_verify(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    pred = tmp_path / "pos.py"
+    pred.write_text("#@ ensures result == (x > 0)\n"
+                    "def pos(x: int) -> bool:\n"
+                    "    return x > 0\n")
+    assert verify_structured(pred, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # Bool-literal branches exercise the ite-under-iff residue simp_all
+    # normalizes (measured failing before the endgame extension).
+    lit = tmp_path / "big.py"
+    lit.write_text("#@ ensures result == (x >= 10)\n"
+                   "def big(x: int) -> bool:\n"
+                   "    if x >= 10:\n"
+                   "        return True\n"
+                   "    return False\n")
+    assert verify_structured(lit, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    false_bool = tmp_path / "neg.py"
+    false_bool.write_text("#@ ensures result == (x >= 0)\n"
+                          "def neg(x: int) -> bool:\n"
+                          "    return x > 0\n")
+    payload = verify_structured(false_bool, tmp_path / "o3", backend="lean")
+    assert payload["status"] == "failed"
+    assert payload["failures"][0]["kind"] == "postcondition"
 
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
