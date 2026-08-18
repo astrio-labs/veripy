@@ -1,7 +1,7 @@
 """Read-only fragment conformance survey (telemetry, not the gate).
 
-This is NOT the conformance checker. `lemmapy check` dry-runs the encoder
-after the basedpyright type gate. This module runs without type information
+This is NOT the conformance checker. `lemmapy check` dry-runs the encoder,
+then the basedpyright type gate. This module runs without type information
 and approximates the allowlist rules of ARCHITECTURE.md §3.1 at the AST
 level. Its job is telemetry (RQ1 in EVALUATION.md): what fraction of real
 typed functions falls inside the candidate fragment, and which rules fire

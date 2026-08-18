@@ -39,8 +39,10 @@ Parses spec comments (`requires`, `ensures`, `invariant`, `decreases`, `proof`, 
 
 `lemmapy check` is two passes, in this order:
 
-1. **basedpyright strict** — solves dynamic *typing*; version-pinned and trusted (assumption A7). `--no-types` is an explicit opt-out, never a silent skip.
-2. **The encoder itself** — solves dynamic *semantics*. It is the fragment's conformance authority: a construct with no lowering is a hard error with a stable `rule` id ([AGENT-INTERFACE.md](AGENT-INTERFACE.md)), not a warning. `lemmapy check` dry-runs the encoder so the gate and the verifier reject the same programs.
+1. **The encoder itself** — solves dynamic *semantics*. It is the fragment's conformance authority: a construct with no lowering is a hard error with a stable `rule` id ([AGENT-INTERFACE.md](AGENT-INTERFACE.md)), not a warning. `lemmapy check` dry-runs the encoder so the gate and the verifier reject the same programs.
+2. **basedpyright strict** — solves dynamic *typing*; version-pinned and trusted (assumption A7). `--no-types` is an explicit opt-out, never a silent skip.
+
+`lemmapy verify` inverts that order: the type gate runs first so an ill-typed file never reaches Dafny.
 
 `lemmapy survey` is a **separate**, untyped AST telemetry pass used for RQ1 coverage numbers. It is not the gate, and its `U-METHOD`/`U-CALL` rules are optimistic (name-only). Do not quote survey acceptance as encoder acceptance.
 
@@ -211,7 +213,7 @@ The aliasing row is the strongest surviving form of the objection: even a perfec
 | 3 | **Definition integrity** | Is the code that runs the code that was verified? | Runtime hardening + explicit assumptions A1–A7 | assumption list in report & paper |
 | 4 | **Model fidelity** | Does the Dafny model mean what the Python means? | Differential testing via Dafny's Python backend + fragment semantics note | CI fuzz harness, encoder bug tracker |
 
-A file is "verified" only if the encoder (preceded by basedpyright strict, unless `--no-types`) and Dafny both pass on the same commit. Generated guards are a separate artifact (`lemmapy guard`); they are not inserted into the source, and trusted callers may import the original module (A2).
+A file is "verified" only if the type gate (unless `--no-types`), the encoder, and Dafny all pass on the same commit. `lemmapy verify` runs the type gate first so an ill-typed file never reaches Dafny. Generated guards are a separate artifact (`lemmapy guard`); they are not inserted into the source, and trusted callers may import the original module (A2).
 
 ---
 
@@ -438,8 +440,6 @@ Framing worth keeping: dynamic typing is a property of the *language*; verificat
 **Claimed:** for programs the encoder accepts (after the type gate, unless `--no-types`), properties verified by Dafny hold of every execution entering through generated guards with all executable checks passing and any per-boundary assumed (non-executable) clauses true — both enumerated in the verification report — under A1–A7, with the encoder differential-tested against CPython on every change. Sampling mode (§4.4) is designed, not shipped; if it lands, it forfeits this guarantee and must be reported as such.
 
 **Not claimed:** full CPython semantics; anything about `float` behavior (v1); behavior under runtime patching of island definitions, `ctypes`, or concurrent mutation (A1–A3); behavior past asynchronous exceptions or resource exhaustion (A5); correctness of Tier 3 extern contracts (not implemented; the report currently states "verified modulo 0 trusted contracts").
-
-Each "not claimed" is either detected and rejected, guarded, or stated — never silent.
 
 Each "not claimed" is either detected and rejected, guarded, or stated — never silent.
 
