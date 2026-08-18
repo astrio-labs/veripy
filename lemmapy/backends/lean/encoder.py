@@ -34,6 +34,13 @@ X-as-Prop) and single-binder bounded quantifiers (`forall`/`exists` over
 `range` -> ∀/∃ with explicit bounds). ∃ goals need witnesses no fixed
 tactic script can supply — those fail honestly as `postcondition` and
 wait for the sidecar channel (P3).
+
+The P2 slices grow the fragment, same discipline: for-range accumulator
+loops compile to fuel recursion with the `#@ invariant` as a generated
+induction theorem, and `list[int]` parameters arrive with `len`/`sum`
+(the prelude's PySum, with a PROVED prefix-sum lemma pack), indexing
+where in-bounds is guaranteed by construction (`_ListCtx`), and
+`sum(xs[:i])` prefix sums in invariants.
 """
 
 from __future__ import annotations
@@ -93,14 +100,48 @@ _CMP = {ast.Eq: "=", ast.NotEq: "≠", ast.Lt: "<", ast.LtE: "≤",
 _ARITH = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*"}
 
 
+def _lref(name: str, rename: dict[str, str] | None) -> str:
+    return _ident(rename[name]) if rename and name in rename else _ident(name)
+
+
+@dataclass
+class _ListCtx:
+    """Which names are `list[int]` parameters, and which index names are
+    STRUCTURALLY in bounds for which list.
+
+    `xs[i]` is total in Lean (`getD` with default 0) but partial in
+    Python (IndexError, and negative indices wrap), so the two agree
+    only where 0 ≤ i < len(xs) is guaranteed by construction: the loop
+    index of `for i in range(len(xs))`, or a quantifier binder over
+    `range(len(xs))` whose bound hypothesis guards the body. `safe_idx`
+    carries exactly those (index, list) pairs; every other index is
+    refused. `take_idx` names the one variable allowed as `xs[:i]`'s
+    upper bound — the loop index, and only while translating the
+    invariant, where the slice is proof scaffolding evaluated at loop
+    heads (i ≥ 0 there, so Lean's `.toNat` clamp is never observed)."""
+
+    lists: frozenset[str]
+    safe_idx: dict[str, str]
+    take_idx: str | None
+
+    def safe(self, idx: str) -> str | None:
+        return self.safe_idx.get(idx)
+
+
+_NO_LISTS = _ListCtx(frozenset(), {}, None)
+
+
 def _int_expr(e: ast.expr, names: set[str], line: int,
               result: str | None = None,
-              rename: dict[str, str] | None = None) -> str:
+              rename: dict[str, str] | None = None,
+              lc: _ListCtx | None = None) -> str:
     """An integer-valued Lean term. `result` is the application expression
     substituted for the reserved name `result` in ensures clauses;
     `rename` alpha-renames binders in theorem context (a parameter named
     after its own function would otherwise be captured by the function
-    reference in the theorem statement)."""
+    reference in the theorem statement); `lc` carries the list-typed
+    names and the structurally-safe index pairs."""
+    lc = lc or _NO_LISTS
     if isinstance(e, ast.Name):
         if e.id == "result":
             if result is None:
@@ -110,6 +151,10 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
         if e.id not in names:
             raise _reject(f"unknown name {e.id!r} in this slice "
                           f"(parameters and prior assignments only)", line)
+        if e.id in lc.lists:
+            raise _reject(f"list parameter {e.id!r} in an integer "
+                          f"position (lists appear only under len/sum/"
+                          f"indexing in this slice)", line)
         if rename and e.id in rename:
             return _ident(rename[e.id])
         return _ident(e.id)
@@ -117,11 +162,27 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             and not isinstance(e.value, bool):
         return str(e.value) if e.value >= 0 else f"({e.value})"
     if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.USub):
-        return f"(-{_int_expr(e.operand, names, line, result, rename)})"
+        return f"(-{_int_expr(e.operand, names, line, result, rename, lc)})"
     if isinstance(e, ast.BinOp) and type(e.op) in _ARITH:
-        a = _int_expr(e.left, names, line, result, rename)
-        b = _int_expr(e.right, names, line, result, rename)
+        a = _int_expr(e.left, names, line, result, rename, lc)
+        b = _int_expr(e.right, names, line, result, rename, lc)
         return f"({a} {_ARITH[type(e.op)]} {b})"
+    if isinstance(e, ast.Subscript) and isinstance(e.value, ast.Name) \
+            and e.value.id in lc.lists:
+        if isinstance(e.slice, ast.Slice):
+            raise _reject("a list slice appears only as `sum(xs[:i])` "
+                          "inside an invariant in this slice", line)
+        idx = e.slice
+        if isinstance(idx, ast.Name) and lc.safe(idx.id) == e.value.id:
+            # In bounds by construction, so Lean's total `getD` and
+            # Python's partial indexing agree on every observed index.
+            return (f"({_lref(e.value.id, rename)}.getD "
+                    f"({_lref(idx.id, rename)}).toNat 0)")
+        raise _reject(
+            f"index into {e.value.id!r} is not structurally in bounds — "
+            f"this slice indexes a list only by the loop index of `for i "
+            f"in range(len({e.value.id}))` or a quantifier binder over "
+            f"`range(len({e.value.id}))`", line)
     if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):
         args = e.args
         if e.func.id in names:
@@ -137,22 +198,52 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             raise _reject(f"keyword arguments to {e.func.id!r} are not in "
                           f"the fragment", line)
         if e.func.id in ("min", "max") and len(args) == 2:
-            a = _int_expr(args[0], names, line, result, rename)
-            b = _int_expr(args[1], names, line, result, rename)
+            a = _int_expr(args[0], names, line, result, rename, lc)
+            b = _int_expr(args[1], names, line, result, rename, lc)
             return f"({e.func.id} {a} {b})"
         if e.func.id == "abs" and len(args) == 1:
             # Qualified: immune to user redeclaration AND binder capture
             # (a parameter named PyAbs shadows the bare name, never the
             # namespaced one).
             return (f"(LemmaPy.PyAbs "
-                    f"{_int_expr(args[0], names, line, result, rename)})")
+                    f"{_int_expr(args[0], names, line, result, rename, lc)})")
+        if e.func.id == "len" and len(args) == 1:
+            if isinstance(args[0], ast.Name) and args[0].id in lc.lists:
+                # Python len == List.length exactly (both count elements,
+                # both nonnegative); the cast lands in omega's fragment.
+                return f"(({_lref(args[0].id, rename)}.length : Int))"
+            raise _reject("`len` applies to a list parameter only in "
+                          "this slice", line)
+        if e.func.id == "sum" and len(args) == 1:
+            a0 = args[0]
+            if isinstance(a0, ast.Name) and a0.id in lc.lists:
+                # Python folds left, PySum folds right; Int addition is
+                # commutative and associative, so the values agree.
+                return f"(LemmaPy.PySum {_lref(a0.id, rename)})"
+            if isinstance(a0, ast.Subscript) \
+                    and isinstance(a0.value, ast.Name) \
+                    and a0.value.id in lc.lists \
+                    and isinstance(a0.slice, ast.Slice):
+                sl = a0.slice
+                if sl.lower is None and sl.step is None \
+                        and isinstance(sl.upper, ast.Name) \
+                        and lc.take_idx is not None \
+                        and sl.upper.id == lc.take_idx:
+                    return (f"(LemmaPy.PySum "
+                            f"({_lref(a0.value.id, rename)}.take "
+                            f"({_lref(sl.upper.id, rename)}).toNat))")
+                raise _reject("only `sum(xs[:i])` with the loop index as "
+                              "the slice bound is in this slice, and only "
+                              "inside the loop's invariant", line)
+            raise _reject("`sum` applies to a list parameter or "
+                          "`xs[:i]` in this slice", line)
         if e.func.id == "old" and len(args) == 1 \
                 and isinstance(args[0], ast.Name):
             # Parameters are immutable in this slice (reassignment is
             # rejected), so entry value == current value.
-            return _int_expr(args[0], names, line, result, rename)
+            return _int_expr(args[0], names, line, result, rename, lc)
         raise _reject(f"call to {e.func.id!r} is outside slice 1 "
-                      f"(min/max/abs/old only)", line)
+                      f"(min/max/abs/len/sum/old only)", line)
     raise _reject(f"expression {ast.dump(e)[:60]}... is outside slice 1",
                   line)
 
@@ -160,7 +251,8 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
 def _quantifier(e: ast.Call, names: set[str], line: int,
                 result: str | None, rename: dict[str, str] | None,
                 result_is_bool: bool,
-                avoid: frozenset[str] | None = None) -> str | None:
+                avoid: frozenset[str] | None = None,
+                lc: _ListCtx | None = None) -> str | None:
     """`all((body) for v in (range(a, b)))` -> a bounded ∀ (any -> ∃).
 
     The desugared form the frontend emits for `forall`/`exists` spec
@@ -186,13 +278,37 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         raise _reject("quantifier domains must be `range(a, b)` or "
                       "`range(b)` in slice 2 (and `range` must not be "
                       "shadowed)", line)
+    lc = lc or _NO_LISTS
     if len(it.args) == 2:
-        lo = _int_expr(it.args[0], names, line, result, rename)
-        hi = _int_expr(it.args[1], names, line, result, rename)
+        lo = _int_expr(it.args[0], names, line, result, rename, lc)
+        hi = _int_expr(it.args[1], names, line, result, rename, lc)
     else:
         lo = "0"
-        hi = _int_expr(it.args[0], names, line, result, rename)
+        hi = _int_expr(it.args[0], names, line, result, rename, lc)
     v = comp.target.id
+    if v in lc.lists:
+        raise _reject(f"quantifier binder {v!r} shadows a list parameter "
+                      f"— outside this slice", line)
+    # A binder over `range(len(L))` (or `range(0, len(L))`) is in bounds
+    # for L wherever the bound hypothesis guards it — which is exactly
+    # the ∀-body (bound → body) and ∃-body (bound ∧ body) positions this
+    # translation emits. Record the pair so the body may index L. Either
+    # way the binder SHADOWS its name: an outer safe pair (or the take
+    # index) under the same name refers to a different variable inside
+    # the body, so it is dropped, never inherited.
+    safe = {k: lst for k, lst in lc.safe_idx.items() if k != v}
+    hi_arg = it.args[-1]
+    lo_is_zero = len(it.args) == 1 \
+        or (isinstance(it.args[0], ast.Constant) and it.args[0].value == 0)
+    if lo_is_zero and isinstance(hi_arg, ast.Call) \
+            and isinstance(hi_arg.func, ast.Name) \
+            and hi_arg.func.id == "len" and not hi_arg.keywords \
+            and len(hi_arg.args) == 1 \
+            and isinstance(hi_arg.args[0], ast.Name) \
+            and hi_arg.args[0].id in lc.lists:
+        safe[v] = hi_arg.args[0].id
+    body_lc = _ListCtx(lc.lists, safe,
+                       None if lc.take_idx == v else lc.take_idx)
     # Two capture hazards at the binder, both measured classes:
     # 1. The theorem's rename map (param named after its own function)
     #    must NOT apply under a binder that reuses the renamed name —
@@ -217,7 +333,8 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     # deeper).
     body_avoid = (avoid or frozenset()) | {binder}
     body = _prop_expr(gen.elt, names | {v}, line, result,
-                      body_rename or None, result_is_bool, body_avoid)
+                      body_rename or None, result_is_bool, body_avoid,
+                      body_lc)
     bound = f"({lo} ≤ {_ident(binder)} ∧ {_ident(binder)} < {hi})"
     if e.func.id == "all":
         return f"(∀ {_ident(binder)} : Int, {bound} → {body})"
@@ -228,7 +345,8 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
                result: str | None = None,
                rename: dict[str, str] | None = None,
                result_is_bool: bool = False,
-               avoid: frozenset[str] | None = None) -> str:
+               avoid: frozenset[str] | None = None,
+               lc: _ListCtx | None = None) -> str:
     """A proposition-valued Lean term (spec clauses, `if` conditions).
 
     With `result_is_bool`, the reserved name `result` denotes a Bool
@@ -249,12 +367,12 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
                 raise _reject("`result` is only meaningful in `ensures`",
                               line)
             prop = _prop_expr(others[0], names, line, result, rename,
-                              result_is_bool, avoid)
+                              result_is_bool, avoid, lc)
             iff = f"(({result} = true) ↔ {prop})"
             return iff if isinstance(e.ops[0], ast.Eq) else f"(¬{iff})"
     if isinstance(e, ast.Call):
         q = _quantifier(e, names, line, result, rename, result_is_bool,
-                        avoid)
+                        avoid, lc)
         if q is not None:
             return q
     if isinstance(e, ast.Compare):
@@ -264,20 +382,20 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
             if type(op) not in _CMP:
                 raise _reject("only =/≠/</≤/>/≥ comparisons are in slice 1",
                               line)
-            a = _int_expr(left, names, line, result, rename)
-            b = _int_expr(right, names, line, result, rename)
+            a = _int_expr(left, names, line, result, rename, lc)
+            b = _int_expr(right, names, line, result, rename, lc)
             parts.append(f"{a} {_CMP[type(op)]} {b}")
             left = right
         return "(" + " ∧ ".join(parts) + ")"
     if isinstance(e, ast.BoolOp):
         op = "∧" if isinstance(e.op, ast.And) else "∨"
         parts = [_prop_expr(v, names, line, result, rename,
-                            result_is_bool, avoid)
+                            result_is_bool, avoid, lc)
                  for v in e.values]
         return "(" + f" {op} ".join(parts) + ")"
     if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not):
         inner = _prop_expr(e.operand, names, line, result, rename,
-                           result_is_bool, avoid)
+                           result_is_bool, avoid, lc)
         return f"(¬{inner})"
     if isinstance(e, ast.Constant) and e.value is True:
         return "True"
@@ -313,7 +431,8 @@ def _no_old(e: ast.expr, line: int) -> None:
                           line)
 
 
-def _bool_expr(e: ast.expr, names: set[str], line: int) -> str:
+def _bool_expr(e: ast.expr, names: set[str], line: int,
+               lc: _ListCtx | None = None) -> str:
     """A Bool-valued Lean term for a predicate function's return.
 
     `decide` bridges the translated Prop into Bool; True/False literals
@@ -324,13 +443,14 @@ def _bool_expr(e: ast.expr, names: set[str], line: int) -> str:
     if isinstance(e, ast.Constant) and e.value is False:
         return "false"
     if isinstance(e, (ast.Compare, ast.BoolOp, ast.UnaryOp)):
-        return f"(decide {_prop_expr(e, names, line)})"
+        return f"(decide {_prop_expr(e, names, line, lc=lc)})"
     raise _reject("a bool return must be True/False or a boolean "
                   "expression in slice 2", line)
 
 
 def _body_expr(stmts: list[ast.stmt], names: set[str],
-               params: tuple[str, ...], is_bool: bool = False) -> str:
+               params: tuple[str, ...], is_bool: bool = False,
+               lc: _ListCtx | None = None) -> str:
     """Compile a loop-free statement list to one Lean term."""
     if not stmts:
         raise _reject("fall through the end of the function without a "
@@ -345,8 +465,8 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
                           rest[0].lineno)
         _no_old(head.value, head.lineno)
         if is_bool:
-            return _bool_expr(head.value, names, head.lineno)
-        return _int_expr(head.value, names, head.lineno)
+            return _bool_expr(head.value, names, head.lineno, lc)
+        return _int_expr(head.value, names, head.lineno, lc=lc)
     if isinstance(head, ast.Assign):
         if len(head.targets) != 1 \
                 or not isinstance(head.targets[0], ast.Name):
@@ -358,24 +478,24 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
                           f"slice 1 (parameters are immutable so that "
                           f"`old()` needs no snapshots)", head.lineno)
         _no_old(head.value, head.lineno)
-        value = _int_expr(head.value, names, head.lineno)
+        value = _int_expr(head.value, names, head.lineno, lc=lc)
         return (f"let {_ident(target)} := {value}; "
-                + _body_expr(rest, names | {target}, params, is_bool))
+                + _body_expr(rest, names | {target}, params, is_bool, lc))
     if isinstance(head, ast.If):
         _no_old(head.test, head.lineno)
-        cond = _prop_expr(head.test, names, head.lineno)
-        then = _body_expr(head.body, names, params, is_bool)
+        cond = _prop_expr(head.test, names, head.lineno, lc=lc)
+        then = _body_expr(head.body, names, params, is_bool, lc)
         if head.orelse:
             if rest:
                 raise _reject("unreachable code after an if/else in which "
                               "both branches return", rest[0].lineno)
-            other = _body_expr(head.orelse, names, params, is_bool)
+            other = _body_expr(head.orelse, names, params, is_bool, lc)
         else:
             if not _always_returns(head.body):
                 raise _reject("an `if` without `else` must return in its "
                               "body (slice 1 compiles it to a conditional "
                               "expression)", head.lineno)
-            other = _body_expr(rest, names, params, is_bool)
+            other = _body_expr(rest, names, params, is_bool, lc)
         return f"(if {cond} then {then} else {other})"
     raise _reject(f"`{type(head).__name__}` is outside the lean backend's "
                   f"slice-1 fragment (loop-free integer functions; loops "
@@ -545,7 +665,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # verify mathematical abs/min/max while Python calls the user's def.
     for shadow in by_name:
         if shadow in ("abs", "min", "max", "old", "all", "any", "range",
-                      "result"):
+                      "len", "sum", "result"):
             raise _reject(
                 f"module-level def {shadow!r} shadows an encoder builtin "
                 f"— call sites would verify the builtin while Python "
@@ -611,16 +731,27 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             raise _reject("only plain positional parameters (no defaults, "
                           "no *args/**kwargs, no positional-only or "
                           "keyword-only markers) are in slice 1", fn.lineno)
+        ptypes: dict[str, str] = {}
         for arg in a.args:
             ann = arg.annotation
-            if not (isinstance(ann, ast.Name) and ann.id == "int"):
-                raise _reject(f"parameter {arg.arg!r} must be `int` in "
-                              f"slice 1", fn.lineno)
+            if isinstance(ann, ast.Name) and ann.id == "int":
+                ptypes[arg.arg] = "Int"
+            elif isinstance(ann, ast.Subscript) \
+                    and isinstance(ann.value, ast.Name) \
+                    and ann.value.id == "list" \
+                    and isinstance(ann.slice, ast.Name) \
+                    and ann.slice.id == "int":
+                ptypes[arg.arg] = "List Int"
+            else:
+                raise _reject(f"parameter {arg.arg!r} must be `int` or "
+                              f"`list[int]` in this slice", fn.lineno)
             # No module-wide check for parameters: a binder shadowing a
             # top-level name is legal Lean (and matches Python scoping).
             # The one genuine capture — a parameter named after its OWN
             # function, which the theorem statement must reference beside
             # it — is alpha-renamed in theorem context below.
+        lc0 = _ListCtx(frozenset(p for p, t in ptypes.items()
+                                 if t == "List Int"), {}, None)
         ret = fn.returns
         if not (isinstance(ret, ast.Name) and ret.id in ("int", "bool")):
             raise _reject("return type must be `int` or `bool` in this "
@@ -649,7 +780,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     f"throughout (UnboundLocalError here), so the call "
                     f"cannot mean the builtin", node.lineno)
 
-        binders = " ".join(f"({_ident(p)} : Int)" for p in params)
+        binders = " ".join(f"({_ident(p)} : {ptypes[p]})" for p in params)
         loop = _split_loop(fn, spec_fn)
         if loop is not None and is_bool:
             raise _reject("loop functions must return `int` in this slice "
@@ -676,10 +807,26 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                              (loop.step, loop.for_line),
                              (loop.ret, fn.lineno)):
                 _no_old(expr, ln)
-            init_t = _int_expr(loop.init, names, fn.lineno)
-            bound_t = _int_expr(loop.bound, names, fn.lineno)
-            step_t = _int_expr(loop.step, body_names, loop.for_line)
-            inv_t = _prop_expr(loop.inv, body_names, loop.inv_line)
+            # A loop over `range(len(L))` makes its index structurally
+            # in bounds for L, so the STEP may index L. The invariant
+            # additionally gets the index as a `xs[:i]` slice bound —
+            # proof scaffolding evaluated at loop heads, where i ≥ 0.
+            b = loop.bound
+            safe: dict[str, str] = {}
+            if isinstance(b, ast.Call) and isinstance(b.func, ast.Name) \
+                    and b.func.id == "len" and not b.keywords \
+                    and len(b.args) == 1 \
+                    and isinstance(b.args[0], ast.Name) \
+                    and b.args[0].id in lc0.lists:
+                safe[loop.index] = b.args[0].id
+            step_lc = _ListCtx(lc0.lists, safe, None)
+            inv_lc = _ListCtx(lc0.lists, dict(safe), loop.index)
+            init_t = _int_expr(loop.init, names, fn.lineno, lc=lc0)
+            bound_t = _int_expr(loop.bound, names, fn.lineno, lc=lc0)
+            step_t = _int_expr(loop.step, body_names, loop.for_line,
+                               lc=step_lc)
+            inv_t = _prop_expr(loop.inv, body_names, loop.inv_line,
+                               lc=inv_lc)
             iv, av = _ident(loop.index), _ident(loop.acc)
             emit("", None)
             # Fuel recursion on Nat: structurally terminating, so no
@@ -707,6 +854,17 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit(f"    {_ident(gen_inv)} {argsp}({iv} + m) "
                  f"({_ident(gen_loop)} {argsp}m {iv} {av}) := by",
                  loop.inv_line)
+            # The endgame ladder: omega closes linear goals as before;
+            # `simp_all` then folds hypotheses into goals list atoms
+            # keep out of omega's reach; the guarded `congr` bridge
+            # closes `PySum (take A xs) = PySum (take B xs)` residues
+            # where A = B is linear but trapped inside the atoms
+            # (measured: the succ case leaves exactly that shape,
+            # (i+1+k) vs (i+(k+1)) under the take).
+            ladder = ["      all_goals (try omega)",
+                      "      all_goals (try simp_all)",
+                      "      all_goals (try (congr 2 <;> omega))",
+                      "      all_goals (first | omega | trivial)"]
             emit("  intro m", loop.inv_line)
             emit("  induction m with", loop.inv_line)
             emit(f"  | zero =>", loop.inv_line)
@@ -714,19 +872,30 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit(f"      simp only [{_ident(gen_loop)}, {_ident(gen_inv)}]"
                  f" at h ⊢", loop.inv_line)
             emit("      all_goals (try push_cast)", loop.inv_line)
-            emit("      all_goals omega", loop.inv_line)
+            for step_line in ladder:
+                emit(step_line, loop.inv_line)
             emit(f"  | succ k ih =>", loop.inv_line)
             emit(f"      intro {iv} {av} h hi", loop.inv_line)
             emit(f"      simp only [{_ident(gen_loop)}]", loop.inv_line)
+            # The inner `by` is the invariant-preservation VC. Linear
+            # invariants close on omega alone; take-slice invariants
+            # need (i+1).toNat unfolded to i.toNat+1 (sound under hi)
+            # so PySum_take_succ can peel the (i+1)-prefix into the
+            # i-prefix plus the getD element omega can then match.
             emit(f"      have hstep := ih ({iv} + 1) {step_t} "
-                 f"(by simp only [{_ident(gen_inv)}] at h ⊢; all_goals omega) "
+                 f"(by simp only [{_ident(gen_inv)}] at h ⊢; "
+                 f"first | omega | (rw [show ({iv} + 1).toNat = "
+                 f"({iv}).toNat + 1 from by omega]; "
+                 f"simp only [LemmaPy.PySum_take_succ]; omega)) "
                  f"(by omega)", loop.inv_line)
             emit(f"      simp only [{_ident(gen_inv)}] at hstep ⊢",
                  loop.inv_line)
             emit("      all_goals (try push_cast at hstep ⊢)",
                  loop.inv_line)
-            emit("      all_goals omega", loop.inv_line)
-            ret_t = _int_expr(loop.ret, names | {loop.acc}, fn.lineno)
+            for step_line in ladder:
+                emit(step_line, loop.inv_line)
+            ret_t = _int_expr(loop.ret, names | {loop.acc}, fn.lineno,
+                              lc=lc0)
             emit("", None)
             emit(f"def {_ident(spec_fn.name)} {binders} : Int :=",
                  fn.lineno)
@@ -736,7 +905,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             body = _body_expr([s for s in fn.body
                                if not (isinstance(s, ast.Expr)
                                        and isinstance(s.value, ast.Constant))],
-                              names, params, is_bool)
+                              names, params, is_bool, lc0)
             ret_ty = "Bool" if is_bool else "Int"
             emit("", None)
             emit(f"def {_ident(spec_fn.name)} {binders} : {ret_ty} :=",
@@ -756,7 +925,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         def _tname(p: str) -> str:
             return rename[p] if rename and p in rename else p
 
-        thm_binders = " ".join(f"({_ident(_tname(p))} : Int)"
+        thm_binders = " ".join(f"({_ident(_tname(p))} : {ptypes[p]})"
                                for p in params)
         app = ("(" + " ".join([_ident(spec_fn.name),
                                *(_ident(_tname(p)) for p in params)]) + ")")
@@ -771,10 +940,10 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         for i, (expr, line) in enumerate(_parse_clause(spec_fn, "requires")):
             hyps.append(
                 f"(h{i} : "
-                f"{_prop_expr(expr, names, line, rename=rename, avoid=avoid)})")
+                f"{_prop_expr(expr, names, line, rename=rename, avoid=avoid, lc=lc0)})")
         posts = [(_prop_expr(expr, names, line, result=app,
                              rename=rename, result_is_bool=is_bool,
-                             avoid=avoid), line)
+                             avoid=avoid, lc=lc0), line)
                  for expr, line in ensures]
         goal = " ∧ ".join(p for p, _ in posts)
         sig = " ".join(x for x in [thm_binders, *hyps] if x)
@@ -800,14 +969,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # one shared atom for omega.
             targs = " ".join(_ident(_tname(p)) for p in params)
             targsp = (targs + " ") if targs else ""
-            t_init = _int_expr(loop.init, names, fn.lineno, rename=rename)
+            t_init = _int_expr(loop.init, names, fn.lineno,
+                               rename=rename, lc=lc0)
             t_bound = _int_expr(loop.bound, names, fn.lineno,
-                                rename=rename)
+                                rename=rename, lc=lc0)
             emit("  try dsimp only", first_ensures_line)
+            # hi0's simp_all carries PySum's equation lemmas: the
+            # invariant at entry typically needs `PySum (take 0) = 0`
+            # (take_zero, then the nil equation) — inert for loop-free
+            # integer invariants, where omega has already closed.
             emit(f"  have hi0 : {_ident(f'{spec_fn.name}_inv')} "
                  f"{targsp}0 {t_init} := by "
                  f"simp only [{_ident(f'{spec_fn.name}_inv')}]; "
-                 f"all_goals (try push_cast); all_goals omega",
+                 f"all_goals (try push_cast); all_goals (try omega); "
+                 f"all_goals (try simp_all [LemmaPy.PySum]); "
+                 f"all_goals (first | omega | trivial)",
                  first_ensures_line)
             emit(f"  have hfin := {_ident(f'{spec_fn.name}_loop_inv')} "
                  f"{targsp}({t_bound}).toNat 0 {t_init} hi0 (by omega)",
@@ -816,6 +992,14 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                  first_ensures_line)
             emit(f"  rw [Int.toNat_of_nonneg "
                  f"(by omega : (0:Int) ≤ {t_bound})] at hfin",
+                 first_ensures_line)
+            # For a `range(len(xs))` loop the invariant lands at
+            # `take (0 + ↑xs.length).toNat`: normalize the casts and
+            # collapse `take xs.length` to the whole list so hfin's
+            # atoms match the ensures translation (`PySum xs`). Inert
+            # (hence `try`) when no list is involved.
+            emit("  all_goals (try simp only [Int.toNat_natCast, "
+                 "Int.zero_add, List.take_length] at hfin)",
                  first_ensures_line)
         # Prelude definitions are opaque to omega — a goal containing
         # LemmaPy.PyAbs is unprovable until it unfolds to its

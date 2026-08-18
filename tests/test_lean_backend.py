@@ -437,6 +437,148 @@ def test_end_to_end_loops_verify_and_false_invariants_fail(tmp_path):
                              backend="lean")["status"] == "failed"
 
 
+SUM_LIST = ("#@ ensures result == sum(xs)\n"
+            "def sum_list(xs: list[int]) -> int:\n"
+            "    s = 0\n"
+            "    for i in range(len(xs)):\n"
+            "        #@ invariant s == sum(xs[:i])\n"
+            "        s = s + xs[i]\n"
+            "    return s\n")
+
+
+def test_lists_emit_types_getd_take_and_pysum():
+    # P2 slice 2: list[int] parameters, len/sum, structurally-safe
+    # indexing (total getD where in-bounds is guaranteed by
+    # construction), and xs[:i] prefix sums in invariants backed by the
+    # prelude's PROVED PySum_take_succ lemma.
+    enc = _encode(SUM_LIST)
+    assert "def «sum_list_loop» («xs» : List Int)" in enc.lean_source
+    assert "(«xs».getD («i»).toNat 0)" in enc.lean_source
+    assert "LemmaPy.PySum («xs».take («i»).toNat)" in enc.lean_source
+    assert "= (LemmaPy.PySum «xs»)" in enc.lean_source
+    assert "theorem PySum_take_succ" in enc.lean_source  # prelude, proved
+
+
+def test_quantifier_over_len_makes_its_binder_a_safe_index():
+    # A binder over range(len(xs)) is guarded by its bound hypothesis
+    # exactly where the body sits, so the body may index xs by it.
+    src = ("#@ requires all(xs[k] >= 0 for k in range(len(xs)))\n"
+           "#@ ensures result >= 0\n"
+           "def size(xs: list[int]) -> int:\n"
+           "    return len(xs)\n")
+    enc = _encode(src)
+    assert "(«xs».getD («k»).toNat 0) ≥ 0" in enc.lean_source
+    assert "«k» < ((«xs».length : Int))" in enc.lean_source
+
+
+def test_list_misuse_is_refused_not_mistranslated():
+    loop = ("    s = 0\n"
+            "    for i in range(len(xs)):\n"
+            "        #@ invariant s == sum(xs[:i])\n"
+            "        s = s + xs[i]\n"
+            "    return s\n")
+    cases = [
+        # a list where an integer belongs
+        ("#@ ensures result >= 0\ndef f(xs: list[int]) -> int:\n"
+         "    return xs\n", "integer position"),
+        # literal index: not structurally in bounds (xs could be empty)
+        ("#@ ensures result >= 0\ndef f(xs: list[int]) -> int:\n"
+         "    return xs[0]\n", "structurally in bounds"),
+        # loop over range(n), not range(len(xs)): i is not a safe index
+        ("#@ requires n >= 0\n#@ ensures result >= 0\n"
+         "def f(xs: list[int], n: int) -> int:\n"
+         "    s = 0\n"
+         "    for i in range(n):\n"
+         "        #@ invariant s >= 0\n"
+         "        s = s + xs[i]\n"
+         "    return s\n", "structurally in bounds"),
+        # indexing a DIFFERENT list than the one bounding the loop
+        ("#@ ensures result >= 0\n"
+         "def f(xs: list[int], ys: list[int]) -> int:\n"
+         "    s = 0\n"
+         "    for i in range(len(xs)):\n"
+         "        #@ invariant s >= 0\n"
+         "        s = s + ys[i]\n"
+         "    return s\n", "structurally in bounds"),
+        # slices live inside sum(...) in invariants, nowhere else
+        ("#@ ensures result >= 0\ndef f(xs: list[int]) -> int:\n"
+         "    return xs[:1]\n", "inside an invariant"),
+        # sum of a slice in the ENSURES: the loop index is out of
+        # scope there, and an arbitrary bound may be negative (Python
+        # clamps from the END for negative bounds; .toNat clamps to [])
+        ("#@ ensures result == sum(xs[:n])\n"
+         "def f(xs: list[int], n: int) -> int:\n" + loop,
+         "loop index as the slice bound"),
+        # len/sum apply to lists, not integers
+        ("#@ ensures result == n\ndef f(n: int) -> int:\n"
+         "    return len(n)\n", "list parameter only"),
+        ("#@ ensures result == n\ndef f(n: int) -> int:\n"
+         "    return sum(n)\n", "list parameter or"),
+        # only list[int] element types have a model
+        ("#@ ensures result >= 0\ndef f(xs: list[str]) -> int:\n"
+         "    return 0\n", "must be `int` or `list"),
+        # lists cannot be returned in this slice
+        ("#@ ensures result == xs\ndef f(xs: list[int]) -> list[int]:\n"
+         "    return xs\n", "return type"),
+        # a quantifier binder shadowing a list parameter
+        ("#@ ensures all(xs >= 0 for xs in range(n))\n"
+         "def f(xs: list[int], n: int) -> int:\n"
+         "    return 0\n", "shadows a list parameter"),
+        # module-level defs named after the new builtins
+        ("#@ ensures result >= 0\ndef sum(xs: list[int]) -> int:\n"
+         "    return 0\n", "shadows an encoder builtin"),
+        ("#@ ensures result >= 0\ndef len(xs: list[int]) -> int:\n"
+         "    return 0\n", "shadows an encoder builtin"),
+    ]
+    for src, needle in cases:
+        with pytest.raises(EncodeError, match=needle):
+            _encode(src)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_lists_verify(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    src = tmp_path / "sum_list.py"
+    src.write_text(SUM_LIST)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # Offset accumulator: the invariant-preservation bridge
+    # (toNat-successor rewrite + PySum_take_succ) is not shaped to
+    # sum_list alone.
+    plus = tmp_path / "sum_plus.py"
+    plus.write_text("#@ ensures result == c + sum(xs)\n"
+                    "def sum_plus(xs: list[int], c: int) -> int:\n"
+                    "    s = c\n"
+                    "    for i in range(len(xs)):\n"
+                    "        #@ invariant s == c + sum(xs[:i])\n"
+                    "        s = s + xs[i]\n"
+                    "    return s\n")
+    assert verify_structured(plus, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # Loop-free list functions ride the same expression translator.
+    flat = tmp_path / "flat.py"
+    flat.write_text("#@ ensures result == sum(xs)\n"
+                    "def total(xs: list[int]) -> int:\n"
+                    "    return sum(xs)\n"
+                    "\n"
+                    "#@ ensures result == len(xs)\n"
+                    "#@ ensures result >= 0\n"
+                    "def size(xs: list[int]) -> int:\n"
+                    "    return len(xs)\n")
+    assert verify_structured(flat, tmp_path / "o3",
+                             backend="lean")["status"] == "ok"
+
+    # A wrong list spec still fails honestly as a prover verdict.
+    bad = tmp_path / "bad.py"
+    bad.write_text(SUM_LIST.replace("result == sum(xs)",
+                                    "result == sum(xs) + 1"))
+    payload = verify_structured(bad, tmp_path / "o4", backend="lean")
+    assert payload["status"] == "failed"
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against
