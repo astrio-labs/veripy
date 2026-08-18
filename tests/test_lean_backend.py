@@ -296,6 +296,109 @@ def test_decorated_functions_are_refused():
         _encode(decorated)
 
 
+ADDN = ("#@ requires n >= 0\n"
+        "#@ ensures result == a + n\n"
+        "def addn(n: int, a: int) -> int:\n"
+        "    s = a\n"
+        "    for i in range(n):\n"
+        "        #@ invariant s == a + i\n"
+        "        s = s + 1\n"
+        "    return s\n")
+
+
+def test_loop_emits_fuel_recursion_and_invariant_theorem():
+    # P2 slice 1: for-range accumulator loops compile to fuel recursion
+    # on Nat (structurally terminating — no termination_by), the
+    # invariant becomes a generated Prop, and the induction theorem's
+    # inductive step IS the invariant-preservation VC.
+    enc = _encode(ADDN)
+    assert ("def «addn_loop» («n» : Int) («a» : Int) : "
+            "Nat → Int → Int → Int") in enc.lean_source
+    assert "| (m + 1), «i», «s» =>" in enc.lean_source
+    assert "def «addn_inv»" in enc.lean_source
+    assert "theorem «addn_loop_inv»" in enc.lean_source
+    assert "induction m with" in enc.lean_source
+    # The main def threads the loop result; the spec theorem
+    # instantiates the induction theorem and rewrites the fuel cast.
+    assert "(«n»).toNat 0 «a»" in enc.lean_source
+    assert "Int.toNat_of_nonneg" in enc.lean_source
+
+
+def test_loop_shape_rejections():
+    base = ("#@ requires n >= 0\n#@ ensures result == n\n"
+            "def f(n: int) -> int:\n")
+    cases = [
+        # not the acc/for/return shape
+        (base + "    s = 0\n    t = 1\n    for i in range(n):\n"
+                "        #@ invariant s == i\n        s = s + 1\n"
+                "    return s\n", "acc = init"),
+        # iterating something other than range(<bound>)
+        (base + "    s = 0\n    for i in range(0, n):\n"
+                "        #@ invariant s == i\n        s = s + 1\n"
+                "    return s\n", "range"),
+        # loop body must be a single accumulator assignment
+        (base + "    s = 0\n    for i in range(n):\n"
+                "        #@ invariant s == i\n        s = s + 1\n"
+                "        t = s\n    return s\n", "single assignment"),
+        # the post-loop index value is a CPython artifact
+        (base + "    s = 0\n    for i in range(n):\n"
+                "        #@ invariant s == i\n        s = s + 1\n"
+                "    return i\n", "loop index"),
+        # exactly one invariant
+        (base + "    s = 0\n    for i in range(n):\n"
+                "        s = s + 1\n    return s\n", "invariant"),
+    ]
+    for src, needle in cases:
+        with pytest.raises(EncodeError, match=needle):
+            _encode(src)
+
+    boolloop = ("#@ requires n >= 0\n#@ ensures result == (n >= 0)\n"
+                "def g(n: int) -> bool:\n"
+                "    s = 0\n"
+                "    for i in range(n):\n"
+                "        #@ invariant s == i\n"
+                "        s = s + 1\n"
+                "    return s >= 0\n")
+    with pytest.raises(EncodeError, match="return `int`"):
+        _encode(boolloop)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_loops_verify_and_false_invariants_fail(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    src = tmp_path / "addn.py"
+    src.write_text(ADDN)
+    payload = verify_structured(src, tmp_path / "o1", backend="lean")
+    assert payload["status"] == "ok"
+
+    # A constant-init loop whose invariant SIMP-closes at i=0 (count:
+    # 0 = 0): the generated inline proofs must be goal-guarded
+    # (measured: unguarded push_cast after a closing simp errored
+    # "No goals to be solved" and failed a true spec as unknown).
+    cnt = tmp_path / "count.py"
+    cnt.write_text("#@ requires n >= 0\n#@ ensures result == n\n"
+                   "def count(n: int) -> int:\n"
+                   "    s = 0\n"
+                   "    for i in range(n):\n"
+                   "        #@ invariant s == i\n"
+                   "        s = s + 1\n"
+                   "    return s\n")
+    assert verify_structured(cnt, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    badinv = tmp_path / "badinv.py"
+    badinv.write_text("#@ requires n >= 0\n#@ ensures result == a + n\n"
+                      "def badinv(n: int, a: int) -> int:\n"
+                      "    s = a\n"
+                      "    for i in range(n):\n"
+                      "        #@ invariant s == a\n"
+                      "        s = s + 1\n"
+                      "    return s\n")
+    assert verify_structured(badinv, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against

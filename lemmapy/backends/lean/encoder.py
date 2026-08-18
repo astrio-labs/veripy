@@ -380,6 +380,104 @@ def _parse_clause(spec_fn: FunctionSpec, kind: str) -> list[tuple[ast.expr, int]
     return out
 
 
+@dataclass
+class _LoopShape:
+    """One `for i in range(N)` accumulator loop (P2 slice 1).
+
+    Python shape:  acc = INIT ; for i in range(N): acc = STEP ; return RET
+    Lean shape:    fuel recursion on Nat (structurally terminating, so no
+    `termination_by`), the invariant as a generated Prop, and an
+    induction theorem whose inductive step IS the invariant-preservation
+    VC — omega-dischargeable when invariant and step are linear.
+    """
+
+    index: str          # the range variable
+    acc: str            # the single accumulator
+    init: ast.expr      # acc's initializer (params only)
+    bound: ast.expr     # range's bound N (params only)
+    step: ast.expr      # the accumulator update (params, index, acc)
+    ret: ast.expr       # the return expression (params, acc; NOT index)
+    inv: ast.expr       # the single #@ invariant (params, index, acc)
+    inv_line: int
+    for_line: int
+
+
+def _split_loop(fn: ast.FunctionDef,
+                spec_fn: FunctionSpec) -> _LoopShape | None:
+    """Match the P2 slice-1 loop shape, or None for the loop-free path.
+    A `for` that does not fit the shape is REJECTED (not silently routed
+    to the loop-free compiler, which would refuse it with a worse
+    message)."""
+    stmts = [s for s in fn.body
+             if not (isinstance(s, ast.Expr)
+                     and isinstance(s.value, ast.Constant))]
+    fors = [s for s in stmts if isinstance(s, ast.For)]
+    if not fors:
+        return None
+    if len(fors) > 1:
+        raise _reject("one loop per function in this slice", fors[1].lineno)
+    if len(stmts) != 3 or not isinstance(stmts[0], ast.Assign) \
+            or not isinstance(stmts[1], ast.For) \
+            or not isinstance(stmts[2], ast.Return):
+        raise _reject("a loop function must be exactly `acc = init; "
+                      "for ...: ...; return expr` in this slice",
+                      fors[0].lineno)
+    init_stmt, loop, ret_stmt = stmts
+    if len(init_stmt.targets) != 1 \
+            or not isinstance(init_stmt.targets[0], ast.Name):
+        raise _reject("the accumulator initializer must assign one name",
+                      init_stmt.lineno)
+    acc = init_stmt.targets[0].id
+    if not isinstance(loop.target, ast.Name):
+        raise _reject("destructuring loop targets are outside this slice",
+                      loop.lineno)
+    index = loop.target.id
+    it = loop.iter
+    if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
+            and it.func.id == "range" and len(it.args) == 1
+            and not it.keywords):
+        raise _reject("loops must iterate `range(<bound>)` in this slice",
+                      loop.lineno)
+    if loop.orelse:
+        raise _reject("`for ... else` is outside the fragment", loop.lineno)
+    body = [s for s in loop.body]
+    if len(body) != 1 or not isinstance(body[0], ast.Assign) \
+            or len(body[0].targets) != 1 \
+            or not isinstance(body[0].targets[0], ast.Name) \
+            or body[0].targets[0].id != acc:
+        raise _reject(f"the loop body must be a single assignment to the "
+                      f"accumulator {acc!r} in this slice", loop.lineno)
+    if index == acc:
+        raise _reject("the loop index cannot be the accumulator",
+                      loop.lineno)
+    if ret_stmt.value is None:
+        raise _reject("bare `return` has no value to encode",
+                      ret_stmt.lineno)
+    for node in ast.walk(ret_stmt.value):
+        if isinstance(node, ast.Name) and node.id == index:
+            raise _reject(f"the return expression must not read the loop "
+                          f"index {index!r} (its post-loop value is a "
+                          f"CPython artifact this slice does not model)",
+                          ret_stmt.lineno)
+    last_body_line = max(getattr(s, "end_lineno", s.lineno)
+                         for s in loop.body)
+    invs = [c for c in spec_fn.by_kind("invariant")
+            if loop.lineno <= c.line <= last_body_line]
+    if len(invs) != 1:
+        raise _reject("exactly one `#@ invariant` per loop in this slice "
+                      f"(found {len(invs)})", loop.lineno)
+    inv = invs[0]
+    text = inv.desugared if inv.desugared is not None else inv.raw
+    try:
+        inv_expr = ast.parse(text, mode="eval").body
+    except SyntaxError as exc:
+        raise _reject(f"cannot parse invariant: {exc.msg}", inv.line)
+    return _LoopShape(index=index, acc=acc, init=init_stmt.value,
+                      bound=it.args[0], step=body[0].value,
+                      ret=ret_stmt.value, inv=inv_expr, inv_line=inv.line,
+                      for_line=loop.lineno)
+
+
 def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                        proof_lemmas: frozenset[str] = frozenset()
                        ) -> LeanEncoded:
@@ -536,15 +634,93 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     f"cannot mean the builtin", node.lineno)
 
         binders = " ".join(f"({_ident(p)} : Int)" for p in params)
-        body = _body_expr([s for s in fn.body
-                           if not (isinstance(s, ast.Expr)
-                                   and isinstance(s.value, ast.Constant))],
-                          names, params, is_bool)
-        ret_ty = "Bool" if is_bool else "Int"
-        emit("", None)
-        emit(f"def {_ident(spec_fn.name)} {binders} : {ret_ty} :=",
-             fn.lineno)
-        emit(f"  {body}", fn.lineno)
+        loop = _split_loop(fn, spec_fn)
+        if loop is not None and is_bool:
+            raise _reject("loop functions must return `int` in this slice "
+                          "(bool-returning loops arrive with early-exit "
+                          "support)", fn.lineno)
+        if loop is not None:
+            for nm, what in ((loop.index, "loop index"),
+                             (loop.acc, "accumulator")):
+                if nm in params:
+                    raise _reject(f"{what} {nm!r} shadows a parameter — "
+                                  f"outside this slice", loop.for_line)
+            body_names = names | {loop.index, loop.acc}
+            fname = spec_fn.name
+            gen_loop, gen_inv, gen_thm = (f"{fname}_loop", f"{fname}_inv",
+                                          f"{fname}_loop_inv")
+            for g in (gen_loop, gen_inv, gen_thm):
+                _check_name(g, "generated declaration for", fn.lineno,
+                            taken)
+                taken.add(g)
+            args = " ".join(_ident(p) for p in params)
+            argsp = (args + " ") if args else ""
+            init_t = _int_expr(loop.init, names, fn.lineno)
+            bound_t = _int_expr(loop.bound, names, fn.lineno)
+            step_t = _int_expr(loop.step, body_names, loop.for_line)
+            inv_t = _prop_expr(loop.inv, body_names, loop.inv_line)
+            iv, av = _ident(loop.index), _ident(loop.acc)
+            emit("", None)
+            # Fuel recursion on Nat: structurally terminating, so no
+            # termination_by; range(N) with negative N is the empty loop
+            # via .toNat clamping, matching CPython.
+            emit(f"def {_ident(gen_loop)} {binders} : "
+                 f"Nat → Int → Int → Int", loop.for_line)
+            emit(f"  | 0, _, {av} => {av}", loop.for_line)
+            emit(f"  | (m + 1), {iv}, {av} => "
+                 f"{_ident(gen_loop)} {argsp}m ({iv} + 1) {step_t}",
+                 loop.for_line)
+            emit("", None)
+            emit(f"def {_ident(gen_inv)} {binders} "
+                 f"({iv} {av} : Int) : Prop :=", loop.inv_line)
+            emit(f"  {inv_t}", loop.inv_line)
+            emit("", None)
+            # The induction theorem: its inductive step IS the
+            # invariant-preservation VC (omega for linear invariants).
+            # The loop application is one opaque atom to omega, so the
+            # index arithmetic (i+1)+k vs i+(k+1) closes linearly.
+            emit(f"theorem {_ident(gen_thm)} {binders} : "
+                 f"∀ (m : Nat) ({iv} {av} : Int),", loop.inv_line)
+            emit(f"    {_ident(gen_inv)} {argsp}{iv} {av} → 0 ≤ {iv} →",
+                 loop.inv_line)
+            emit(f"    {_ident(gen_inv)} {argsp}({iv} + m) "
+                 f"({_ident(gen_loop)} {argsp}m {iv} {av}) := by",
+                 loop.inv_line)
+            emit("  intro m", loop.inv_line)
+            emit("  induction m with", loop.inv_line)
+            emit(f"  | zero =>", loop.inv_line)
+            emit(f"      intro {iv} {av} h hi", loop.inv_line)
+            emit(f"      simp only [{_ident(gen_loop)}, {_ident(gen_inv)}]"
+                 f" at h ⊢", loop.inv_line)
+            emit("      all_goals (try push_cast)", loop.inv_line)
+            emit("      all_goals omega", loop.inv_line)
+            emit(f"  | succ k ih =>", loop.inv_line)
+            emit(f"      intro {iv} {av} h hi", loop.inv_line)
+            emit(f"      simp only [{_ident(gen_loop)}]", loop.inv_line)
+            emit(f"      have hstep := ih ({iv} + 1) {step_t} "
+                 f"(by simp only [{_ident(gen_inv)}] at h ⊢; all_goals omega) "
+                 f"(by omega)", loop.inv_line)
+            emit(f"      simp only [{_ident(gen_inv)}] at hstep ⊢",
+                 loop.inv_line)
+            emit("      all_goals (try push_cast at hstep ⊢)",
+                 loop.inv_line)
+            emit("      all_goals omega", loop.inv_line)
+            ret_t = _int_expr(loop.ret, names | {loop.acc}, fn.lineno)
+            emit("", None)
+            emit(f"def {_ident(spec_fn.name)} {binders} : Int :=",
+                 fn.lineno)
+            emit(f"  let {av} := {_ident(gen_loop)} {argsp}"
+                 f"({bound_t}).toNat 0 {init_t}; {ret_t}", fn.lineno)
+        else:
+            body = _body_expr([s for s in fn.body
+                               if not (isinstance(s, ast.Expr)
+                                       and isinstance(s.value, ast.Constant))],
+                              names, params, is_bool)
+            ret_ty = "Bool" if is_bool else "Int"
+            emit("", None)
+            emit(f"def {_ident(spec_fn.name)} {binders} : {ret_ty} :=",
+                 fn.lineno)
+            emit(f"  {body}", fn.lineno)
 
         ensures = _parse_clause(spec_fn, "ensures")
         if not ensures:
@@ -591,6 +767,35 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # to the first ensures clause so a `postcondition` failure points
         # at the contract, not at Lean plumbing.
         emit(f"  unfold {_ident(spec_fn.name)}", first_ensures_line)
+        if loop is not None:
+            # Bring the invariant through the loop: instantiate the
+            # induction theorem at (fuel = bound.toNat, i = 0,
+            # acc = init), then rewrite the fuel cast back to the bound
+            # (needs bound ≥ 0 provable from the requires — a negative
+            # bound is still a CORRECT empty loop in the def, but this
+            # generated proof does not cover it). Terms are translated
+            # in THEOREM context (renamed binders) so they match the
+            # unfolded goal syntactically; the loop application is then
+            # one shared atom for omega.
+            targs = " ".join(_ident(_tname(p)) for p in params)
+            targsp = (targs + " ") if targs else ""
+            t_init = _int_expr(loop.init, names, fn.lineno, rename=rename)
+            t_bound = _int_expr(loop.bound, names, fn.lineno,
+                                rename=rename)
+            emit("  try dsimp only", first_ensures_line)
+            emit(f"  have hi0 : {_ident(f'{spec_fn.name}_inv')} "
+                 f"{targsp}0 {t_init} := by "
+                 f"simp only [{_ident(f'{spec_fn.name}_inv')}]; "
+                 f"all_goals (try push_cast); all_goals omega",
+                 first_ensures_line)
+            emit(f"  have hfin := {_ident(f'{spec_fn.name}_loop_inv')} "
+                 f"{targsp}({t_bound}).toNat 0 {t_init} hi0 (by omega)",
+                 first_ensures_line)
+            emit(f"  simp only [{_ident(f'{spec_fn.name}_inv')}] at hfin",
+                 first_ensures_line)
+            emit(f"  rw [Int.toNat_of_nonneg "
+                 f"(by omega : (0:Int) ≤ {t_bound})] at hfin",
+                 first_ensures_line)
         # Prelude definitions are opaque to omega — a goal containing
         # LemmaPy.PyAbs is unprovable until it unfolds to its
         # if-then-else (measured: every abs()-using module failed as
