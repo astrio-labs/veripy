@@ -36,6 +36,14 @@ _KINDS: tuple[tuple[str, str], ...] = (
     ("maximum recursion depth", "timeout"),
     ("maxheartbeats", "timeout"),
     ("deterministic timeout", "timeout"),
+    # The endgame combinator (`first | omega | trivial`) reports its last
+    # sub-tactic's failure ("Tactic `assumption` failed") rather than
+    # omega's phrasing — pinned from live output after the slice-2
+    # cocktail change reclassified false specs as unknown. The turnstile
+    # needle is the robust form: ANY diagnostic displaying an unsolved
+    # goal is the spec theorem failing, whatever tactic reported it.
+    ("tactic `assumption` failed", "postcondition"),
+    ("⊢", "postcondition"),
 )
 
 
