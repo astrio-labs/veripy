@@ -12,14 +12,25 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.1"
+PRELUDE_VERSION = "lean-0.2"
 
+# The prelude lives in its own namespace and every call site references
+# it QUALIFIED (LemmaPy.PyAbs). Escaping user identifiers handles
+# keywords, but «PyAbs» IS the identifier PyAbs (guillemets quote, they
+# do not namespace — measured: a module `def PyAbs` failed with
+# "`PyAbs` has already been declared"), so separation from user names
+# has to come from the namespace: a top-level user def cannot redeclare
+# a namespaced name, and a binder cannot capture a qualified reference.
 PRELUDE = """\
 -- lemmapy Lean prelude {version} (slice 1: loop-free integer functions)
 -- Python semantics on Int. Every def must match CPython on the shared
 -- domain; the differential fidelity suite pins the correspondence.
 
+namespace LemmaPy
+
 def PyAbs (a : Int) : Int := if a < 0 then -a else a
+
+end LemmaPy
 """.format(version=PRELUDE_VERSION)
 
 # Line count the prelude prepends before the first encoded definition —

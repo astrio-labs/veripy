@@ -48,13 +48,15 @@ _SLICE_RULE = "lean-slice-1"
 # theorem) is emitted in Lean's escaped-identifier syntax «name». A
 # keyword BLOCKLIST is inherently incomplete — `forall` escaped the
 # first draft's list, and any keyword a future Lean adds would escape it
-# forever — whereas «...» makes the collision class unrepresentable: an
-# escaped identifier never collides with any keyword, and never captures
-# a prelude or core name (a Python `def PyAbs` emits «PyAbs», distinct
-# from the prelude's PyAbs; `abs()` still resolves to the unescaped
-# prelude). The only collisions left are between emitted declarations
-# themselves (`def f` beside `def f_spec`), which the reservation check
-# below still refuses at the source line.
+# forever — whereas «...» makes the KEYWORD collision class
+# unrepresentable. Escaping does NOT separate user names from prelude
+# names («PyAbs» IS the identifier PyAbs — guillemets quote, they do not
+# namespace; measured as "`PyAbs` has already been declared"): that
+# separation comes from the prelude's own namespace, referenced
+# qualified (LemmaPy.PyAbs), which no top-level user def can redeclare
+# and no binder can capture. The only collisions left are between
+# emitted declarations themselves (`def f` beside `def f_spec`), which
+# the reservation check below still refuses at the source line.
 
 
 def _ident(name: str) -> str:
@@ -125,7 +127,11 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             b = _int_expr(args[1], names, line, result, rename)
             return f"({e.func.id} {a} {b})"
         if e.func.id == "abs" and len(args) == 1:
-            return f"(PyAbs {_int_expr(args[0], names, line, result, rename)})"
+            # Qualified: immune to user redeclaration AND binder capture
+            # (a parameter named PyAbs shadows the bare name, never the
+            # namespaced one).
+            return (f"(LemmaPy.PyAbs "
+                    f"{_int_expr(args[0], names, line, result, rename)})")
         if e.func.id == "old" and len(args) == 1 \
                 and isinstance(args[0], ast.Name):
             # Parameters are immutable in this slice (reassignment is
@@ -357,6 +363,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # to the first ensures clause so a `postcondition` failure points
         # at the contract, not at Lean plumbing.
         emit(f"  unfold {_ident(spec_fn.name)}", first_ensures_line)
+        # Prelude definitions are opaque to omega — a goal containing
+        # LemmaPy.PyAbs is unprovable until it unfolds to its
+        # if-then-else (measured: every abs()-using module failed as
+        # postcondition, shadowed or not — no earlier live case called
+        # abs). `try`, because unfold fails when the constant does not
+        # occur.
+        emit("  try unfold LemmaPy.PyAbs", first_ensures_line)
         # `dsimp only` zeta-reduces the `let`s the body compiler emits
         # for Python locals — omega does not look through let-bindings
         # (measured: a one-local module failed with the local itself in
