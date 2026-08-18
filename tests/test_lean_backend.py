@@ -242,6 +242,31 @@ def test_shadowed_builtins_are_refused_not_mistranslated():
     with pytest.raises(EncodeError, match="shadow"):
         _encode(range_shadow)
 
+    # MODULE-LEVEL bindings (assignments, imports) could rebind a name
+    # call sites translate as a builtin; the whole statement class is
+    # rejected rather than the dangerous names enumerated. A leading
+    # docstring stays legal.
+    module_assign = ("abs = 5\n"
+                     "#@ ensures result == x\n"
+                     "def f(x: int) -> int:\n"
+                     "    return x\n")
+    with pytest.raises(EncodeError, match="module-level"):
+        _encode(module_assign)
+
+    module_import = ("import math\n"
+                     "#@ ensures result == x\n"
+                     "def f(x: int) -> int:\n"
+                     "    return x\n")
+    with pytest.raises(EncodeError, match="module-level"):
+        _encode(module_import)
+
+    with_docstring = ('"""A module docstring stays legal."""\n'
+                      "#@ ensures result == x + 1\n"
+                      "def bump(x: int) -> int:\n"
+                      "    return x + 1\n")
+    enc = _encode(with_docstring)  # must not raise
+    assert "def «bump»" in enc.lean_source
+
 
 def test_classifier_maps_endgame_tactic_failures():
     # The endgame combinator reports its LAST sub-tactic's failure, not
