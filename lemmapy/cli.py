@@ -806,6 +806,13 @@ def main(argv: list[str] | None = None) -> int:
         help="with --json: run CrossHair on failing modules to attach a "
              "concrete counterexample when one exists",
     )
+    from .backends.base import available_backends
+
+    p_verify.add_argument(
+        "--backend", choices=available_backends(), default="dafny",
+        help="proof backend (the ROADMAP's Lean track lands behind this "
+             "flag; a typo is refused, never silently substituted)",
+    )
 
     p_difftest = sub.add_parser(
         "difftest",
@@ -1002,7 +1009,7 @@ def main(argv: list[str] | None = None) -> int:
             payloads = verify_structured_many(
                 args.files, args.outdir, time_limit=args.time_limit,
                 hunt_counterexamples=args.hunt_counterexamples,
-                keep_artifacts=True)
+                keep_artifacts=True, backend=args.backend)
             try:
                 dump(payloads, args.json_out)
             except OSError as exc:
@@ -1015,6 +1022,15 @@ def main(argv: list[str] | None = None) -> int:
                    for p in payloads):
                 return 2
             return 1 if any(p["status"] == "failed" for p in payloads) else 0
+        if args.backend != "dafny":
+            # The human-report path still calls the Dafny encoder
+            # directly. Refuse rather than silently verify under a
+            # different backend than the one requested — same principle
+            # as the engine layer's substitution guard.
+            print(f"--backend {args.backend} requires --json (the "
+                  f"human-report path is not yet backend-aware)",
+                  file=sys.stderr)
+            return 2
         return cmd_verify(args.files, args.outdir, args.time_limit,
                           types=not args.no_types, report=args.report)
     if args.command == "lsp":

@@ -114,18 +114,21 @@ def conformance(path: Path | str) -> dict[str, Any]:
 
 
 def verify(path: Path | str, workdir: Path | str, *, time_limit: int = 30,
-           keep_artifacts: bool = False) -> dict[str, Any]:
+           keep_artifacts: bool = False,
+           backend: str = "dafny") -> dict[str, Any]:
     """Prove the module, returning the structured outcome.
 
     The payload is `lemmapy-failures/1` (docs/AGENT-INTERFACE.md): a
     `status`, per-failure records with a published `kind` and both
     coordinate systems, the sidecar's state, and `toolchain` provenance.
     Every outcome is a payload — prover crashes and unreadable files
-    included.
+    included. `backend` selects the proof backend (`dafny` today; the
+    ROADMAP's Lean track lands behind the same name-based seam).
     """
     return verify_structured(Path(path), Path(workdir),
                              time_limit=time_limit,
-                             keep_artifacts=keep_artifacts)
+                             keep_artifacts=keep_artifacts,
+                             backend=backend)
 
 
 def repair(path: Path | str, workdir: Path | str, *, engine: str = "claude",
