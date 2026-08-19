@@ -1301,6 +1301,129 @@ def test_end_to_end_multi_accumulator_loops_verify(tmp_path):
                              backend="lean")["status"] == "failed"
 
 
+def test_propositional_equality_becomes_an_iff():
+    # Dafny gets `P == Q` on booleans free, because its `==` on bool IS
+    # iff. In Lean, Prop equality is a different and much stronger
+    # statement, so the contract has to be an ↔. `A <==> B` reaches the
+    # encoder desugared as `bool(A) == bool(B)`, so both spellings must
+    # land on the same term.
+    src = ("#@ ensures (x > 0) == (y > 0)\n"
+           "#@ ensures (x > 0) <==> (y > 0)\n"
+           "def f(x: int, y: int) -> int:\n"
+           "    return x\n")
+    enc = _encode(src)
+    assert enc.lean_source.count("((«x» > 0) ↔ («y» > 0))") == 2
+
+    # `!=` between propositions is the negated iff.
+    ne = ("#@ ensures (x > 0) != (y > 0)\n"
+          "def g(x: int, y: int) -> int:\n"
+          "    return x\n")
+    assert "(¬((«x» > 0) ↔ («y» > 0)))" in _encode(ne).lean_source
+
+    # Quantifiers count as propositions on either side.
+    q = ("#@ requires n >= 0\n"
+         "#@ ensures (forall i in range(0, n) :: i >= 0) == (n >= 0)\n"
+         "def h(n: int) -> int:\n"
+         "    return n\n")
+    assert "↔" in _encode(q).lean_source
+
+
+def test_proposition_compared_with_an_integer_is_refused():
+    # Python's bool is a subtype of int, so `(x > 0) == 1` is legal
+    # Python that means the 0/1 coercion. The encoder does not model
+    # that, so it must refuse rather than guess which reading was meant.
+    src = ("#@ ensures (x > 0) == 1\n"
+           "def f(x: int) -> int:\n"
+           "    return x\n")
+    with pytest.raises(EncodeError, match="proposition with an integer"):
+        _encode(src)
+
+
+def test_shadowed_builtins_do_not_become_propositions():
+    # `bool` is an encoder builtin now, so it falls under the same
+    # shadowing discipline as the rest. A parameter named `bool` means
+    # the spec CALLS that binding; reading it as the builtin wrapper
+    # would emit an ↔ for a source expression that means something else.
+    shadow_param = ("#@ ensures bool(x > 0) == bool(y > 0)\n"
+                    "def f(bool: int, x: int, y: int) -> int:\n"
+                    "    return x\n")
+    with pytest.raises(EncodeError, match="shadowed by a parameter"):
+        _encode(shadow_param)
+
+    # A module-level def of that name is refused like the other builtins.
+    shadow_def = ("#@ ensures result >= 0\n"
+                  "def bool(x: int) -> int:\n"
+                  "    return x\n")
+    with pytest.raises(EncodeError, match="shadows an encoder builtin"):
+        _encode(shadow_def)
+
+    # A shadowed quantifier name reports the SHADOWING, not a spurious
+    # proposition-versus-integer mismatch: the mixed-comparison branch
+    # defers to the integer translator so the real cause surfaces.
+    shadow_all = ("#@ ensures all(i >= 0 for i in range(0, n)) == (n >= 0)\n"
+                  "def f(all: int, n: int) -> int:\n"
+                  "    return n\n")
+    with pytest.raises(EncodeError, match="shadowed by a parameter"):
+        _encode(shadow_all)
+
+    # A spec clause calling a name the function also binds as a LOCAL is
+    # ambiguous — the builtin at spec scope, that binding inside the
+    # function. Spec clauses are comments, so the body-side
+    # assigned-anywhere scan never saw them; they are scanned now.
+    local_shadow = ("#@ ensures bool(result > 0) == bool(x > 0)\n"
+                    "def f(x: int) -> int:\n"
+                    "    bool = 1\n"
+                    "    return x + bool - 1\n")
+    with pytest.raises(EncodeError, match="also binds as a local"):
+        _encode(local_shadow)
+
+    # The same rule covers every encoder builtin, not just `bool`.
+    local_sum = ("#@ ensures result == sum(xs)\n"
+                 "def f(xs: list[int]) -> int:\n"
+                 "    sum = 0\n"
+                 "    return sum\n")
+    with pytest.raises(EncodeError, match="also binds as a local"):
+        _encode(local_sum)
+
+    # ...but a local merely NAMED after a builtin, never called in the
+    # spec, is ordinary Python and must keep working.
+    benign = ("#@ requires n >= 0\n"
+              "#@ ensures result >= 0\n"
+              "def f(n: int) -> int:\n"
+              "    sum = 0\n"
+              "    for i in range(n):\n"
+              "        #@ invariant sum >= 0\n"
+              "        sum = sum + 1\n"
+              "    return sum\n")
+    _encode(benign)
+
+    # ...while the unshadowed spelling still yields the iff.
+    ok = ("#@ ensures (x > 0) <==> (y > 0)\n"
+          "def f(x: int, y: int) -> int:\n"
+          "    return x\n")
+    assert "↔" in _encode(ok).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_propositional_equality_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    src = tmp_path / "iff.py"
+    src.write_text("#@ ensures (result > 0) == (x > 0)\n"
+                   "def sign_keep(x: int) -> int:\n"
+                   "    return x\n")
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # A false iff still fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ ensures (result > 0) == (x < 0)\n"
+                   "def sign_flip(x: int) -> int:\n"
+                   "    return x\n")
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against
