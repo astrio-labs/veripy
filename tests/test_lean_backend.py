@@ -1073,7 +1073,7 @@ def test_while_loops_emit_measure_machinery():
     # from one that merely ran out of fuel.
     assert "= false := by" in enc.lean_source
     # The fuel at entry is the measure at entry.
-    assert "(«countup_meas» «n» 0).toNat 0" in enc.lean_source
+    assert "(«countup_meas» «n» (0)).toNat (0)" in enc.lean_source
 
 
 def test_while_shape_rejections():
@@ -1090,17 +1090,25 @@ def test_while_shape_rejections():
                 "        #@ decreases n - c\n"
                 "        #@ decreases n\n"
                 "        c = c + 1\n    return c\n", "decreases"),
-        # the body is a single accumulator assignment
+        # the body may assign only the accumulators, never a parameter
         (base + "    c = 0\n    while c < n:\n"
                 "        #@ invariant 0 <= c <= n\n"
                 "        #@ decreases n - c\n"
                 "        c = c + 1\n        n = n\n"
-                "    return c\n", "single assignment"),
-        # acc = init; while ...; return expr
-        (base + "    c = 0\n    d = 1\n    while c < n:\n"
+                "    return c\n", "not one of the accumulators"),
+        # only initializers may precede the loop
+        (base + "    c = 0\n    if n < 0:\n        return 0\n"
+                "    while c < n:\n"
                 "        #@ invariant 0 <= c <= n\n"
                 "        #@ decreases n - c\n"
-                "        c = c + 1\n    return c\n", "must be exactly"),
+                "        c = c + 1\n    return c\n",
+         "accumulator initializers only"),
+        # a body statement that is not an assignment at all
+        (base + "    c = 0\n    while c < n:\n"
+                "        #@ invariant 0 <= c <= n\n"
+                "        #@ decreases n - c\n"
+                "        c = c + 1\n        return c\n"
+                "    return c\n", "single-name assignments"),
         # bool accumulators stay out of the while slice
         ("#@ ensures result == True\ndef f(n: int) -> bool:\n"
          "    b = True\n    while b:\n"
@@ -1205,6 +1213,91 @@ def test_squaring_while_loop_verifies_without_the_maximality_clause(tmp_path):
         "#@ ensures forall k in range(0, n + 1) :: k * k > n or k <= result\n"
         "def isqrt(n: int) -> int:"))
     assert verify_structured(full, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
+COUNT2 = ("#@ requires n >= 0\n"
+          "#@ ensures result == n\n"
+          "def count2(n: int) -> int:\n"
+          "    total = 0\n"
+          "    i = 0\n"
+          "    while i < n:\n"
+          "        #@ invariant 0 <= i <= n\n"
+          "        #@ invariant total == i\n"
+          "        #@ decreases n - i\n"
+          "        total = total + 1\n"
+          "        i = i + 1\n"
+          "    return total\n")
+
+
+def test_multi_accumulator_loops_carry_state_as_a_tuple():
+    # A while loop over N accumulators keeps its state in a tuple and
+    # reads it back through projections; N == 1 stays a bare Int so the
+    # single-accumulator emission is unchanged.
+    enc = _encode(COUNT2)
+    assert ("def «count2_loop» («n» : Int) : Nat → Int → Int → (Int × Int)"
+            in enc.lean_source)
+    assert "| 0, «total», «i» => («total», «i»)" in enc.lean_source
+    assert "«count2_inv» «n» («count2_loop» «n» f «total» «i»).1" \
+        in enc.lean_source
+    # The invariant and measure see every accumulator.
+    assert "def «count2_meas» («n» : Int) («total» «i» : Int)" \
+        in enc.lean_source
+
+
+def test_loop_body_assignments_are_sequential_not_simultaneous():
+    # CPython runs the body top to bottom, so a later assignment sees
+    # the earlier ones. Encoding them simultaneously would model a
+    # DIFFERENT program: here `b = a` must capture the UPDATED a.
+    src = ("#@ requires n >= 0\n"
+           "#@ ensures result == n\n"
+           "def seqdep(n: int) -> int:\n"
+           "    a = 0\n"
+           "    b = 0\n"
+           "    while a < n:\n"
+           "        #@ invariant 0 <= a <= n\n"
+           "        #@ invariant b == a\n"
+           "        #@ decreases n - a\n"
+           "        a = a + 1\n"
+           "        b = a\n"
+           "    return b\n")
+    enc = _encode(src)
+    # BOTH accumulators step to (a + 1) — b takes a's new value.
+    assert "f ((«a» + 1)) ((«a» + 1))" in enc.lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_multi_accumulator_loops_verify(tmp_path):
+    from veripy.agentio import verify_structured
+
+    two = tmp_path / "count2.py"
+    two.write_text(COUNT2)
+    assert verify_structured(two, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The order-dependent body proves only because the substitution is
+    # sequential: under a simultaneous reading `b` would lag by one and
+    # the invariant `b == a` would be false.
+    seq = tmp_path / "seqdep.py"
+    seq.write_text("#@ requires n >= 0\n"
+                   "#@ ensures result == n\n"
+                   "def seqdep(n: int) -> int:\n"
+                   "    a = 0\n"
+                   "    b = 0\n"
+                   "    while a < n:\n"
+                   "        #@ invariant 0 <= a <= n\n"
+                   "        #@ invariant b == a\n"
+                   "        #@ decreases n - a\n"
+                   "        a = a + 1\n"
+                   "        b = a\n"
+                   "    return b\n")
+    assert verify_structured(seq, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # A false multi-accumulator spec still fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(COUNT2.replace("result == n", "result == n + 1"))
+    assert verify_structured(bad, tmp_path / "o3",
                              backend="lean")["status"] == "failed"
 
 
