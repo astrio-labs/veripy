@@ -161,3 +161,37 @@ def test_difftest_catches_a_seeded_encoder_bug(tmp_path, monkeypatch):
     assert b < 0, diff.mismatch
     assert diff.mismatch.python_result == a % b
     assert diff.mismatch.python_result != diff.mismatch.dafny_result
+
+
+def test_break_and_continue_translation_faithful(tmp_path):
+    src = tmp_path / "ctrl.py"
+    src.write_text(
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def cap10(n: int) -> int:\n"
+        "    i = 0\n"
+        "    while i < n:\n"
+        "        #@ invariant 0 <= i <= n\n"
+        "        #@ decreases n - i\n"
+        "        if i == 10:\n"
+        "            break\n"
+        "        i = i + 1\n"
+        "    return i\n"
+        "\n"
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def skip_evens(n: int) -> int:\n"
+        "    s = 0\n"
+        "    for i in range(n):\n"
+        "        #@ invariant 0 <= i <= n\n"
+        "        #@ invariant s >= 0\n"
+        "        if i % 2 == 0:\n"
+        "            continue\n"
+        "        s = s + 1\n"
+        "    return s\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]

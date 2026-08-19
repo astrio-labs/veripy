@@ -179,6 +179,7 @@ translation of the *same* stub the prover saw).
 | Optionals | §1/§4 assign | `PyOpt` + coercions | corpus (rolling_max) |
 | list build | §4 append | `⧺` under ownership | corpus (incr_list, intersperse) |
 | for-range / for-each | §4 loops | hoisted while / snapshot | corpus-wide |
+| `break` / `continue` | §4 loops | Dafny `break`/`continue`; for-desugar steps the hidden index before `continue` | unit (while cap, range-for skip) |
 | assert | §4 | Dafny `assert` | corpus (rolling_max, below_zero) |
 | truthiness §7.3 | §3 | `\|xs\| != 0` | unit |
 

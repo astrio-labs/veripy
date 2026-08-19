@@ -234,3 +234,25 @@ def test_isqrt_maximality_verifies_without_proof_additions(tmp_path, capsys):
                         types=False)
     assert status == 0
     assert "VERIFIED (isqrt)" in capsys.readouterr().out
+
+
+def test_while_break_cap_verifies(tmp_path, capsys):
+    src = tmp_path / "cap.py"
+    src.write_text(
+        "#@ requires n >= 0\n"
+        "#@ ensures result == n or result == 10\n"
+        "#@ ensures result <= n\n"
+        "#@ ensures result <= 10\n"
+        "def cap10(n: int) -> int:\n"
+        "    i = 0\n"
+        "    while i < n:\n"
+        "        #@ invariant 0 <= i <= n\n"
+        "        #@ invariant i <= 10\n"
+        "        #@ decreases n - i\n"
+        "        if i == 10:\n"
+        "            break\n"
+        "        i = i + 1\n"
+        "    return i\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out
