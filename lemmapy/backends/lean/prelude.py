@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.3"
+PRELUDE_VERSION = "lean-0.4"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (LemmaPy.PyAbs). Escaping user identifiers handles
@@ -30,7 +30,7 @@ PRELUDE_VERSION = "lean-0.3"
 # here, not assumed — the prelude carries no axioms, and P3's
 # `#print axioms` checker will pin that.
 PRELUDE = """\
--- lemmapy Lean prelude {version} (loop-free + for-range loops + lists)
+-- lemmapy Lean prelude {version} (loop-free, for-range loops, lists, //, %)
 -- Python semantics on Int. Every def must match CPython on the shared
 -- domain; the differential fidelity suite pins the correspondence.
 
@@ -41,6 +41,38 @@ def PyAbs (a : Int) : Int := if a < 0 then -a else a
 def PySum : List Int → Int
   | [] => 0
   | x :: rest => x + PySum rest
+
+-- Python's `//` and `%` are FLOOR division and a remainder that takes the
+-- sign of the DIVISOR: fdiv/fmod, not ediv/emod (Lean's own `/` and `%`).
+-- Measured against CPython on both signs of both operands:
+--   -7 // 3 = -3, 7 // -3 = -3, -7 % 3 = 2, 7 % -3 = -2.
+-- emod agrees only when the divisor is positive, so a positive-divisor-only
+-- test suite would never catch the difference. The differential suite pins
+-- all four sign combinations.
+def PyFloorDiv (a b : Int) : Int := Int.fdiv a b
+
+def PyMod (a b : Int) : Int := Int.fmod a b
+
+-- Bridges to Lean's own `/` and `%`, which omega reasons about NATIVELY
+-- for constant divisors. Without these every division goal is an opaque
+-- atom (measured).
+theorem PyMod_pos (a b : Int) (h : 0 < b) : PyMod a b = a % b := by
+  unfold PyMod
+  rw [Int.fmod_eq_emod]
+  simp [show (0:Int) ≤ b from by omega]
+
+theorem PyFloorDiv_pos (a b : Int) (h : 0 < b) : PyFloorDiv a b = a / b := by
+  unfold PyFloorDiv
+  rw [Int.fdiv_eq_ediv]
+  simp [show (0:Int) ≤ b from by omega]
+
+-- omega handles `%` only for CONSTANT divisors, so a variable-divisor
+-- bound (the `0 <= result < p` postcondition class) needs these supplied.
+theorem PyMod_nonneg (a b : Int) (h : 0 < b) : 0 ≤ PyMod a b := by
+  rw [PyMod_pos _ _ h]; exact Int.emod_nonneg a (by omega)
+
+theorem PyMod_lt (a b : Int) (h : 0 < b) : PyMod a b < b := by
+  rw [PyMod_pos _ _ h]; exact Int.emod_lt_of_pos a h
 
 theorem PySum_take_succ (xs : List Int) (n : Nat) :
     PySum (xs.take (n + 1)) = PySum (xs.take n) + xs.getD n 0 := by
