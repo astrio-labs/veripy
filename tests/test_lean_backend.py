@@ -1443,7 +1443,7 @@ def test_lean_rejects_all_in_a_bool_body():
         "def f(n: int) -> bool:\n"
         "    return all(i >= 0 for i in range(n))\n"
     )
-    with pytest.raises(EncodeError, match="all/any in a bool-returning body"):
+    with pytest.raises(EncodeError, match="cannot be decided"):
         _encode(src)
 
 
@@ -1454,7 +1454,7 @@ def test_lean_rejects_not_all_in_a_bool_body():
         "def f(n: int) -> bool:\n"
         "    return not all(i >= 0 for i in range(n))\n"
     )
-    with pytest.raises(EncodeError, match="all/any in a bool-returning body"):
+    with pytest.raises(EncodeError, match="cannot be decided"):
         _encode(src)
 
 
@@ -1465,8 +1465,47 @@ def test_lean_rejects_all_conjoined_in_a_bool_body():
         "def f(n: int) -> bool:\n"
         "    return all(i >= 0 for i in range(n)) and n >= 0\n"
     )
-    with pytest.raises(EncodeError, match="all/any in a bool-returning body"):
+    with pytest.raises(EncodeError, match="cannot be decided"):
         _encode(src)
+
+
+def test_lean_rejects_all_under_decide_in_loops_and_ifs():
+    # Same Decidable hole as a bool return: while conds, early-return
+    # tests, Lean `if`, and bool-accumulator steps all wrap `_prop_expr`
+    # in `decide`.
+    cases = [
+        ("#@ requires n >= 0\n#@ ensures result >= 0\n"
+         "def f(n: int) -> int:\n"
+         "    c = 0\n"
+         "    while all(i >= 0 for i in range(n)):\n"
+         "        #@ invariant 0 <= c\n"
+         "        #@ decreases 0\n"
+         "        c = c + 1\n"
+         "    return c\n"),
+        ("#@ ensures result == True or result == False\n"
+         "def f(n: int) -> bool:\n"
+         "    for i in range(n):\n"
+         "        #@ invariant True\n"
+         "        if all(k >= 0 for k in range(n)):\n"
+         "            return True\n"
+         "    return False\n"),
+        ("#@ ensures result == True or result == False\n"
+         "def f(n: int) -> bool:\n"
+         "    if all(i >= 0 for i in range(n)):\n"
+         "        return True\n"
+         "    return False\n"),
+        ("#@ requires n >= 0\n"
+         "#@ ensures result == True or result == False\n"
+         "def f(n: int) -> bool:\n"
+         "    b = True\n"
+         "    for i in range(n):\n"
+         "        #@ invariant b == True\n"
+         "        b = b and all(k >= 0 for k in range(n))\n"
+         "    return b\n"),
+    ]
+    for src in cases:
+        with pytest.raises(EncodeError, match="cannot be decided"):
+            _encode(src)
 
 
 def test_lean_rejects_filtered_all_loudly():

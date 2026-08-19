@@ -518,6 +518,30 @@ class _SubstName(ast.NodeTransformer):
         return node
 
 
+def _reject_undecidable_quantifier(
+        e: ast.expr, names: set[str], line: int,
+        lc: _ListCtx | None = None) -> None:
+    """Reject all/any genexps that would become ∀/∃ in a Decidable
+    position (`decide`, Lean `if`). Specs stay in `_prop_expr` as Prop.
+
+    `decide (∀ n : Int, …)` has no Decidable instance — Int is
+    infinite — so wrapping the spec-side Prop encoding would fail
+    elaboration rather than reject at encode time. Walk the whole
+    expression: a top-level Call is not enough, and neither is a
+    bool return — while conditions and early-return tests wrap
+    `_prop_expr` in `decide` too."""
+    for node in ast.walk(e):
+        if isinstance(node, ast.Call):
+            q = _quantifier(node, names, line, None, None, False, None, lc)
+            if q is not None:
+                raise _reject(
+                    "all/any cannot be decided in the Lean slice — "
+                    "`decide` has no instance for unbounded ∀/∃ over "
+                    "Int; the Dafny backend admits them as forall/"
+                    "exists",
+                    line)
+
+
 def _bool_expr(e: ast.expr, names: set[str], line: int,
                lc: _ListCtx | None = None) -> str:
     """A Bool-valued Lean term for a predicate function's return.
@@ -529,21 +553,7 @@ def _bool_expr(e: ast.expr, names: set[str], line: int,
         return "true"
     if isinstance(e, ast.Constant) and e.value is False:
         return "false"
-    # `decide (∀ n : Int, …)` has no Decidable instance — Int is
-    # infinite — so wrapping the spec-side Prop encoding would fail
-    # elaboration rather than reject at encode time. Walk the whole
-    # return (not just a top-level `all`/`any` Call): `not all(...)`
-    # and `all(...) and P` otherwise still land under `decide`.
-    for node in ast.walk(e):
-        if isinstance(node, ast.Call):
-            q = _quantifier(node, names, line, None, None, False, None, lc)
-            if q is not None:
-                raise _reject(
-                    "all/any in a bool-returning body are outside the Lean "
-                    "slice — `decide` has no instance for unbounded ∀/∃ "
-                    "over Int; the Dafny backend admits them as forall/"
-                    "exists",
-                    line)
+    _reject_undecidable_quantifier(e, names, line, lc)
     if isinstance(e, (ast.Compare, ast.BoolOp, ast.UnaryOp)):
         return f"(decide {_prop_expr(e, names, line, lc=lc)})"
     raise _reject("a bool return must be True/False or a boolean "
@@ -585,6 +595,7 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
                 + _body_expr(rest, names | {target}, params, is_bool, lc))
     if isinstance(head, ast.If):
         _no_old(head.test, head.lineno)
+        _reject_undecidable_quantifier(head.test, names, head.lineno, lc)
         cond = _prop_expr(head.test, names, head.lineno, lc=lc)
         then = _body_expr(head.body, names, params, is_bool, lc)
         if head.orelse:
@@ -1440,6 +1451,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                               min_len=lc0.min_len,
                               pos_names=lc0.pos_names)
             init_t = _int_expr(wloop.init, names, fn.lineno, lc=lc0)
+            _reject_undecidable_quantifier(wloop.cond, body_names,
+                                           wloop.while_line, lc0)
             cond_t = _prop_expr(wloop.cond, body_names, wloop.while_line,
                                 lc=lc0)
             step_t = _int_expr(wloop.step, body_names, wloop.while_line,
@@ -1596,6 +1609,9 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 # via decide, mirroring the loop-free predicate path.
                 bool_op = "&&" if isinstance(loop.step.op, ast.And) \
                     else "||"
+                _reject_undecidable_quantifier(
+                    loop.step.values[1], body_names, loop.for_line,
+                    step_lc)
                 pred_t = _prop_expr(loop.step.values[1], body_names,
                                     loop.for_line, lc=step_lc)
                 step_t = f"({av} {bool_op} (decide {pred_t}))"
