@@ -1,6 +1,6 @@
-# lemmapy-benchmark
+# veripy-benchmark
 
-> **Status: v0 — runner and 16-task golden corpus shipped.** `lemmapy benchmark`
+> **Status: v0 — runner and 16-task golden corpus shipped.** `veripy benchmark`
 > runs it; the scorecard below regenerates with `--report`.
 
 ## Why not a skeleton-completion benchmark
@@ -9,7 +9,7 @@ The obvious move was a proof-completion benchmark in the LemmaScript style:
 frozen prover-IR skeletons, additions-only diffs, one verified/failed bit per
 task. We deliberately did something else, because that design measures a
 prover-adjacent skill in the IR — the source language, the specs' quality,
-the runtime semantics, and the toolchain itself never appear. LemmaPy's
+the runtime semantics, and the toolchain itself never appear. VeriPy's
 product claim is end-to-end (*annotated Python in, assured Python out*), and
 its architecture runs one spec surface through **multiple** assurance
 mechanisms. The benchmark should measure exactly that.
@@ -40,7 +40,7 @@ Two properties fall out of this design that no static benchmark has:
    additions → a *proof-repair* task (score = R4 restored under the frozen
    specs); ship a surviving mutant → a *debugging* task. The golden corpus is
    the answer key for all of them. **The proof-repair exam is live**:
-   `lemmapy benchmark --exam proof-repair [--engine claude|file:<dir>]`
+   `veripy benchmark --exam proof-repair [--engine claude|file:<dir>]`
    strips each sidecar-bearing task's `.proofs.dfy` (the `#@ proof` clauses
    stay in the frozen source) and scores restoration through the repair
    loop — the same whitelist and prover as the golden proof, so R4 must be
@@ -58,7 +58,7 @@ Two properties fall out of this design that no static benchmark has:
    present. The divisibility family is deliberately NOT promoted into the
    preamble while the exam depends on those lemmas being absent.
 
-   **The spec-writing exam is live too**: `lemmapy benchmark --exam
+   **The spec-writing exam is live too**: `veripy benchmark --exam
    spec-writing` strips every `#@` line, hands the engine the bare
    implementation, and scores the specification it writes back on the same
    deterministic panel as the golden — engine kill rate beside golden kill
@@ -193,7 +193,7 @@ prove/fidelity column. Same functions, same frozen specs, two provers: a
 backend comparison only a multi-backend toolchain can make, and the payoff
 for keeping the ladder backend-agnostic.
 
-A cross-**tool** olympics (LemmaPy vs LemmaScript vs OpenJML vs Verus vs
+A cross-**tool** olympics (VeriPy vs LemmaScript vs OpenJML vs Verus vs
 Frama-C) is explicitly out of scope: it means building and maintaining
 competitors' harnesses, cross-language ports make results incomparable, and
 a benchmark authored by one competitor caps its own credibility — that is
@@ -305,7 +305,7 @@ so the rung names the offending mutant *and the hunter's reason*, making
 an intermittent failure diagnosable rather than an unactionable
 "1 analysis error(s)".
 
-`lemmapy benchmark [--quick] [--report FILE]` prints the ladder table and
+`veripy benchmark [--quick] [--report FILE]` prints the ladder table and
 writes a JSON scorecard. Mutant panels are deterministic (ordered AST walk,
 splice-based so `#@` comments survive verbatim). Surviving mutants may be
 semantically equivalent rather than spec gaps — they are reported

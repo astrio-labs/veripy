@@ -1,7 +1,7 @@
 import pytest
 
-from lemmapy.frontend.extract import parse_source
-from lemmapy.frontend.parse import SpecError, desugar
+from veripy.frontend.extract import parse_source
+from veripy.frontend.parse import SpecError, desugar
 
 
 def test_desugar_forall():

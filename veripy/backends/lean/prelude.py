@@ -1,0 +1,93 @@
+"""The Lean 4 prelude: Python semantics, pinned.
+
+Slice 1 needs almost nothing — `min`/`max` on `Int` and `omega` are core
+Lean — so the prelude is deliberately tiny and the artifact needs NO lake
+project and NO external dependencies: bare `lean --json file.lean`
+elaborates against core, which kills the build-latency risk the ROADMAP
+flagged for the repair loop.
+
+Every definition here must match CPython on the shared domain, and the
+match is pinned by the cross-backend differential fidelity tests (the R5
+rung, extended to Lean in this track). Versioned like the Dafny preamble:
+provenance rides every payload, and two "ok" verdicts must be comparable.
+"""
+
+PRELUDE_VERSION = "lean-0.4"
+
+# The prelude lives in its own namespace and every call site references
+# it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
+# keywords, but «PyAbs» IS the identifier PyAbs (guillemets quote, they
+# do not namespace — measured: a module `def PyAbs` failed with
+# "`PyAbs` has already been declared"), so separation from user names
+# has to come from the namespace: a top-level user def cannot redeclare
+# a namespaced name, and a binder cannot capture a qualified reference.
+#
+# PySum models Python's `sum` on `list[int]` (Python folds left, PySum
+# folds right; Int addition is commutative and associative, so the
+# values agree). PySum_take_succ is the lemma pack behind sum-loop
+# invariants: it peels the (n+1)-prefix sum into the n-prefix sum plus
+# the element, which is the invariant-preservation step. It is PROVED
+# here, not assumed — the prelude carries no axioms, and P3's
+# `#print axioms` checker will pin that.
+PRELUDE = """\
+-- veripy Lean prelude {version} (loop-free, for-range loops, lists, //, %)
+-- Python semantics on Int. Every def must match CPython on the shared
+-- domain; the differential fidelity suite pins the correspondence.
+
+namespace VeriPy
+
+def PyAbs (a : Int) : Int := if a < 0 then -a else a
+
+def PySum : List Int → Int
+  | [] => 0
+  | x :: rest => x + PySum rest
+
+-- Python's `//` and `%` are FLOOR division and a remainder that takes the
+-- sign of the DIVISOR: fdiv/fmod, not ediv/emod (Lean's own `/` and `%`).
+-- Measured against CPython on both signs of both operands:
+--   -7 // 3 = -3, 7 // -3 = -3, -7 % 3 = 2, 7 % -3 = -2.
+-- emod agrees only when the divisor is positive, so a positive-divisor-only
+-- test suite would never catch the difference. The differential suite pins
+-- all four sign combinations.
+def PyFloorDiv (a b : Int) : Int := Int.fdiv a b
+
+def PyMod (a b : Int) : Int := Int.fmod a b
+
+-- Bridges to Lean's own `/` and `%`, which omega reasons about NATIVELY
+-- for constant divisors. Without these every division goal is an opaque
+-- atom (measured).
+theorem PyMod_pos (a b : Int) (h : 0 < b) : PyMod a b = a % b := by
+  unfold PyMod
+  rw [Int.fmod_eq_emod]
+  simp [show (0:Int) ≤ b from by omega]
+
+theorem PyFloorDiv_pos (a b : Int) (h : 0 < b) : PyFloorDiv a b = a / b := by
+  unfold PyFloorDiv
+  rw [Int.fdiv_eq_ediv]
+  simp [show (0:Int) ≤ b from by omega]
+
+-- omega handles `%` only for CONSTANT divisors, so a variable-divisor
+-- bound (the `0 <= result < p` postcondition class) needs these supplied.
+theorem PyMod_nonneg (a b : Int) (h : 0 < b) : 0 ≤ PyMod a b := by
+  rw [PyMod_pos _ _ h]; exact Int.emod_nonneg a (by omega)
+
+theorem PyMod_lt (a b : Int) (h : 0 < b) : PyMod a b < b := by
+  rw [PyMod_pos _ _ h]; exact Int.emod_lt_of_pos a h
+
+theorem PySum_take_succ (xs : List Int) (n : Nat) :
+    PySum (xs.take (n + 1)) = PySum (xs.take n) + xs.getD n 0 := by
+  induction xs generalizing n with
+  | nil => simp [PySum, List.getD]
+  | cons a rest ih =>
+    cases n with
+    | zero => simp [PySum, List.getD]
+    | succ m =>
+      simp only [List.take_succ_cons, PySum, List.getD_cons_succ, ih m]
+      omega
+
+end VeriPy
+""".format(version=PRELUDE_VERSION)
+
+# Line count the prelude prepends before the first encoded definition —
+# the encoder's line_map starts after it.
+PRELUDE_LINES = PRELUDE.count("\n")

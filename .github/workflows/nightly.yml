@@ -71,7 +71,7 @@ jobs:
         env:
           EXAMPLES: ${{ github.event.inputs.examples || 5000 }}
         run: |
-          lemmapy difftest benchmark/tasks \
+          veripy difftest benchmark/tasks \
             -n "$EXAMPLES" \
             -o build/nightly \
             --report build/nightly/difftest-report.json \

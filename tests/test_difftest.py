@@ -6,8 +6,8 @@ import pytest
 
 pytest.importorskip("hypothesis")
 
-from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.difftest.harness import (
+from veripy.backends.dafny.driver import find_dafny
+from veripy.difftest.harness import (
     DiffResult,
     diff_functions,
     difftest_file,
@@ -95,7 +95,7 @@ def test_harness_detects_divergence(tmp_path):
     import ast
 
     source = (EXAMPLES / "bump.py").read_text()
-    from lemmapy.difftest.harness import (
+    from veripy.difftest.harness import (
         _compiled_member,
         _load_compiled_module,
     )
@@ -144,7 +144,7 @@ def test_difftest_catches_a_seeded_encoder_bug(tmp_path, monkeypatch):
 
     # Seed the bug: collapse PyMod to Dafny's raw (Euclidean) `%`, dropping
     # the negative-divisor correction. Python: 7 % -3 == -2; Euclidean: 1.
-    import lemmapy.backends.dafny.encoder as enc
+    import veripy.backends.dafny.encoder as enc
 
     floor_correction = "if b < 0 && a % b != 0 then a % b + b else a % b"
     assert floor_correction in enc.PREAMBLE, "preamble PyMod shape changed"

@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.backends.base import available_backends, get_backend
-from lemmapy.backends.dafny.encoder import EncodeError
-from lemmapy.backends.lean.backend import LeanBackend
-from lemmapy.backends.lean.driver import classify_lean_message, find_lean
-from lemmapy.backends.lean.encoder import encode_module_lean
-from lemmapy.frontend.extract import parse_source
+from veripy.backends.base import available_backends, get_backend
+from veripy.backends.dafny.encoder import EncodeError
+from veripy.backends.lean.backend import LeanBackend
+from veripy.backends.lean.driver import classify_lean_message, find_lean
+from veripy.backends.lean.encoder import encode_module_lean
+from veripy.frontend.extract import parse_source
 
 BUMP = ("#@ ensures result == x + 1\n"
         "def bump(x: int) -> int:\n"
@@ -108,14 +108,14 @@ def test_escaped_identifiers_make_keyword_collisions_unrepresentable():
     # Escaping does NOT separate user names from the prelude («PyAbs» IS
     # the identifier PyAbs — measured: "`PyAbs` has already been
     # declared"); the NAMESPACE does. A user `def PyAbs` coexists with
-    # the prelude because call sites reference LemmaPy.PyAbs qualified,
+    # the prelude because call sites reference VeriPy.PyAbs qualified,
     # which no top-level def redeclares and no binder captures.
     shadows_prelude = ("#@ ensures result == abs(a)\n"
                        "def PyAbs(a: int) -> int:\n"
                        "    return abs(a)\n")
     enc2 = _encode(shadows_prelude)
     assert "def «PyAbs»" in enc2.lean_source          # user def, escaped
-    assert "(LemmaPy.PyAbs «a»)" in enc2.lean_source  # abs() -> qualified
+    assert "(VeriPy.PyAbs «a»)" in enc2.lean_source  # abs() -> qualified
 
 
 def test_param_shadowing_is_allowed_and_alpha_renamed_in_theorems():
@@ -403,7 +403,7 @@ def test_loop_shape_rejections():
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_loops_verify_and_false_invariants_fail(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     src = tmp_path / "addn.py"
     src.write_text(ADDN)
@@ -454,8 +454,8 @@ def test_lists_emit_types_getd_take_and_pysum():
     enc = _encode(SUM_LIST)
     assert "def «sum_list_loop» («xs» : List Int)" in enc.lean_source
     assert "(«xs».getD («i»).toNat 0)" in enc.lean_source
-    assert "LemmaPy.PySum («xs».take («i»).toNat)" in enc.lean_source
-    assert "= (LemmaPy.PySum «xs»)" in enc.lean_source
+    assert "VeriPy.PySum («xs».take («i»).toNat)" in enc.lean_source
+    assert "= (VeriPy.PySum «xs»)" in enc.lean_source
     assert "theorem PySum_take_succ" in enc.lean_source  # prelude, proved
 
 
@@ -537,7 +537,7 @@ def test_list_misuse_is_refused_not_mistranslated():
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_lists_verify(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     src = tmp_path / "sum_list.py"
     src.write_text(SUM_LIST)
@@ -665,7 +665,7 @@ def test_bool_loop_misuse_is_refused():
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_bool_loops_verify(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     # The all-accumulator (below_threshold) and or-accumulator
     # (contains) classes both prove with the fixed cocktail. contains
@@ -736,7 +736,7 @@ def test_early_return_loops_desugar_to_bool_accumulators():
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_early_return_loops_verify(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     # The frozen-corpus below_threshold (HumanEval/52) verbatim: the
     # first corpus task whose Lean column moved from encode-error to
@@ -795,7 +795,7 @@ def test_max_element_class_emits_min_max_and_witness_machinery():
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_max_element_verifies(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     # The frozen-corpus max_element (HumanEval/35) shape verbatim.
     src = tmp_path / "max_element.py"
@@ -870,18 +870,18 @@ def test_divmod_emits_python_semantics_not_lean_operators():
            "def mod_bound(a: int, p: int) -> int:\n"
            "    return a % p\n")
     enc = _encode(src)
-    assert "(LemmaPy.PyMod «a» «p»)" in enc.lean_source
+    assert "(VeriPy.PyMod «a» «p»)" in enc.lean_source
     # The variable divisor's bounds are supplied explicitly: omega reasons
     # about `%` natively ONLY for constant divisors (measured).
-    assert "LemmaPy.PyMod_nonneg" in enc.lean_source
-    assert "LemmaPy.PyMod_lt" in enc.lean_source
+    assert "VeriPy.PyMod_nonneg" in enc.lean_source
+    assert "VeriPy.PyMod_lt" in enc.lean_source
     assert "have hdpos0 : (0:Int) < «p» := by omega" in enc.lean_source
 
     # A constant divisor DOES get bridged to `%`, which is what unlocks
     # omega's native arithmetic.
     half = ("#@ requires n >= 0\n#@ ensures result * 2 <= n\n"
             "def half(n: int) -> int:\n    return n // 2\n")
-    assert "LemmaPy.PyFloorDiv_pos" in _encode(half).lean_source
+    assert "VeriPy.PyFloorDiv_pos" in _encode(half).lean_source
 
 
 def test_divisor_wellformedness_is_discharged_not_assumed():
@@ -909,7 +909,7 @@ def test_divisor_wellformedness_is_discharged_not_assumed():
     # ...while a top-level requires conjunct proving positivity licenses it.
     ok = ("#@ requires p >= 2 and a >= 0\n#@ ensures 0 <= result < p\n"
           "def f(a: int, p: int) -> int:\n    return a % p\n")
-    assert "LemmaPy.PyMod" in _encode(ok).lean_source
+    assert "VeriPy.PyMod" in _encode(ok).lean_source
 
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
@@ -921,16 +921,16 @@ def test_divmod_model_matches_cpython_on_both_signs(tmp_path):
     # so a positive-only suite would have ratified the wrong model.
     import subprocess
 
-    from lemmapy.backends.lean.prelude import PRELUDE
+    from veripy.backends.lean.prelude import PRELUDE
 
     pairs = [(a, b) for a in (-7, -1, 0, 7) for b in (-3, -2, 2, 3)]
 
     def _suite(prelude: str, ps) -> str:
         lines = [prelude]
         for a, b in ps:
-            lines.append(f"example : LemmaPy.PyMod ({a} : Int) ({b}) "
+            lines.append(f"example : VeriPy.PyMod ({a} : Int) ({b}) "
                          f"= ({a % b}) := by rfl")
-            lines.append(f"example : LemmaPy.PyFloorDiv ({a} : Int) ({b}) "
+            lines.append(f"example : VeriPy.PyFloorDiv ({a} : Int) ({b}) "
                          f"= ({a // b}) := by rfl")
         return "\n".join(lines) + "\n"
 
@@ -946,17 +946,17 @@ def test_divmod_model_matches_cpython_on_both_signs(tmp_path):
 
     # ...and the suite has TEETH: the ediv/emod model it rules out fails
     # here, but passes when restricted to positive divisors.
-    wrong = ("namespace LemmaPy\n"
+    wrong = ("namespace VeriPy\n"
              "def PyMod (a b : Int) : Int := Int.emod a b\n"
              "def PyFloorDiv (a b : Int) : Int := Int.ediv a b\n"
-             "end LemmaPy\n")
+             "end VeriPy\n")
     assert _errors(_suite(wrong, pairs)) > 0
     assert _errors(_suite(wrong, [(a, b) for a, b in pairs if b > 0])) == 0
 
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_divmod_verifies(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     # Variable divisor: the bounds ride the prelude lemmas.
     mb = tmp_path / "mod_bound.py"
@@ -993,7 +993,7 @@ def test_end_to_end_divmod_verifies(tmp_path):
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_index_free_invariant_still_proves(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     # Regression: the fuel-cast rewrite was the one UNGUARDED step in the
     # generated script. An invariant that never mentions the loop index
@@ -1015,7 +1015,7 @@ def test_index_free_invariant_still_proves(tmp_path):
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_division_inside_a_loop_verifies(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     # The loop machinery and the division machinery compose: the mod
     # bounds are supplied in LOOP context, where the induction theorem
@@ -1126,7 +1126,7 @@ def test_driver_reports_toolless_exit_as_tool_error(monkeypatch):
     # Nonzero exit with no parsed diagnostic is the TOOL failing, not a
     # proof — reporting `failed` would fabricate an unknown obligation
     # and send a repair loop after a proof that was never judged.
-    import lemmapy.backends.lean.driver as driver_mod
+    import veripy.backends.lean.driver as driver_mod
 
     class Proc:
         returncode = 134
@@ -1171,7 +1171,7 @@ def test_lean_sidecars_are_refused_not_ignored(tmp_path):
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_true_spec_verifies(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     src = tmp_path / "m.py"
     src.write_text(CLAMP)
@@ -1196,7 +1196,7 @@ def test_end_to_end_true_spec_verifies(tmp_path):
     # calling abs(). Exercises the namespace separation (measured
     # collision without it) AND the tactic script's prelude unfold
     # (measured: every abs()-using module failed as postcondition until
-    # `try unfold LemmaPy.PyAbs` — no earlier live case called abs).
+    # `try unfold VeriPy.PyAbs` — no earlier live case called abs).
     shadow = tmp_path / "shadow.py"
     shadow.write_text("#@ requires a >= 0\n"
                       "#@ ensures result == a\n"
@@ -1208,7 +1208,7 @@ def test_end_to_end_true_spec_verifies(tmp_path):
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_bool_predicates_verify(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     pred = tmp_path / "pos.py"
     pred.write_text("#@ ensures result == (x > 0)\n"
@@ -1239,7 +1239,7 @@ def test_end_to_end_bool_predicates_verify(tmp_path):
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_false_spec_fails_as_postcondition(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     src = tmp_path / "m.py"
     src.write_text("#@ ensures result == x + 2\n"

@@ -37,14 +37,14 @@ Parses spec comments (`requires`, `ensures`, `invariant`, `decreases`, `proof`, 
 
 ### Conformance checker
 
-`lemmapy check` is two passes, in this order:
+`veripy check` is two passes, in this order:
 
-1. **The encoder itself** — solves dynamic *semantics*. It is the fragment's conformance authority: a construct with no lowering is a hard error with a stable `rule` id ([AGENT-INTERFACE.md](AGENT-INTERFACE.md)), not a warning. `lemmapy check` dry-runs the encoder so the gate and the verifier reject the same programs.
+1. **The encoder itself** — solves dynamic *semantics*. It is the fragment's conformance authority: a construct with no lowering is a hard error with a stable `rule` id ([AGENT-INTERFACE.md](AGENT-INTERFACE.md)), not a warning. `veripy check` dry-runs the encoder so the gate and the verifier reject the same programs.
 2. **basedpyright strict** — solves dynamic *typing*; version-pinned and trusted (assumption A7). `--no-types` is an explicit opt-out, never a silent skip.
 
-`lemmapy verify` inverts that order: the type gate runs first so an ill-typed file never reaches Dafny.
+`veripy verify` inverts that order: the type gate runs first so an ill-typed file never reaches Dafny.
 
-`lemmapy survey` is a **separate**, untyped AST telemetry pass used for RQ1 coverage numbers. It is not the gate, and its `U-METHOD`/`U-CALL` rules are optimistic (name-only). Do not quote survey acceptance as encoder acceptance.
+`veripy survey` is a **separate**, untyped AST telemetry pass used for RQ1 coverage numbers. It is not the gate, and its `U-METHOD`/`U-CALL` rules are optimistic (name-only). Do not quote survey acceptance as encoder acceptance.
 
 The full §3.2 ownership dataflow pass is **not** a standalone checker. The encoder tracks ownership-lite (fresh allocation vs. alias) and rejects `append` on a non-owned name. Rules 4–7 of §3.2 are the design; the implementation is the subset that the current statement surface needs.
 
@@ -58,7 +58,7 @@ A thin, backend-neutral **fragment IR** is the design's way of keeping a second 
 
 ### Guard generator
 
-`lemmapy guard` emits a sibling module that contains a **byte-identical island copy** of the source plus a wrapper per spec'd function:
+`veripy guard` emits a sibling module that contains a **byte-identical island copy** of the source plus a wrapper per spec'd function:
 
 - deep structural type check (exact types — `type(x) is list`, not `isinstance`; `bool` rejected where `int` is expected);
 - executable `#@ requires` run directly (every frozen-grammar `requires` is executable, so the per-boundary *assumed* set is empty);
@@ -74,7 +74,7 @@ Invokes `dafny verify` on the stub (preamble + translation + sidecar), maps fail
 
 ### LLM proof-repair loop
 
-When verification fails, an agent reads the structured failure payload ([AGENT-INTERFACE.md](AGENT-INTERFACE.md)) and edits **only the sidecar**. Proposals run through the same whitelist as hand-written packs. Proof-completion rate without human edits is the headline DX metric; measured figures and their caveats live in [EVALUATION.md](EVALUATION.md). CrossHair counterexamples from `lemmapy hunt` remain the runtime fallback.
+When verification fails, an agent reads the structured failure payload ([AGENT-INTERFACE.md](AGENT-INTERFACE.md)) and edits **only the sidecar**. Proposals run through the same whitelist as hand-written packs. Proof-completion rate without human edits is the headline DX metric; measured figures and their caveats live in [EVALUATION.md](EVALUATION.md). CrossHair counterexamples from `veripy hunt` remain the runtime fallback.
 
 ### Translation-validation harness
 
@@ -82,7 +82,7 @@ The encoder is the largest trusted component, so it is validated per-program rat
 
 ### Runtime backend
 
-The same `#@` specs compile to CrossHair/icontract runtime checks (`lemmapy emit` / `lemmapy hunt`), giving counterexample-producing results on real dynamic Python. This de-risked the spec surface first and remains the fallback for code the encoder rejects.
+The same `#@` specs compile to CrossHair/icontract runtime checks (`veripy emit` / `veripy hunt`), giving counterexample-producing results on real dynamic Python. This de-risked the spec surface first and remains the fallback for code the encoder rejects.
 
 ## Trusted computing base
 
@@ -101,7 +101,7 @@ Deliberately **not built**: a VC generator, an SMT solver, a Python parser or ty
 ## Repository layout
 
 ```
-lemmapy/
+veripy/
   frontend/           # spec parser, untyped coverage survey, basedpyright type gate
   backends/
     dafny/            # encoder, preamble, verifier driver
@@ -122,7 +122,7 @@ benchmark/tasks/      # 16-task golden corpus
 tests/
 ```
 
-There is no `lemmapy/ir/` directory.
+There is no `veripy/ir/` directory.
 
 ## As-built vs. the design
 
@@ -136,7 +136,7 @@ The soundness half below is the claim to defend. The implementation matches it w
 | Specs name-resolved against basedpyright | Type gate on the Python; encoder type-checks overlapping spec/body forms. |
 | Full §4.4 cost ladder, class sealing, module `__setattr__` traps | Deep check + copy-in + island copy + closure binding + trusted-caller elision. |
 | Tier 3 `#@ extern` contracts | Not implemented. Report states "verified modulo 0 trusted contracts". |
-| Mechanized fragment semantics | [SEMANTICS.md](SEMANTICS.md) is paper-style; `lemmapy difftest` is the standing check. |
+| Mechanized fragment semantics | [SEMANTICS.md](SEMANTICS.md) is paper-style; `veripy difftest` is the standing check. |
 | Guard-overhead numbers (RQ3) | Unmeasured. |
 
 ---
@@ -208,12 +208,12 @@ The aliasing row is the strongest surviving form of the objection: even a perfec
 
 | # | Obligation | Question it answers | Mechanism | Artifact |
 | - | --- | --- | --- | --- |
-| 1 | **Static closure** | Is every accepted construct one with a defined Dafny image? | Type gate + encoder admission (the encoder is the authority; ownership-lite lives there). Full §3.2 dataflow is design. | `lemmapy check` CI gate |
+| 1 | **Static closure** | Is every accepted construct one with a defined Dafny image? | Type gate + encoder admission (the encoder is the authority; ownership-lite lives there). Full §3.2 dataflow is design. | `veripy check` CI gate |
 | 2 | **Entry soundness** | Do the proof's assumptions hold when untyped code calls in? | Generated boundary guards: deep exact-type checks, executable preconditions, copy-in, blame | generated wrapper modules |
 | 3 | **Definition integrity** | Is the code that runs the code that was verified? | Runtime hardening + explicit assumptions A1–A7 | assumption list in report & paper |
 | 4 | **Model fidelity** | Does the Dafny model mean what the Python means? | Differential testing via Dafny's Python backend + fragment semantics note | CI fuzz harness, encoder bug tracker |
 
-A file is "verified" only if the type gate (unless `--no-types`), the encoder, and Dafny all pass on the same commit. `lemmapy verify` runs the type gate first so an ill-typed file never reaches Dafny. Generated guards are a separate artifact (`lemmapy guard`); they are not inserted into the source, and trusted callers may import the original module (A2).
+A file is "verified" only if the type gate (unless `--no-types`), the encoder, and Dafny all pass on the same commit. `veripy verify` runs the type gate first so an ill-typed file never reaches Dafny. Generated guards are a separate artifact (`veripy guard`); they are not inserted into the source, and trusted callers may import the original module (A2).
 
 ---
 

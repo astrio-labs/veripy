@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.backends.dafny.driver import find_dafny, verify_dafny_file
+from veripy.backends.dafny.driver import find_dafny, verify_dafny_file
 
 PROBES = Path(__file__).resolve().parent.parent / "docs" / "probes"
 FILES = sorted(PROBES.rglob("*.dfy"))

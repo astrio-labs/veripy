@@ -1,13 +1,13 @@
-"""The agent interface: structured failures from `lemmapy verify --json`."""
+"""The agent interface: structured failures from `veripy verify --json`."""
 
 import json
 from pathlib import Path
 
 import pytest
 
-from lemmapy.agentio import verify_structured
-from lemmapy.backends.dafny.driver import classify_obligation, find_dafny
-from lemmapy.cli import main
+from veripy.agentio import verify_structured
+from veripy.backends.dafny.driver import classify_obligation, find_dafny
+from veripy.cli import main
 
 BROKEN_CLAMP = (
     "#@ requires lo <= hi\n"
@@ -58,7 +58,7 @@ def test_payload_carries_toolchain_provenance(tmp_path):
     # A host embedding this backend must be able to tell whether two "ok"
     # verdicts meant the same thing — provenance rides the MACHINE payload,
     # not only the human report, and is present on every outcome.
-    from lemmapy.backends.dafny.preamble import PREAMBLE_VERSION
+    from veripy.backends.dafny.preamble import PREAMBLE_VERSION
 
     src = tmp_path / "m.py"
     src.write_text(GOOD)
@@ -70,7 +70,7 @@ def test_payload_carries_toolchain_provenance(tmp_path):
     # The prover never ran there, so its version is None and — importantly —
     # is never queried: an immediate error must not wait on a subprocess.
     missing = tmp_path / "nope.py"
-    from lemmapy.backends.base import get_backend
+    from veripy.backends.base import get_backend
 
     # Count calls at the backend seam (what the pipeline actually calls);
     # the module-level `dafny_version` import is transitional and inert.
@@ -145,7 +145,7 @@ def test_malformed_source_is_a_structured_payload(tmp_path):
 
 
 def test_gate_diagnostics_attributed_to_requested_relative_path(tmp_path, capsys, monkeypatch):
-    from lemmapy.frontend.typegate import find_basedpyright
+    from veripy.frontend.typegate import find_basedpyright
 
     if find_basedpyright() is None:
         pytest.skip("basedpyright not installed")
@@ -174,7 +174,7 @@ def test_undecodable_source_is_a_tool_error(tmp_path):
 
 
 def test_path_aliases_both_carry_gate_diagnostics(tmp_path, monkeypatch):
-    from lemmapy.frontend.typegate import find_basedpyright
+    from veripy.frontend.typegate import find_basedpyright
 
     if find_basedpyright() is None:
         pytest.skip("basedpyright not installed")
@@ -224,7 +224,7 @@ def test_unwritable_outdir_is_a_tool_error(tmp_path):
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_same_stem_files_get_distinct_stubs(tmp_path):
-    from lemmapy.agentio import verify_structured_many
+    from veripy.agentio import verify_structured_many
 
     a_dir, b_dir = tmp_path / "a", tmp_path / "b"
     a_dir.mkdir(), b_dir.mkdir()
@@ -322,8 +322,8 @@ def test_atomic_write_never_leaves_a_partial_target(tmp_path, monkeypatch):
     that dies partway must leave the target untouched and no debris
     behind — never a truncated stub for Dafny to read.
     """
-    import lemmapy.agentio as mod
-    from lemmapy.agentio import atomic_write_text
+    import veripy.agentio as mod
+    from veripy.agentio import atomic_write_text
 
     target = tmp_path / "stub.dfy"
     target.write_text("method Complete() { }\n")
@@ -434,7 +434,7 @@ def test_sidecar_region_failures_not_attributed_to_functions(tmp_path):
 
 
 def test_gate_failure_still_writes_json(tmp_path, capsys):
-    from lemmapy.frontend.typegate import find_basedpyright
+    from veripy.frontend.typegate import find_basedpyright
 
     if find_basedpyright() is None:
         pytest.skip("basedpyright not installed")

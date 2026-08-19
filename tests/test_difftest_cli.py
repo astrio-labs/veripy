@@ -1,4 +1,4 @@
-"""`lemmapy difftest` as a SWEEP: what it covers, and how it says so.
+"""`veripy difftest` as a SWEEP: what it covers, and how it says so.
 
 The harness itself is tested in test_difftest.py. These are about the
 command a nightly job runs unattended, where the dangerous outcome is not
@@ -8,8 +8,8 @@ a crash but a green run that quietly stopped testing anything.
 import json
 from pathlib import Path
 
-from lemmapy.cli import _difftest_targets, cmd_difftest
-from lemmapy.difftest.harness import DiffResult, FunctionDiff, Mismatch
+from veripy.cli import _difftest_targets, cmd_difftest
+from veripy.difftest.harness import DiffResult, FunctionDiff, Mismatch
 
 
 def _write(path: Path, text: str = "x = 1\n") -> Path:
@@ -22,7 +22,7 @@ def _stub(monkeypatch, functions):
     """Replace the harness so these tests exercise the sweep's bookkeeping
     rather than Dafny (which test_difftest.py covers)."""
     monkeypatch.setattr(
-        "lemmapy.difftest.harness.difftest_file",
+        "veripy.difftest.harness.difftest_file",
         lambda path, outdir, examples=100: DiffResult(
             path=str(path), functions=list(functions(examples))))
 
@@ -61,7 +61,7 @@ def test_generated_and_vendored_trees_are_not_swept(tmp_path):
     _write(tmp_path / "__pycache__" / "cached.py")
     _write(tmp_path / "build" / "lib" / "generated.py")
     _write(tmp_path / "node_modules" / "vendored.py")
-    _write(tmp_path / "lemmapy.egg-info" / "stale.py")
+    _write(tmp_path / "veripy.egg-info" / "stale.py")
     assert [p.name for p in _difftest_targets([tmp_path])] == ["task.py"]
 
 
@@ -116,7 +116,7 @@ def test_report_carries_the_reproducer(tmp_path, monkeypatch):
     report = tmp_path / "r.json"
     assert cmd_difftest([src], tmp_path / "out", 10, report=report) == 1
     payload = json.loads(report.read_text())
-    assert payload["schema"] == "lemmapy-difftest/1"
+    assert payload["schema"] == "veripy-difftest/1"
     assert payload["totals"] == {"files": 1, "compared": 1, "skipped": 0,
                                  "diverged": 1, "trouble": 0}
     # reprs, so the record survives JSON whatever the strategy produced --
@@ -248,7 +248,7 @@ def test_a_failed_report_write_leaves_no_partial_artifact(
     src = _write(tmp_path / "a.py")
     _stub(monkeypatch, lambda n: [FunctionDiff("f", n)])
     report = tmp_path / "r.json"
-    previous = json.dumps({"schema": "lemmapy-difftest/1", "totals": {}})
+    previous = json.dumps({"schema": "veripy-difftest/1", "totals": {}})
     report.write_text(previous)
 
     real_replace = os.replace

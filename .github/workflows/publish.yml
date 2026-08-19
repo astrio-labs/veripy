@@ -53,7 +53,7 @@ jobs:
     # publishing.
     environment:
       name: pypi
-      url: https://pypi.org/p/lemmapy
+      url: https://pypi.org/p/veripy
     permissions:
       id-token: write  # OIDC — this is the whole credential
     steps:

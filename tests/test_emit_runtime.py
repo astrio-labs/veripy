@@ -6,8 +6,8 @@ import pytest
 
 icontract = pytest.importorskip("icontract")
 
-from lemmapy.backends.runtime.emit import emit_checked
-from lemmapy.frontend.extract import parse_source
+from veripy.backends.runtime.emit import emit_checked
+from veripy.frontend.extract import parse_source
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 

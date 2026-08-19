@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.cli import cmd_guard, cmd_verify
-from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.guards.emitter import GuardGenError, emit_guarded
-from lemmapy.frontend.extract import parse_source
-from lemmapy.guards.runtime import IslandIntegrityError, verify_island_integrity
+from veripy.cli import cmd_guard, cmd_verify
+from veripy.backends.dafny.driver import find_dafny
+from veripy.guards.emitter import GuardGenError, emit_guarded
+from veripy.frontend.extract import parse_source
+from veripy.guards.runtime import IslandIntegrityError, verify_island_integrity
 
 BUMP = (
     "#@ verified\n"
@@ -41,7 +41,7 @@ def test_report_written_with_verdicts_and_assumptions(tmp_path, capsys):
                         report=report)
     assert status == 0
     payload = json.loads(report.read_text())
-    assert payload["schema"] == "lemmapy-verification-report/1"
+    assert payload["schema"] == "veripy-verification-report/1"
     assert payload["summary"] == {
         "functions": 1, "verified": 1, "failed": 0, "errors": 0,
         "trusted_contracts": 0,
@@ -96,7 +96,7 @@ def test_report_records_the_real_dafny_version(tmp_path):
     # Provenance must be an IDENTITY, not an outcome: this field once held
     # `result.summary` ("finished with N verified, 0 errors"), which cannot
     # tell a caller whether two runs meant the same thing.
-    from lemmapy.backends.dafny.driver import dafny_version
+    from veripy.backends.dafny.driver import dafny_version
 
     if find_dafny() is None:
         pytest.skip("dafny not installed")
@@ -111,7 +111,7 @@ def test_report_records_the_real_dafny_version(tmp_path):
 
 
 def test_dafny_version_is_cached_and_degrades_to_none(monkeypatch):
-    import lemmapy.backends.dafny.driver as drv
+    import veripy.backends.dafny.driver as drv
 
     drv.dafny_version.cache_clear()
     calls = {"n": 0}
@@ -137,7 +137,7 @@ def test_dafny_version_strips_redundant_prefix(monkeypatch):
     # 4.11.0 prints a bare "4.11.0", other builds print "Dafny version
     # 4.x.y" — which the report's own "dafny " label would turn into
     # "dafny Dafny version 4.x.y".
-    import lemmapy.backends.dafny.driver as drv
+    import veripy.backends.dafny.driver as drv
 
     for raw, want in (("4.11.0\n", "4.11.0"),
                       ("Dafny version 4.9.1\n", "4.9.1"),
@@ -191,9 +191,9 @@ def test_rebinding_module_attributes_cannot_redirect_wrapper(tmp_path):
     assert cmd_guard([src], outdir) == 0
     mod = _load(outdir / "m_guarded.py", "harden_m")
     assert mod.bump(1) == 2
-    mod._lemmapy_island_bump = lambda x: -999
+    mod._veripy_island_bump = lambda x: -999
     assert mod.bump(1) == 2  # closure still runs the real island
-    mod._lemmapy_guard_value = lambda v, d, **k: v  # disable checks? no:
+    mod._veripy_guard_value = lambda v, d, **k: v  # disable checks? no:
     with pytest.raises(Exception):
         mod.bump("not an int")  # the bound guard still checks
 
@@ -225,7 +225,7 @@ def test_sidecar_proof_failure_never_reads_as_verified(tmp_path):
 def test_sentinel_injection_rejected_both_ends(tmp_path):
     # Generation refuses sources carrying sentinel text; verification
     # refuses files with duplicated sentinels.
-    src = "# ---- LEMMAPY ISLAND END ----\n" + BUMP
+    src = "# ---- VERIPY ISLAND END ----\n" + BUMP
     with pytest.raises(GuardGenError, match="sentinel"):
         emit_guarded(src, parse_source(src), src_name="m.py")
 
@@ -235,7 +235,7 @@ def test_sentinel_injection_rejected_both_ends(tmp_path):
     assert cmd_guard([clean], outdir) == 0
     guarded = outdir / "m_guarded.py"
     text = guarded.read_text()
-    end = "# ---- LEMMAPY ISLAND END ----"
+    end = "# ---- VERIPY ISLAND END ----"
     guarded.write_text(text.replace(end, end + "\nevil()\n" + end, 1))
     with pytest.raises(IslandIntegrityError, match="sentinels"):
         verify_island_integrity(guarded)
@@ -246,7 +246,7 @@ def test_specs_cannot_reach_generated_identifiers():
     # frontend rejects unknown names, and making the name known (module
     # binding) trips the reserved-name scan.
     unknown = (
-        "#@ requires _lemmapy_bound_guard != 0\n"
+        "#@ requires _veripy_bound_guard != 0\n"
         "#@ ensures result >= 0\n"
         "def f(x: int) -> int:\n"
         "    return 0\n"
@@ -254,6 +254,6 @@ def test_specs_cannot_reach_generated_identifiers():
     specs = parse_source(unknown)
     assert any("unknown name" in (c.error or "") for c in specs.errors)
 
-    known = "_lemmapy_bound_guard = 1\n" + unknown
+    known = "_veripy_bound_guard = 1\n" + unknown
     with pytest.raises(GuardGenError, match="reserved for generated"):
         emit_guarded(known, parse_source(known), src_name="m.py")

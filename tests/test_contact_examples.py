@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.frontend.extract import parse_source
-from lemmapy.frontend.typegate import find_basedpyright, run_type_gate
+from veripy.frontend.extract import parse_source
+from veripy.frontend.typegate import find_basedpyright, run_type_gate
 
 CONTACT = Path(__file__).resolve().parent.parent / "examples" / "contact"
 FILES = sorted(CONTACT.glob("*.py"))

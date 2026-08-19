@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.benchmark.mutate import generate_mutations
+from veripy.benchmark.mutate import generate_mutations
 
 CLAMP = (
     "#@ verified\n"
@@ -115,7 +115,7 @@ def test_panel_cap_is_round_robin_not_a_line_prefix():
 
 def test_errored_mutant_analysis_blocks_the_rung(tmp_path, monkeypatch):
     # An incomplete panel (analysis errors) must not read as passing.
-    from lemmapy.benchmark import runner as runner_mod
+    from veripy.benchmark import runner as runner_mod
 
     task_dir = tmp_path / "t"
     task_dir.mkdir()
@@ -145,7 +145,7 @@ def test_analysis_error_reason_is_reported(tmp_path, monkeypatch):
     # "1 analysis error(s)" with no reason is unactionable: a real
     # intermittent failure on main could not be diagnosed because the
     # mutant hunt's reason was discarded. The rung must name it.
-    from lemmapy.benchmark import runner as runner_mod
+    from veripy.benchmark import runner as runner_mod
 
     task_dir = tmp_path / "t"
     task_dir.mkdir()
@@ -177,7 +177,7 @@ def test_analysis_error_reason_is_reported(tmp_path, monkeypatch):
 def test_mixed_survivor_and_error_panel_reports_error(tmp_path, monkeypatch):
     # Survivors + errored analyses: the incomplete panel outranks the
     # ordinary failure, and both facts appear in the detail.
-    from lemmapy.benchmark import runner as runner_mod
+    from veripy.benchmark import runner as runner_mod
 
     task_dir = tmp_path / "t"
     task_dir.mkdir()
@@ -211,7 +211,7 @@ def test_unadjudicated_timeout_fails_the_rung(tmp_path, monkeypatch):
     # A wall exhaustion is inconclusive (R4 proves the ORIGINAL terminates,
     # not the mutant): without human adjudication it fails the rung, like a
     # survivor, with guidance pointing at meta.json.
-    from lemmapy.benchmark import runner as runner_mod
+    from veripy.benchmark import runner as runner_mod
 
     task_dir = tmp_path / "t"
     task_dir.mkdir()
@@ -255,8 +255,8 @@ def test_adjudicated_timeout_passes_the_rung_without_being_credited(
     """
     import json as json_mod
 
-    from lemmapy.benchmark import runner as runner_mod
-    from lemmapy.benchmark.mutate import generate_mutations
+    from veripy.benchmark import runner as runner_mod
+    from veripy.benchmark.mutate import generate_mutations
 
     src = "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
     first_desc = generate_mutations(src, max_mutants=4)[0][0]
@@ -291,7 +291,7 @@ def test_adjudicated_timeout_passes_the_rung_without_being_credited(
 
 
 def test_timeout_mutants_names_both_channels():
-    from lemmapy.benchmark.runner import TaskScore
+    from veripy.benchmark.runner import TaskScore
 
     score = TaskScore(task_id="t")
     assert score.timeout_mutants == []
@@ -338,7 +338,7 @@ def test_stale_or_ambiguous_adjudication_errors_the_rung(tmp_path, monkeypatch):
     # whose meaning is unknown.
     import json as json_mod
 
-    from lemmapy.benchmark import runner as runner_mod
+    from veripy.benchmark import runner as runner_mod
 
     task_dir = tmp_path / "t"
     task_dir.mkdir()
@@ -374,7 +374,7 @@ def test_contradictory_adjudications_error_the_rung(tmp_path, monkeypatch):
     # dropping the mutant and overstating spec strength.
     import json as json_mod
 
-    from lemmapy.benchmark import runner as runner_mod
+    from veripy.benchmark import runner as runner_mod
 
     src = "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
     first = generate_mutations(src, max_mutants=4)[0][0]
@@ -404,11 +404,11 @@ def test_contradictory_adjudications_error_the_rung(tmp_path, monkeypatch):
 def test_adjudication_outside_the_capped_panel_is_not_stale(tmp_path, monkeypatch):
     # --quick truncates the panel. A ruling about a mutant the truncated
     # run never hunts is OUT OF SCOPE, not stale — validating against the
-    # capped panel instead of the complete one made `lemmapy benchmark
+    # capped panel instead of the complete one made `veripy benchmark
     # --quick` error on modp in CI.
     import json as json_mod
 
-    from lemmapy.benchmark import runner as runner_mod
+    from veripy.benchmark import runner as runner_mod
 
     src = (
         "#@ ensures result >= 0\n"
@@ -450,7 +450,7 @@ def test_panel_emptied_by_adjudication_fails_not_skips(tmp_path, monkeypatch):
     # sites".
     import json as json_mod
 
-    from lemmapy.benchmark import runner as runner_mod
+    from veripy.benchmark import runner as runner_mod
 
     src = "#@ ensures result == x + 1\ndef f(x: int) -> int:\n    return x + 1\n"
     all_descs = [d for d, _ in generate_mutations(src, max_mutants=8)]
@@ -474,7 +474,7 @@ def test_error_census_names_timeouts_too(tmp_path, monkeypatch):
     # With an errored analysis AND an unadjudicated timeout, the printed
     # decomposition must still add up to the panel, and the remedy pointer
     # must not vanish behind the error precedence.
-    from lemmapy.benchmark import runner as runner_mod
+    from veripy.benchmark import runner as runner_mod
 
     task_dir = tmp_path / "t"
     task_dir.mkdir()
@@ -509,7 +509,7 @@ def test_error_census_names_timeouts_too(tmp_path, monkeypatch):
 
 def test_report_marks_and_footnotes_adjudicated_panels():
     # The headline must not pass human judgement off as measurement.
-    from lemmapy.benchmark.runner import PASS, Rung, TaskScore, render_report
+    from veripy.benchmark.runner import PASS, Rung, TaskScore, render_report
 
     s = TaskScore(task_id="t")
     s.mutants_total, s.mutants_killed = 3, 3
@@ -528,7 +528,7 @@ def test_report_shows_err_not_ratio_for_incomplete_panel():
     # An errored panel's kill count is a lower bound, not a mutation
     # score — the scorecard must say `err`, not render 1/3 like a
     # completed panel. A completed FAIL panel keeps its ratio.
-    from lemmapy.benchmark.runner import ERROR, FAIL, PASS, Rung, TaskScore, render_report
+    from veripy.benchmark.runner import ERROR, FAIL, PASS, Rung, TaskScore, render_report
 
     def score(task_id, status):
         s = TaskScore(task_id=task_id)
@@ -547,7 +547,7 @@ def test_report_shows_err_not_ratio_for_incomplete_panel():
 def test_hunt_unwritable_workdir_degrades_to_error(tmp_path):
     # Staging failures (mkdir/write) must yield a per-item ERROR verdict,
     # not a traceback that aborts the benchmark mid-scorecard.
-    from lemmapy.benchmark.runner import ERROR, _hunt
+    from veripy.benchmark.runner import ERROR, _hunt
 
     blocker = tmp_path / "blocker"
     blocker.write_text("")  # a file where the workdir must be a directory
@@ -561,7 +561,7 @@ def test_hunt_unwritable_workdir_degrades_to_error(tmp_path):
 
 def test_run_benchmark_survives_task_staging_failure(tmp_path):
     # A task whose workdir cannot be created still gets a scorecard row.
-    from lemmapy.benchmark.runner import ERROR, run_benchmark
+    from veripy.benchmark.runner import ERROR, run_benchmark
 
     tasks_root = tmp_path / "tasks"
     task_dir = tasks_root / "t"
@@ -585,7 +585,7 @@ def test_hunt_subprocess_exceptions_have_distinct_verdicts(tmp_path, monkeypatch
     # launch failure stays an analysis error.
     import subprocess as sp
 
-    from lemmapy.benchmark import runner as runner_mod
+    from veripy.benchmark import runner as runner_mod
 
     src = "#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n"
     monkeypatch.setattr(runner_mod, "_find_crosshair", lambda: "crosshair")
@@ -604,8 +604,8 @@ def test_hunt_subprocess_exceptions_have_distinct_verdicts(tmp_path, monkeypatch
 
 
 def _full_stack_available() -> bool:
-    from lemmapy.backends.dafny.driver import find_dafny
-    from lemmapy.benchmark.runner import _find_crosshair
+    from veripy.backends.dafny.driver import find_dafny
+    from veripy.benchmark.runner import _find_crosshair
 
     try:
         import _dafny  # noqa: F401
@@ -617,8 +617,8 @@ def _full_stack_available() -> bool:
 
 def test_cmd_benchmark_exit_status_mirrors_scorecard(tmp_path, monkeypatch):
     # CI gates on the exit code: 0 all-pass, 1 failed rungs, 2 tool errors.
-    import lemmapy.cli as cli
-    from lemmapy.benchmark.runner import ERROR, FAIL, PASS, Rung, TaskScore
+    import veripy.cli as cli
+    from veripy.benchmark.runner import ERROR, FAIL, PASS, Rung, TaskScore
 
     def score(status):
         s = TaskScore(task_id="t")
@@ -627,7 +627,7 @@ def test_cmd_benchmark_exit_status_mirrors_scorecard(tmp_path, monkeypatch):
 
     for status, expected in ((PASS, 0), (FAIL, 1), (ERROR, 2)):
         monkeypatch.setattr(
-            "lemmapy.benchmark.runner.run_benchmark",
+            "veripy.benchmark.runner.run_benchmark",
             lambda tasks, outdir, _s=status, **kw: [score(_s)],
         )
         got = cli.cmd_benchmark(tmp_path, tmp_path / "w", report=None,
@@ -637,7 +637,7 @@ def test_cmd_benchmark_exit_status_mirrors_scorecard(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(not _full_stack_available(), reason="full toolchain not installed")
 def test_bump_climbs_the_full_ladder(tmp_path):
-    from lemmapy.benchmark.runner import run_task
+    from veripy.benchmark.runner import run_task
 
     task_dir = Path(__file__).resolve().parent.parent / "benchmark" / "tasks" / "bump"
     score = run_task(task_dir, tmp_path, mutant_cap=2, hunt_timeout=5,
@@ -654,7 +654,7 @@ def test_thin_panels_are_marked_not_presented_as_comparable():
     functions. They still pool into the corpus total, but the per-task cell
     is marked so a reader does not compare `1/1` with `8/8` as equals.
     """
-    from lemmapy.benchmark.runner import (
+    from veripy.benchmark.runner import (
         LOW_RESOLUTION_PANEL,
         PASS,
         Rung,
@@ -699,8 +699,8 @@ def test_adjudicated_timeout_is_not_credited_as_spec_strength(tmp_path,
     `#@ ensures True` — so crediting it to `mutants_killed` would reopen
     exactly the hole that crediting crashes did.
     """
-    import lemmapy.benchmark.runner as runner_mod
-    from lemmapy.benchmark.runner import PASS, run_task
+    import veripy.benchmark.runner as runner_mod
+    from veripy.benchmark.runner import PASS, run_task
 
     src = ("#@ ensures result >= 0\n"
            "def f(n: int) -> int:\n"

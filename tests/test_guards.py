@@ -10,10 +10,10 @@ from unittest import mock
 
 import pytest
 
-from lemmapy.cli import cmd_guard
-from lemmapy.frontend.extract import parse_source
-from lemmapy.guards.emitter import GuardGenError, emit_guarded
-from lemmapy.guards.runtime import (
+from veripy.cli import cmd_guard
+from veripy.frontend.extract import parse_source
+from veripy.guards.emitter import GuardGenError, emit_guarded
+from veripy.guards.runtime import (
     PostconditionError,
     PreconditionError,
     TypeGuardError,
@@ -199,18 +199,18 @@ def test_old_in_ensures_uses_precall_copy(tmp_path):
 # ---- adversarial round regressions --------------------------------------------
 
 
-def test_lemmapy_prefixed_names_rejected():
+def test_veripy_prefixed_names_rejected():
     # A param named like a generated temporary silently substituted caller
-    # arguments (_lemmapy_old_x collided with the old() snapshot; a param
-    # named _lemmapy_island_f shadowed the island alias).
+    # arguments (_veripy_old_x collided with the old() snapshot; a param
+    # named _veripy_island_f shadowed the island alias).
     for src in (
         "#@ ensures result >= old(x)\n"
-        "def combine(x: int, _lemmapy_old_x: int) -> int:\n"
-        "    return x + _lemmapy_old_x\n",
+        "def combine(x: int, _veripy_old_x: int) -> int:\n"
+        "    return x + _veripy_old_x\n",
         "#@ ensures result >= 0\n"
-        "def f(_lemmapy_island_f: int) -> int:\n"
+        "def f(_veripy_island_f: int) -> int:\n"
         "    return 0\n",
-        "_lemmapy_thing = 1\n"
+        "_veripy_thing = 1\n"
         "#@ ensures result >= 0\n"
         "def f(x: int) -> int:\n"
         "    return 0\n",

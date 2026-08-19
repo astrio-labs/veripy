@@ -1,13 +1,13 @@
 # Fragment-Coverage Survey (August 2026)
 
-> RQ1 data ([EVALUATION.md](EVALUATION.md)): the M0 read-only conformance survey (`lemmapy survey`) over nine typed OSS codebases, LemmaPy itself, and the HumanEval/MBPP canonical solutions. **These numbers measure the survey prototype as much as the fragment** — read the method caveats before quoting them.
+> RQ1 data ([EVALUATION.md](EVALUATION.md)): the M0 read-only conformance survey (`veripy survey`) over nine typed OSS codebases, VeriPy itself, and the HumanEval/MBPP canonical solutions. **These numbers measure the survey prototype as much as the fragment** — read the method caveats before quoting them.
 
 ## Method
 
-- Tool: `lemmapy survey` (AST-level rule pass, ~30 rules approximating the [ARCHITECTURE.md §3.1](ARCHITECTURE.md) checklist; see `lemmapy/frontend/conformance.py`).
-- **No type information in the survey** (the basedpyright *type gate* is live for `lemmapy check` / `verify`; this survey pass does not use it): method calls are judged *optimistically by name* against the planned Tier 2 container/str surface; `Any` leaks, heterogeneous `==`, and subclass tricks are invisible. Survey acceptance is not encoder acceptance.
+- Tool: `veripy survey` (AST-level rule pass, ~30 rules approximating the [ARCHITECTURE.md §3.1](ARCHITECTURE.md) checklist; see `veripy/frontend/conformance.py`).
+- **No type information in the survey** (the basedpyright *type gate* is live for `veripy check` / `verify`; this survey pass does not use it): method calls are judged *optimistically by name* against the planned Tier 2 container/str surface; `Any` leaks, heterogeneous `==`, and subclass tricks are invisible. Survey acceptance is not encoder acceptance.
 - Unit of measurement: the function (including methods). A function is *accepted* iff zero rules fire. Nested functions are scored independently and also fire `X-NESTED` on their parent.
-- Package source directories only (no test suites). Corpus pinned by commit; survey at LemmaPy `c9ca858`+survey branch.
+- Package source directories only (no test suites). Corpus pinned by commit; survey at VeriPy `c9ca858`+survey branch.
 
 ## Results
 
@@ -22,7 +22,7 @@
 | cattrs (`src/cattrs`) | f2e42f3 | 36 | 293 | 34 (11.6%) | 3.0% |
 | structlog (`src/structlog`) | ab24a26 | 21 | 349 | 24 (6.9%) | 7.5% |
 | typer (`typer/`) | dacef1b | 31 | 568 | 55 (9.7%) | 4.1% |
-| lemmapy (`lemmapy/`) | — | 9 | 52 | 9 (17.3%) | 8.7% |
+| veripy (`veripy/`) | — | 9 | 52 | 9 (17.3%) | 8.7% |
 
 ## The greenfield contrast: benchmark code
 
@@ -58,6 +58,6 @@ Top rules by fire count, pooled (full per-repo JSON in `build/survey-*.json`, re
 
 ## Next
 
-- Wire the type gate into `lemmapy survey` so `U-*` rules are honest and `Any` leaks are visible
+- Wire the type gate into `veripy survey` so `U-*` rules are honest and `Any` leaks are visible
 - Survey a stratified sample of strict-mode-clean packages beyond these nine
 - Wire rule-fire telemetry into the v1.5 admission decision

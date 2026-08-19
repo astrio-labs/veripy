@@ -1,4 +1,4 @@
-from lemmapy.frontend.conformance import aggregate, survey_paths, survey_source
+from veripy.frontend.conformance import aggregate, survey_paths, survey_source
 
 
 def _fires(src: str, qualname: str | None = None) -> set[str]:

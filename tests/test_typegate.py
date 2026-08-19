@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.cli import cmd_check
-from lemmapy.frontend.typegate import find_basedpyright, run_type_gate
+from veripy.cli import cmd_check
+from veripy.frontend.typegate import find_basedpyright, run_type_gate
 
 pytestmark = pytest.mark.skipif(
     find_basedpyright() is None, reason="basedpyright not installed"
@@ -57,7 +57,7 @@ def test_cli_no_types_skips_gate(tmp_path, capsys):
 
 
 def test_unavailable_gate_fails_check(tmp_path, capsys, monkeypatch):
-    from lemmapy.frontend import typegate
+    from veripy.frontend import typegate
 
     monkeypatch.setattr(typegate, "find_basedpyright", lambda: None)
     module = _strict_project(tmp_path, "def g(x: int) -> int:\n    return x\n")
@@ -83,14 +83,14 @@ def test_files_from_different_projects_use_own_configs(tmp_path):
     # The strict project's file is actually type-checked...
     strict_errors = [
         d for d in result.errors
-        if "strict_proj" in d.file and d.rule != "lemmapy-strict-required"
+        if "strict_proj" in d.file and d.rule != "veripy-strict-required"
     ]
     assert strict_errors
     # ...while the weak project's file fails the gate rather than being
     # checked meaninglessly under its own lax settings.
     basic_errors = [d for d in result.errors if "basic_proj" in d.file]
     assert basic_errors
-    assert all(d.rule == "lemmapy-strict-required" for d in basic_errors)
+    assert all(d.rule == "veripy-strict-required" for d in basic_errors)
 
 
 def test_weak_config_cannot_lower_the_gate(tmp_path):
@@ -100,7 +100,7 @@ def test_weak_config_cannot_lower_the_gate(tmp_path):
     result = run_type_gate([module])
     assert result.available
     assert result.errors
-    assert result.errors[0].rule == "lemmapy-strict-required"
+    assert result.errors[0].rule == "veripy-strict-required"
 
 
 def test_recommended_mode_satisfies_the_gate(tmp_path):
@@ -111,7 +111,7 @@ def test_recommended_mode_satisfies_the_gate(tmp_path):
     )
     result = run_type_gate([module])
     assert result.available
-    assert not any(d.rule == "lemmapy-strict-required" for d in result.errors)
+    assert not any(d.rule == "veripy-strict-required" for d in result.errors)
 
 
 def test_execution_environment_diagnostic_override_flagged(tmp_path):
@@ -124,7 +124,7 @@ def test_execution_environment_diagnostic_override_flagged(tmp_path):
     result = run_type_gate([module])
     assert result.available
     assert result.errors
-    assert all(d.rule == "lemmapy-strict-required" for d in result.errors)
+    assert all(d.rule == "veripy-strict-required" for d in result.errors)
 
 
 def test_structural_execution_environment_allowed(tmp_path):
@@ -147,7 +147,7 @@ def test_extends_inheriting_weak_mode_flagged(tmp_path):
     result = run_type_gate([module])
     assert result.available
     assert result.errors
-    assert result.errors[0].rule == "lemmapy-strict-required"
+    assert result.errors[0].rule == "veripy-strict-required"
 
 
 def test_extends_inheriting_env_override_flagged(tmp_path):
@@ -161,7 +161,7 @@ def test_extends_inheriting_env_override_flagged(tmp_path):
     result = run_type_gate([module])
     assert result.available
     assert result.errors
-    assert all(d.rule == "lemmapy-strict-required" for d in result.errors)
+    assert all(d.rule == "veripy-strict-required" for d in result.errors)
 
 
 def test_extends_strict_base_passes(tmp_path):
@@ -196,7 +196,7 @@ def test_jsonc_config_parses(tmp_path):
     )
     result = run_type_gate([module])
     assert result.available
-    assert not any(d.rule == "lemmapy-strict-required" for d in result.errors), [
+    assert not any(d.rule == "veripy-strict-required" for d in result.errors), [
         d.message for d in result.errors
     ]
 
@@ -219,7 +219,7 @@ def test_inherited_env_root_resolved_against_declaring_dir(tmp_path):
     result = run_type_gate([module])
     assert result.available
     assert result.errors
-    assert all(d.rule == "lemmapy-strict-required" for d in result.errors)
+    assert all(d.rule == "veripy-strict-required" for d in result.errors)
 
 
 def test_weak_pyproject_table_flagged(tmp_path):
@@ -231,4 +231,4 @@ def test_weak_pyproject_table_flagged(tmp_path):
     result = run_type_gate([module])
     assert result.available
     assert result.errors
-    assert result.errors[0].rule == "lemmapy-strict-required"
+    assert result.errors[0].rule == "veripy-strict-required"

@@ -30,8 +30,8 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.agentio import verify_structured
-from lemmapy.backends.dafny.driver import find_dafny
+from veripy.agentio import verify_structured
+from veripy.backends.dafny.driver import find_dafny
 
 REPO = Path(__file__).resolve().parent.parent
 ARTIFACTS = REPO / "docs" / "exam-artifacts"
@@ -65,7 +65,7 @@ def _run(artifact: Path, tmp_path: Path) -> dict:
 
 # In PROVER_KINDS, but NOT evidence that an obligation was DISPROVED.
 # `resolution`: the sidecar did not typecheck, so — by its own entry in
-# lemmapy/failures.py — the proof was never attempted.
+# veripy/failures.py — the proof was never attempted.
 # `timeout`: that entry is explicit that it is "NOT a disproof: the property
 # may still hold". A pack the prover never finished has not been turned
 # down by it.

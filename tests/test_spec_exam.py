@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.benchmark.mutate import generate_mutations
-from lemmapy.benchmark.specexam import (
+from veripy.backends.dafny.driver import find_dafny
+from veripy.benchmark.mutate import generate_mutations
+from veripy.benchmark.specexam import (
     STRIP_PROOF,
     SpecExamError,
     SpecExamScore,
@@ -19,8 +19,8 @@ from lemmapy.benchmark.specexam import (
     strip_specs,
     translate_equivalents,
 )
-from lemmapy.cli import main
-from lemmapy.repair import make_engine
+from veripy.cli import main
+from veripy.repair import make_engine
 
 REPO = Path(__file__).resolve().parent.parent
 TASKS = REPO / "benchmark" / "tasks"
@@ -70,7 +70,7 @@ def _engine_replaying(*answers):
 def test_strip_specs_over_golden_corpus(task_id):
     import ast
 
-    from lemmapy.benchmark.specexam import _spec_comment_lines
+    from veripy.benchmark.specexam import _spec_comment_lines
 
     source = (TASKS / task_id / "task.py").read_text()
     stripped = strip_specs(source)
@@ -284,7 +284,7 @@ def test_adjudication_must_resolve_to_exactly_one_mutant(tmp_path):
     the panel is quietly wrong, which is the failure mode that already cost
     this project one headline number.
     """
-    from lemmapy.benchmark.runner import ERROR, run_task
+    from veripy.benchmark.runner import ERROR, run_task
 
     d = tmp_path / "t"
     d.mkdir()
@@ -301,7 +301,7 @@ def test_adjudication_must_resolve_to_exactly_one_mutant(tmp_path):
 # --- validity and retries --------------------------------------------------
 
 def test_retry_on_freeze_violation_then_valid(tmp_path, monkeypatch):
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     monkeypatch.setattr(spec_mod, "run_task", _fake_run_task(6, 3, 3))
     corpus = _mini_corpus(tmp_path)
@@ -313,7 +313,7 @@ def test_retry_on_freeze_violation_then_valid(tmp_path, monkeypatch):
 
 
 def test_engine_cannot_weaken_the_implementation(tmp_path, monkeypatch):
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     monkeypatch.setattr(spec_mod, "run_task", _fake_run_task(6, 3, 3))
     corpus = _mini_corpus(tmp_path)
@@ -330,7 +330,7 @@ def test_engine_cannot_weaken_the_implementation(tmp_path, monkeypatch):
 
 
 def test_proof_clause_rejected(tmp_path, monkeypatch):
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     monkeypatch.setattr(spec_mod, "run_task", _fake_run_task(6, 3, 3))
     corpus = _mini_corpus(tmp_path)
@@ -346,7 +346,7 @@ def test_proof_clause_rejected(tmp_path, monkeypatch):
 
 
 def test_missing_ensures_rejected(tmp_path, monkeypatch):
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     monkeypatch.setattr(spec_mod, "run_task", _fake_run_task(6, 3, 3))
     corpus = _mini_corpus(tmp_path)
@@ -364,7 +364,7 @@ def test_missing_ensures_rejected(tmp_path, monkeypatch):
 def test_retry_feedback_carries_no_verification_outcome(tmp_path, monkeypatch):
     # Retries must never leak prover information — that would make this a
     # de-facto iterative proof exam rather than a spec-writing one.
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     monkeypatch.setattr(spec_mod, "run_task", _fake_run_task(6, 3, 3))
     corpus = _mini_corpus(tmp_path)
@@ -391,7 +391,7 @@ def test_retry_feedback_carries_no_verification_outcome(tmp_path, monkeypatch):
 # --- scoring ---------------------------------------------------------------
 
 def _fake_run_task(height, total, killed, survivors=()):
-    from lemmapy.benchmark.runner import PASS, Rung, TaskScore
+    from veripy.benchmark.runner import PASS, Rung, TaskScore
 
     def fake(task_dir, workdir, **kwargs):
         score = TaskScore(task_id=task_dir.parent.name)
@@ -410,7 +410,7 @@ def test_weak_spec_scores_low_kill_rate(tmp_path, monkeypatch):
     # The anti-gaming property in one test: a worthless spec satisfies every
     # other checker (gate, hunt, encode, prove, fidelity — verified live in
     # docs/BENCHMARK.md) and only the panel reports it as empty.
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     calls = []
     real_fake = _fake_run_task(6, 3, 3)
@@ -449,8 +449,8 @@ def test_unsound_spec_scores_zero_not_one_hundred(tmp_path, monkeypatch):
     full panel — inverting the incentive. The denominator is golden's panel
     on every row.
     """
-    import lemmapy.benchmark.specexam as spec_mod
-    from lemmapy.benchmark.runner import FAIL, PASS, Rung, TaskScore
+    import veripy.benchmark.specexam as spec_mod
+    from veripy.benchmark.runner import FAIL, PASS, Rung, TaskScore
 
     def fake(task_dir, workdir, **kwargs):
         score = TaskScore(task_id="t")
@@ -481,7 +481,7 @@ def test_unsound_spec_scores_zero_not_one_hundred(tmp_path, monkeypatch):
 
 
 def test_invalid_answer_also_scores_against_golden_panel(tmp_path, monkeypatch):
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     monkeypatch.setattr(spec_mod, "run_task", _fake_run_task(6, 4, 4))
     corpus = _mini_corpus(tmp_path)
@@ -497,8 +497,8 @@ def test_crashes_are_not_credited_as_spec_strength(tmp_path, monkeypatch):
     # A mutant the INTERPRETER catches is caught equally by `ensures True`,
     # so it carries no information about the specification and is reported
     # separately rather than counted.
-    import lemmapy.benchmark.specexam as spec_mod
-    from lemmapy.benchmark.runner import PASS, Rung, TaskScore
+    import veripy.benchmark.specexam as spec_mod
+    from veripy.benchmark.runner import PASS, Rung, TaskScore
 
     def fake(task_dir, workdir, **kwargs):
         score = TaskScore(task_id="t")
@@ -525,7 +525,7 @@ def test_crashes_are_not_credited_as_spec_strength(tmp_path, monkeypatch):
 def test_no_sidecar_is_staged_for_scoring(tmp_path, monkeypatch):
     # A stale sidecar in the scored dir would hand the run lemmas nobody
     # earned; assert on what run_task actually sees.
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     seen = []
 
@@ -547,7 +547,7 @@ def test_golden_baseline_runs_under_exam_conditions(tmp_path, monkeypatch):
     # Fairness: the golden is scored with its `#@ proof` clauses stripped
     # and no sidecar, so the engine is not compared against a run that had
     # lemmas available.
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     sources = {}
 
@@ -623,7 +623,7 @@ def test_equal_timeout_counts_on_different_mutants_are_not_comparable(
     only comparable after both are mapped back onto the stripped source —
     which is why the same-mutant half of this test is here too.
     """
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     # MINI carries two `#@` lines, the answer below one: `if x < 0` is
     # golden line 4, engine line 3, and stripped line 2 in both.
@@ -693,7 +693,7 @@ def test_golden_cache_written_before_the_timeout_fields_is_not_reused(
     """
     import hashlib
 
-    import lemmapy.benchmark.specexam as spec_mod
+    import veripy.benchmark.specexam as spec_mod
 
     corpus = _mini_corpus(tmp_path)
     task_dir = corpus / "mini"

@@ -5,16 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.benchmark.exam import (
+from veripy.backends.dafny.driver import find_dafny
+from veripy.benchmark.exam import (
     exam_tasks,
     render_exam_report,
     run_repair_exam,
     screen_sidecar,
     strip_proof_clauses,
 )
-from lemmapy.cli import main
-from lemmapy.repair import make_engine
+from veripy.cli import main
+from veripy.repair import make_engine
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -290,7 +290,7 @@ def test_strip_agrees_with_the_parser_on_what_a_proof_clause_is():
            '    """\n'
            "    return y\n")
     out = strip_proof_clauses(src)
-    from lemmapy.frontend.extract import parse_source
+    from veripy.frontend.extract import parse_source
     assert not [c for s in parse_source(out).functions
                 for c in s.clauses if c.kind == "proof"]
     # A clause trailing real code loses the comment, not the statement; text
@@ -326,7 +326,7 @@ def test_screen_needs_a_sidecar_to_screen(tmp_path):
 
 
 def test_screen_report_renders_the_failing_verdicts(tmp_path):
-    from lemmapy.benchmark.exam import ScreenResult, render_screen_report
+    from veripy.benchmark.exam import ScreenResult, render_screen_report
 
     text = render_screen_report([
         ScreenResult("a", "load-bearing", "ok"),
@@ -376,7 +376,7 @@ def test_screen_verdict_table(stripped, expected, tmp_path, monkeypatch):
         calls["n"] += 1
         return {"status": "ok", "failures": []} if calls["n"] == 1 else stripped
 
-    monkeypatch.setattr("lemmapy.agentio.verify_structured", fake_verify)
+    monkeypatch.setattr("veripy.agentio.verify_structured", fake_verify)
     result = screen_sidecar(_task(tmp_path, "t", TRIVIAL, OBVIOUS))
     assert result.verdict == expected, result.detail
     # Whatever the verdict, the recorded evidence never includes a kind that

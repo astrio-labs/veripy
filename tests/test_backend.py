@@ -9,14 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.backends.base import (
+from veripy.backends.base import (
     ProofBackend,
     available_backends,
     get_backend,
 )
-from lemmapy.backends.dafny.backend import DafnyBackend
-from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.backends.dafny.preamble import PREAMBLE_VERSION
+from veripy.backends.dafny.backend import DafnyBackend
+from veripy.backends.dafny.driver import find_dafny
+from veripy.backends.dafny.preamble import PREAMBLE_VERSION
 
 GOOD = (
     "#@ ensures result == x + 1\n"
@@ -63,7 +63,7 @@ def test_backend_threaded_verify_is_byte_identical_to_default(tmp_path):
     # module, default call vs explicit backend="dafny" — identical
     # payloads (the paths inside differ only via tmp staging, which the
     # payload does not expose when artifacts are not kept).
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     src = tmp_path / "m.py"
     src.write_text(GOOD)
@@ -76,7 +76,7 @@ def test_backend_threaded_verify_is_byte_identical_to_default(tmp_path):
 
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_cli_verify_accepts_backend_dafny(tmp_path):
-    from lemmapy.cli import main
+    from veripy.cli import main
 
     src = tmp_path / "m.py"
     src.write_text(GOOD)
@@ -90,7 +90,7 @@ def test_cli_verify_refuses_unregistered_backend(tmp_path):
     # An unregistered backend is an argparse-level refusal (exit 2), so a
     # typo can never run under a silently-substituted prover. Needs no
     # prover installed: the refusal happens before any verification.
-    from lemmapy.cli import main
+    from veripy.cli import main
 
     src = tmp_path / "m.py"
     src.write_text(GOOD)

@@ -1,11 +1,11 @@
-"""End-to-end `lemmapy verify` integration tests (need dafny on PATH)."""
+"""End-to-end `veripy verify` integration tests (need dafny on PATH)."""
 
 from pathlib import Path
 
 import pytest
 
-from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.cli import cmd_verify
+from veripy.backends.dafny.driver import find_dafny
+from veripy.cli import cmd_verify
 
 pytestmark = pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 
@@ -104,8 +104,8 @@ def test_preamble_outcome_supports_raising_and_propagation(tmp_path):
     # presence of the names.
     import subprocess
 
-    from lemmapy.backends.dafny.driver import find_dafny
-    from lemmapy.backends.dafny.preamble import PREAMBLE
+    from veripy.backends.dafny.driver import find_dafny
+    from veripy.backends.dafny.preamble import PREAMBLE
 
     dafny = find_dafny()
     if dafny is None:

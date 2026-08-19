@@ -4,7 +4,7 @@
 > the lowering catalog ([ARCHITECTURE.md §7](ARCHITECTURE.md)): a big-step
 > operational semantics for the verified fragment and the statement of the
 > simulation claim the encoder is built to preserve. It is **not mechanized**;
-> the translation-validation harness (§6, `lemmapy difftest`) is the standing
+> the translation-validation harness (§6, `veripy difftest`) is the standing
 > empirical check of exactly this claim, and the per-construct table at the end
 > records which rules it exercises.
 
@@ -166,7 +166,7 @@ that composition is the "precise, honest guarantee" sentence of the README.
 ## 6. Validation status per construct
 
 Every row is exercised by the differential harness on the corpus
-(`lemmapy difftest`, Hypothesis-driven, CPython vs the Dafny-to-Python
+(`veripy difftest`, Hypothesis-driven, CPython vs the Dafny-to-Python
 translation of the *same* stub the prover saw).
 
 | construct | rule | lowering | differential coverage |

@@ -3,12 +3,10 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lemmapy"
-# Alpha on purpose: this release exists to claim the name with the real
-# package behind it. NOTE pip installs a pre-release when it is the only
-# version available (verified against the live index), so this alpha IS
-# installable by a plain `pip install lemmapy` — the alpha marker manages
-# expectations; it does not gate installation.
+name = "veripy"
+# Alpha marker manages expectations; it does not gate installation.
+# The PyPI name `veripy` is already taken by an unrelated 2016 project, so
+# a later publish will need a distinct distribution name or a transfer.
 version = "0.1.0a1"
 description = "Verify a typed Python fragment: #@ specs compile to runtime contracts and translate to Dafny for SMT proofs."
 readme = "README.md"
@@ -31,9 +29,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nolanlwin/lemmapy"
-Repository = "https://github.com/nolanlwin/lemmapy"
-Issues = "https://github.com/nolanlwin/lemmapy/issues"
+Homepage = "https://github.com/nolanlwin/veripy"
+Repository = "https://github.com/nolanlwin/veripy"
+Issues = "https://github.com/nolanlwin/veripy/issues"
 
 [project.optional-dependencies]
 types = [
@@ -48,7 +46,7 @@ dev = [
 ]
 
 [project.scripts]
-lemmapy = "lemmapy.cli:main"
+veripy = "veripy.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["lemmapy*"]
+include = ["veripy*"]

@@ -1,6 +1,6 @@
 # The editor surface
 
-`lemmapy lsp` speaks Language Server Protocol over stdio. It has no
+`veripy lsp` speaks Language Server Protocol over stdio. It has no
 dependencies beyond the standard library, so an editor can launch it from
 the same virtualenv as the rest of the toolchain.
 
@@ -24,7 +24,7 @@ off.
 An unknown request gets a proper `-32601 MethodNotFound` rather than
 silence, so a client never hangs on an id that will not be answered.
 
-## `lemmapy/functionStatus`
+## `veripy/functionStatus`
 
 Per-function state for code lenses and gutter icons.
 
@@ -44,7 +44,7 @@ one as the other is the mistake this split exists to prevent. A function
 marked `#@ verified` whose `proof` is `failed` is exactly the case worth
 drawing attention to.
 
-## `lemmapy/verify`
+## `veripy/verify`
 
 Runs the real prover over the current buffer.
 
@@ -137,7 +137,7 @@ since it encodes without the sidecar. Every function comes back
 
 ## Not yet wired
 
-The type gate (basedpyright) is still a batch tool (`lemmapy check
---types`), and there are no hovers or code actions. `lemmapy verify
+The type gate (basedpyright) is still a batch tool (`veripy check
+--types`), and there are no hovers or code actions. `veripy verify
 --report` remains the authority for the full report, including assumptions
 A1–A7.

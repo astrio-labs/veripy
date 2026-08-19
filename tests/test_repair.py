@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.cli import main
-from lemmapy.repair import (
+from veripy.backends.dafny.driver import find_dafny
+from veripy.cli import main
+from veripy.repair import (
     RULES,
     _strip_fences,
     build_request,
@@ -36,7 +36,7 @@ def test_claude_engine_denies_tools():
     # Measurement integrity: with tools on, a headless agent once FOUND the
     # golden sidecar in the repo and returned it verbatim. The command must
     # deny all tools.
-    from lemmapy.repair import _claude_cmd
+    from veripy.repair import _claude_cmd
 
     cmd = _claude_cmd("/usr/bin/claude", "prompt text")
     assert "--disallowedTools" in cmd
@@ -50,7 +50,7 @@ def test_claude_cmd_model_and_json_keep_denial_last():
     # The engine-matrix additions (--model, --output-format json) must not
     # reshape the pinned invariant: `--disallowedTools "*"` stays the FINAL
     # two argv entries, the prompt stays before it.
-    from lemmapy.repair import _claude_cmd
+    from veripy.repair import _claude_cmd
 
     cmd = _claude_cmd("/usr/bin/claude", "prompt text", model="opus",
                       json_output=True)
@@ -66,7 +66,7 @@ def test_claude_engine_runs_in_empty_sandbox(monkeypatch):
     # The other half of measurement integrity: the subprocess must run in
     # an isolated EMPTY directory, not the repository (where a tool-bearing
     # or path-guessing engine once found the golden sidecar).
-    import lemmapy.repair as repair_mod
+    import veripy.repair as repair_mod
 
     seen = {}
 
@@ -90,7 +90,7 @@ def test_claude_engine_runs_in_empty_sandbox(monkeypatch):
     out = repair_mod.claude_engine(request)
     assert out == "lemma L()\n{\n}\n"
     assert seen["cwd"] is not None
-    assert Path(seen["cwd"]).name.startswith("lemmapy-engine-")
+    assert Path(seen["cwd"]).name.startswith("veripy-engine-")
     assert seen["entries"] == []  # nothing to find in the sandbox
     assert Path(seen["cwd"]).resolve() != Path.cwd().resolve()
 
@@ -101,8 +101,8 @@ def test_engine_wall_is_configurable_and_used(monkeypatch):
     # wall must be a knob, and it must actually reach the subprocess —
     # otherwise a rerun cannot tell "could not prove it" from "did not
     # answer in time".
-    import lemmapy.repair as repair_mod
-    from lemmapy.repair import DEFAULT_ENGINE_WALL_S, _ClaudeEngine
+    import veripy.repair as repair_mod
+    from veripy.repair import DEFAULT_ENGINE_WALL_S, _ClaudeEngine
 
     assert make_engine("claude").wall_s == DEFAULT_ENGINE_WALL_S
     assert make_engine("claude", 1800).wall_s == 1800
@@ -136,7 +136,7 @@ def test_non_positive_engine_wall_is_rejected_not_silently_defaulted(capsys, tmp
     # not answer"), and `0` was eaten by `args.engine_wall or DEFAULT` and
     # silently became 600s. An exam that reports its wall must have run under
     # the wall it reports, so both are refused at the door.
-    from lemmapy.cli import _wall
+    from veripy.cli import _wall
 
     for bad in (0, -5):
         with pytest.raises(ValueError, match="positive number of seconds"):
@@ -165,7 +165,7 @@ def test_make_engine_specs():
 
 
 def test_make_engine_model_specs():
-    from lemmapy.repair import _ApiEngine, _ClaudeEngine
+    from veripy.repair import _ApiEngine, _ClaudeEngine
 
     engine = make_engine("claude:opus")
     assert isinstance(engine, _ClaudeEngine) and engine.model == "opus"
@@ -198,7 +198,7 @@ CLAUDE_JSON_SAMPLE = (
 
 
 def test_parse_claude_json():
-    from lemmapy.repair import _parse_claude_json
+    from veripy.repair import _parse_claude_json
 
     text, usage = _parse_claude_json(CLAUDE_JSON_SAMPLE)
     assert text == "lemma L()\n{\n}"
@@ -218,8 +218,8 @@ def test_parse_claude_json():
 
 
 def test_claude_engine_records_usage(monkeypatch):
-    import lemmapy.repair as repair_mod
-    from lemmapy.repair import _ClaudeEngine
+    import veripy.repair as repair_mod
+    from veripy.repair import _ClaudeEngine
 
     seen = {}
 
@@ -305,7 +305,7 @@ def test_cursor_cmd_is_locked_down():
     # is written into the sandbox by the engine and tested below).
     # `--trust` must be present or a headless run hangs on the
     # workspace-trust prompt.
-    from lemmapy.repair import _cursor_cmd
+    from veripy.repair import _cursor_cmd
 
     cmd = _cursor_cmd("/fake/cursor-agent", "prompt text",
                       model="cursor-grok-4.6-high-fast")
@@ -332,8 +332,8 @@ CURSOR_JSON_SAMPLE = (
 def test_cursor_engine_sandbox_config_and_live_sample_parse(monkeypatch):
     import json as _json
 
-    import lemmapy.repair as repair_mod
-    from lemmapy.repair import _CursorEngine
+    import veripy.repair as repair_mod
+    from veripy.repair import _CursorEngine
 
     seen = {}
 
@@ -378,8 +378,8 @@ def test_cursor_engine_missing_provenance_is_marked_not_refused(monkeypatch):
     # refusing every such call would make the engine unusable, so the
     # ledger entry carries "engine-claimed" instead, a disclosed condition
     # of any cursor column.
-    import lemmapy.repair as repair_mod
-    from lemmapy.repair import _CursorEngine
+    import veripy.repair as repair_mod
+    from veripy.repair import _CursorEngine
 
     def fake_run(cmd, **kwargs):
         class Proc:
@@ -404,7 +404,7 @@ def test_cursor_parse_survives_non_object_nested_fields():
     # The drift-tolerant contract covers NESTED shapes too: a future CLI
     # shipping `usage` or `metadata` as a non-object must degrade
     # telemetry, not turn a usable reply into an engine error.
-    from lemmapy.repair import _parse_cursor_json
+    from veripy.repair import _parse_cursor_json
 
     text, usage = _parse_cursor_json(
         '{"result": "lemma L()\\n{\\n}\\n",'
@@ -419,8 +419,8 @@ def test_cursor_parse_survives_non_object_nested_fields():
 def test_cursor_engine_refuses_reported_substitution(monkeypatch):
     # A REPORTED mismatch still refuses loudly — same failure mode the
     # claude guard exists for (silent substitution mislabels a column).
-    import lemmapy.repair as repair_mod
-    from lemmapy.repair import _CursorEngine
+    import veripy.repair as repair_mod
+    from veripy.repair import _CursorEngine
 
     def fake_run(cmd, **kwargs):
         class Proc:
@@ -441,7 +441,7 @@ def test_cursor_engine_refuses_reported_substitution(monkeypatch):
 
 
 def test_make_engine_cursor_specs():
-    from lemmapy.repair import _CursorEngine
+    from veripy.repair import _CursorEngine
 
     assert isinstance(make_engine("cursor"), _CursorEngine)
     engine = make_engine("cursor:cursor-grok-4.6-high-fast")
@@ -458,7 +458,7 @@ def test_history_digests_proposals_and_reports_drops():
     # probe, which is why that probe produced no number. Prior proposals are
     # superseded (the newest IS the current sidecar), so history keeps the
     # failures and digests the text — and any drop is stated, never silent.
-    from lemmapy.repair import history_for_prompt
+    from veripy.repair import history_for_prompt
 
     big = ("lemma Helper(x: int)\n  ensures x == x\n{\n"
            + "  assert true;\n" * 300 + "}\n")
@@ -481,7 +481,7 @@ def test_history_digests_proposals_and_reports_drops():
     # The budget must measure what the prompt EMITS. Indented JSON is much
     # larger than compact, so measuring the wrong one let entries near the
     # threshold render over budget.
-    from lemmapy.repair import _history_json
+    from veripy.repair import _history_json
 
     nested = [{"attempt": i,
                "failures": [{"kind": "postcondition", "region": "sidecar",
@@ -514,7 +514,7 @@ def test_history_digests_proposals_and_reports_drops():
 
 
 def test_prompt_states_omissions_and_stays_bounded():
-    from lemmapy.repair import _render_prompt, build_request
+    from veripy.repair import _render_prompt, build_request
 
     big = ("lemma Helper(x: int)\n  ensures x == x\n{\n"
            + "  assert true;\n" * 300 + "}\n")
@@ -538,8 +538,8 @@ def test_prompt_explains_the_kinds_actually_present():
     # records in the first n=6 run were sidecar resolution errors, and the
     # generic rules told the engine to reason about proofs when the sidecar
     # had not typechecked.
-    from lemmapy.failures import FAILURE_KINDS
-    from lemmapy.repair import _render_prompt, build_request
+    from veripy.failures import FAILURE_KINDS
+    from veripy.repair import _render_prompt, build_request
 
     payload = {"status": "failed", "sidecar": {"text": "lemma L() {}"},
                "failures": [
@@ -587,8 +587,8 @@ def test_render_prompt_serves_every_exam_schema():
     # shape the renderer cannot handle raises inside the engine, scoring the
     # whole cell as an engine error. (This is exactly how the spec-writing
     # exam first failed: KeyError 'failures' on every task.)
-    from lemmapy.benchmark.specexam import build_spec_request
-    from lemmapy.repair import _render_prompt
+    from veripy.benchmark.specexam import build_spec_request
+    from veripy.repair import _render_prompt
 
     repair_req = build_request(
         "SRC", {"status": "failed", "failures": [{"kind": "postcondition"}],
@@ -690,7 +690,7 @@ def test_apply_is_lock_serialized_and_backup_preserves_first(tmp_path):
 def test_apply_first_wins_when_sidecar_changed_mid_repair(tmp_path):
     # A concurrent repair applied its own verified proof while this one
     # ran: nothing is overwritten (first-apply-wins), with a clear reason.
-    from lemmapy.repair import _apply_sidecar
+    from veripy.repair import _apply_sidecar
 
     src = tmp_path / "m.py"
     src.write_text("frozen")
@@ -731,7 +731,7 @@ def test_orphaned_lock_file_is_inert_held_flock_blocks(tmp_path):
     import fcntl
     import os
 
-    from lemmapy.repair import _apply_sidecar
+    from veripy.repair import _apply_sidecar
 
     src = tmp_path / "m.py"
     src.write_text("x")
@@ -752,7 +752,7 @@ def test_orphaned_lock_file_is_inert_held_flock_blocks(tmp_path):
 def test_source_recheck_under_the_lock(tmp_path):
     # The live source is compared under the lock at the last instant: a
     # mismatch means nothing is written.
-    from lemmapy.repair import _apply_sidecar
+    from veripy.repair import _apply_sidecar
 
     src = tmp_path / "m.py"
     src.write_text("edited meanwhile")
@@ -766,10 +766,10 @@ def test_unattributable_failure_is_not_a_repair_target(tmp_path, monkeypatch):
     # a human, not a repair target — so OUR OWN loop must honour that.
     # Before this, any `failed` payload started iterating, spending the
     # whole budget on engine calls no proof edit could address.
-    import lemmapy.repair as repair_mod
+    import veripy.repair as repair_mod
 
     def fake_verify(path, outdir, **kw):
-        return {"schema": "lemmapy-failures/1", "file": str(path),
+        return {"schema": "veripy-failures/1", "file": str(path),
                 "status": "failed", "functions": ["f"],
                 "failures": [{"kind": "unknown", "function": None,
                               "region": None, "py_line": None,
@@ -918,7 +918,7 @@ def test_model_substitution_is_refused_not_recorded():
     all. Either would have produced a mislabelled results column,
     detectable only by a post-hoc ledger audit.
     """
-    from lemmapy.repair import _ClaudeEngine, _parse_claude_json
+    from veripy.repair import _ClaudeEngine, _parse_claude_json
 
     # Shape from the live probe: helper haiku + the model that actually
     # served the reply, distinguished by output tokens.
@@ -1047,8 +1047,8 @@ def test_engine_effort_is_threaded_recorded_and_validated(tmp_path, monkeypatch)
     header — "cli-default" included, since an unrecorded default is still
     a hidden variable.
     """
-    import lemmapy.repair as repair_mod
-    from lemmapy.repair import _claude_cmd, _ClaudeEngine
+    import veripy.repair as repair_mod
+    from veripy.repair import _claude_cmd, _ClaudeEngine
 
     cmd = _claude_cmd("/usr/bin/claude", "prompt", model="opus",
                       json_output=True, effort="high")
@@ -1085,9 +1085,9 @@ def test_engine_effort_is_threaded_recorded_and_validated(tmp_path, monkeypatch)
     assert "--effort" in seen["cmd"] and "xhigh" in seen["cmd"]
 
     # The run header records the condition either way.
-    import lemmapy.benchmark.experiment as exp_mod
-    from lemmapy.benchmark.experiment import run_experiment
-    from lemmapy.benchmark.exam import ExamScore
+    import veripy.benchmark.experiment as exp_mod
+    from veripy.benchmark.experiment import run_experiment
+    from veripy.benchmark.exam import ExamScore
 
     monkeypatch.setattr(
         exp_mod, "run_repair_exam",

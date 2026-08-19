@@ -1,6 +1,6 @@
 # Grammar-Contact Exercise (August 2026)
 
-> The M0 exit test for the `#@` spec surface: 20 functions from HumanEval/MBPP — selected as in-fragment by `lemmapy survey`, adapted minimally, annotated with real contracts — pushed through `lemmapy check` (grammar + strict type gate) → `lemmapy hunt` (CrossHair must find nothing) → mutation testing (CrossHair must refute a seeded bug), then independently reproduced and adversarially re-mutated by separate verifiers. The corpus lives in [`examples/contact/`](../examples/contact/); every grammar friction was logged as a first-class deliverable.
+> The M0 exit test for the `#@` spec surface: 20 functions from HumanEval/MBPP — selected as in-fragment by `veripy survey`, adapted minimally, annotated with real contracts — pushed through `veripy check` (grammar + strict type gate) → `veripy hunt` (CrossHair must find nothing) → mutation testing (CrossHair must refute a seeded bug), then independently reproduced and adversarially re-mutated by separate verifiers. The corpus lives in [`examples/contact/`](../examples/contact/); every grammar friction was logged as a first-class deliverable.
 
 ## Results
 

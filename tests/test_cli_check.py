@@ -1,10 +1,10 @@
-"""`lemmapy check` fragment conformance: the encoder dry-run is the
+"""`veripy check` fragment conformance: the encoder dry-run is the
 conformance authority — check reports exactly what verify would reject,
 without needing Dafny installed."""
 
 from pathlib import Path
 
-from lemmapy.cli import cmd_check
+from veripy.cli import cmd_check
 
 CONFORMANT = (
     "#@ ensures result == x + 1\n"

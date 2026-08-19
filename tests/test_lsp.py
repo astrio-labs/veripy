@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.lsp import (
+from veripy.backends.dafny.driver import find_dafny
+from veripy.lsp import (
     _CONTENT_MODIFIED,
     _MAX_PROVERS,
     Server,
@@ -93,7 +93,7 @@ def test_null_byte_is_a_diagnostic_not_a_dead_server():
 def test_tokenizer_error_is_a_diagnostic_not_a_dead_server(monkeypatch):
     # The spec-comment scan can raise TokenError on in-progress buffers
     # that ast.parse would accept; the server must publish, not die.
-    import lemmapy.lsp as lsp_mod
+    import veripy.lsp as lsp_mod
     from tokenize import TokenError
 
     def boom(text, filename):
@@ -133,13 +133,13 @@ def test_full_session_publish_and_status():
         {"jsonrpc": "2.0", "method": "textDocument/didChange",
          "params": {"textDocument": {"uri": uri},
                     "contentChanges": [{"text": GOOD}]}},
-        {"jsonrpc": "2.0", "id": 2, "method": "lemmapy/functionStatus",
+        {"jsonrpc": "2.0", "id": 2, "method": "veripy/functionStatus",
          "params": {"textDocument": {"uri": uri}}},
         {"jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": {}},
         {"jsonrpc": "2.0", "method": "exit"},
     ])
     init = replies[0]
-    assert init["result"]["serverInfo"]["name"] == "lemmapy-lsp"
+    assert init["result"]["serverInfo"]["name"] == "veripy-lsp"
     publishes = [r for r in replies
                  if r.get("method") == "textDocument/publishDiagnostics"]
     assert len(publishes) == 2
@@ -231,7 +231,7 @@ def test_proof_result_is_dropped_the_moment_the_buffer_changes():
 def _stale_diag():
     return {"range": {"start": {"line": 0, "character": 0},
                       "end": {"line": 0, "character": 1}},
-            "severity": 1, "source": "lemmapy", "message": "proof: stale marker"}
+            "severity": 1, "source": "veripy", "message": "proof: stale marker"}
 
 
 def test_stale_proof_diagnostics_are_not_republished():
@@ -242,7 +242,7 @@ def test_stale_proof_diagnostics_are_not_republished():
         {"jsonrpc": "2.0", "method": "textDocument/didChange",
          "params": {"textDocument": {"uri": "file:///m.py"},
                     "contentChanges": [{"text": GOOD + "\n# edit\n"}]}},
-        {"jsonrpc": "2.0", "id": 2, "method": "lemmapy/functionStatus",
+        {"jsonrpc": "2.0", "id": 2, "method": "veripy/functionStatus",
          "params": {"textDocument": {"uri": "file:///m.py"}}},
         {"jsonrpc": "2.0", "method": "exit", "params": {}},
     ])
@@ -253,7 +253,7 @@ def test_stale_proof_diagnostics_are_not_republished():
 
 def test_verify_on_an_unopened_document_is_an_error_not_a_crash():
     replies = _run([
-        {"jsonrpc": "2.0", "id": 1, "method": "lemmapy/verify",
+        {"jsonrpc": "2.0", "id": 1, "method": "veripy/verify",
          "params": {"textDocument": {"uri": "file:///nope.py"}}},
         {"jsonrpc": "2.0", "method": "exit", "params": {}},
     ])
@@ -268,12 +268,12 @@ def test_verify_time_limit_is_clamped_not_trusted(monkeypatch):
         seen["limit"] = time_limit
         return _proof_payload("ok", ["bump"])
 
-    monkeypatch.setattr("lemmapy.lsp.prove", fake_prove)
+    monkeypatch.setattr("veripy.lsp.prove", fake_prove)
     for asked, expected in ((100000, 300), (0, 1), ("nonsense", 20)):
         _run([
             {"jsonrpc": "2.0", "method": "textDocument/didOpen",
              "params": {"textDocument": {"uri": "file:///m.py", "text": GOOD}}},
-            {"jsonrpc": "2.0", "id": 1, "method": "lemmapy/verify",
+            {"jsonrpc": "2.0", "id": 1, "method": "veripy/verify",
              "params": {"textDocument": {"uri": "file:///m.py"},
                         "timeLimit": asked}},
             {"jsonrpc": "2.0", "method": "exit", "params": {}},
@@ -283,7 +283,7 @@ def test_verify_time_limit_is_clamped_not_trusted(monkeypatch):
 
 def test_verify_reply_and_merged_publish(monkeypatch):
     monkeypatch.setattr(
-        "lemmapy.lsp.prove",
+        "veripy.lsp.prove",
         lambda text, filename, time_limit=20: _proof_payload(
             "failed", ["bump"],
             [{"kind": "postcondition", "function": "bump", "region": "source",
@@ -291,7 +291,7 @@ def test_verify_reply_and_merged_publish(monkeypatch):
     replies = _run([
         {"jsonrpc": "2.0", "method": "textDocument/didOpen",
          "params": {"textDocument": {"uri": "file:///m.py", "text": GOOD}}},
-        {"jsonrpc": "2.0", "id": 7, "method": "lemmapy/verify",
+        {"jsonrpc": "2.0", "id": 7, "method": "veripy/verify",
          "params": {"textDocument": {"uri": "file:///m.py"}}},
         {"jsonrpc": "2.0", "method": "exit", "params": {}},
     ])
@@ -314,11 +314,11 @@ def test_shutdown_waits_for_an_in_flight_proof(monkeypatch):
         _time.sleep(0.3)
         return _proof_payload("ok", ["bump"])
 
-    monkeypatch.setattr("lemmapy.lsp.prove", slow_prove)
+    monkeypatch.setattr("veripy.lsp.prove", slow_prove)
     replies = _run([
         {"jsonrpc": "2.0", "method": "textDocument/didOpen",
          "params": {"textDocument": {"uri": "file:///m.py", "text": GOOD}}},
-        {"jsonrpc": "2.0", "id": 9, "method": "lemmapy/verify",
+        {"jsonrpc": "2.0", "id": 9, "method": "veripy/verify",
          "params": {"textDocument": {"uri": "file:///m.py"}}},
         {"jsonrpc": "2.0", "method": "exit", "params": {}},
     ])
@@ -353,7 +353,7 @@ def test_completion_order_does_not_decide_the_proof_cache(monkeypatch):
         return _proof_payload("tool-error", ["bump"],
                               error="dafny not found on PATH")
 
-    monkeypatch.setattr("lemmapy.lsp.prove", fake_prove)
+    monkeypatch.setattr("veripy.lsp.prove", fake_prove)
     server._prove_and_reply(1, uri, GOOD, "/m.py", 20, server._claim(uri))
 
     assert server.proofs[uri]["digest"] == digest(newer)
@@ -380,13 +380,13 @@ def test_a_burst_on_one_document_does_not_start_a_prover_each(monkeypatch):
         release.wait(10)
         return _proof_payload("ok", ["bump"])
 
-    monkeypatch.setattr("lemmapy.lsp.prove", fake_prove)
+    monkeypatch.setattr("veripy.lsp.prove", fake_prove)
     stdout = io.BytesIO()
     server = Server(io.BytesIO(), stdout)
     server.handle({"jsonrpc": "2.0", "method": "textDocument/didOpen",
                    "params": {"textDocument": {"uri": uri, "text": GOOD}}})
     for i in range(1, 6):
-        server.handle({"jsonrpc": "2.0", "id": i, "method": "lemmapy/verify",
+        server.handle({"jsonrpc": "2.0", "id": i, "method": "veripy/verify",
                        "params": {"textDocument": {"uri": uri}}})
     release.set()
     for worker in server._workers:
@@ -444,7 +444,7 @@ def test_an_uncopyable_sidecar_is_a_tool_error_not_a_rejection(tmp_path,
     def denied(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr("lemmapy.lsp.shutil.copyfile", denied)
+    monkeypatch.setattr("veripy.lsp.shutil.copyfile", denied)
     payload = prove(text, str(src), time_limit=5)
     assert payload["status"] == "tool-error"
     assert "unreadable proof sidecar" in payload["error"]
@@ -477,7 +477,7 @@ def test_conformance_failures_are_not_reported_twice(monkeypatch):
     # every keystroke. The proof lane must not republish it -- one mistake,
     # one diagnostic.
     monkeypatch.setattr(
-        "lemmapy.lsp.prove",
+        "veripy.lsp.prove",
         lambda text, filename, time_limit=20: _proof_payload(
             "encode-error", ["f"],
             [{"kind": "conformance", "function": "f", "region": "source",
@@ -486,7 +486,7 @@ def test_conformance_failures_are_not_reported_twice(monkeypatch):
     replies = _run([
         {"jsonrpc": "2.0", "method": "textDocument/didOpen",
          "params": {"textDocument": {"uri": "file:///m.py", "text": BAD}}},
-        {"jsonrpc": "2.0", "id": 3, "method": "lemmapy/verify",
+        {"jsonrpc": "2.0", "id": 3, "method": "veripy/verify",
          "params": {"textDocument": {"uri": "file:///m.py"}}},
         {"jsonrpc": "2.0", "method": "exit", "params": {}},
     ])
@@ -545,7 +545,7 @@ def test_a_genuinely_absent_sidecar_still_proves_normally(tmp_path, monkeypatch)
     # ordinary path rather than becoming an environment failure.
     src = tmp_path / "m.py"
     src.write_text(GOOD)
-    monkeypatch.setattr("lemmapy.agentio.verify_structured",
+    monkeypatch.setattr("veripy.agentio.verify_structured",
                         lambda path, outdir, **kw: {"status": "ok",
                                                     "failures": [],
                                                     "functions": ["bump"],
@@ -568,16 +568,16 @@ def test_superseded_requests_do_not_queue_for_a_prover(monkeypatch):
         release.wait(timeout=5)
         return _proof_payload("ok", ["bump"])
 
-    monkeypatch.setattr("lemmapy.lsp.prove", slow_prove)
+    monkeypatch.setattr("veripy.lsp.prove", slow_prove)
     server = Server(io.BytesIO(), io.BytesIO())
     uri = "file:///m.py"
     server.documents[uri] = GOOD
-    server.handle({"jsonrpc": "2.0", "id": 1, "method": "lemmapy/verify",
+    server.handle({"jsonrpc": "2.0", "id": 1, "method": "veripy/verify",
                    "params": {"textDocument": {"uri": uri}}})
     assert entered.wait(timeout=5)  # the first request holds the prover
     superseded = []
     for i in range(2, 6):
-        server.handle({"jsonrpc": "2.0", "id": i, "method": "lemmapy/verify",
+        server.handle({"jsonrpc": "2.0", "id": i, "method": "veripy/verify",
                        "params": {"textDocument": {"uri": uri}}})
         superseded.append(server._workers[-1])
     # Each earlier request is superseded by the one after it, so every
@@ -596,7 +596,7 @@ def test_an_edit_supersedes_a_running_proof(monkeypatch):
     # An edit invalidates a running proof as surely as a newer request does,
     # and only the newer request used to say so. The cache refused the stale
     # verdict (its digest no longer matched) but the REPLY still reached the
-    # client, so `lemmapy/verify` answered about text the user had changed.
+    # client, so `veripy/verify` answered about text the user had changed.
     import threading
 
     entered = threading.Event()
@@ -607,12 +607,12 @@ def test_an_edit_supersedes_a_running_proof(monkeypatch):
         release.wait(timeout=5)
         return _proof_payload("ok", ["bump"])
 
-    monkeypatch.setattr("lemmapy.lsp.prove", slow_prove)
+    monkeypatch.setattr("veripy.lsp.prove", slow_prove)
     out = io.BytesIO()
     server = Server(io.BytesIO(), out)
     uri = "file:///m.py"
     server.documents[uri] = GOOD
-    server.handle({"jsonrpc": "2.0", "id": 1, "method": "lemmapy/verify",
+    server.handle({"jsonrpc": "2.0", "id": 1, "method": "veripy/verify",
                    "params": {"textDocument": {"uri": uri}}})
     assert entered.wait(timeout=5)
     server.handle({"jsonrpc": "2.0", "method": "textDocument/didChange",
@@ -635,7 +635,7 @@ def test_the_server_refuses_rather_than_queueing_unboundedly(monkeypatch):
     # prover. Past the ceiling the server says so.
     import threading
 
-    from lemmapy.lsp import _MAX_INFLIGHT, _REQUEST_FAILED
+    from veripy.lsp import _MAX_INFLIGHT, _REQUEST_FAILED
 
     release = threading.Event()
 
@@ -643,13 +643,13 @@ def test_the_server_refuses_rather_than_queueing_unboundedly(monkeypatch):
         release.wait(timeout=5)
         return _proof_payload("ok", ["bump"])
 
-    monkeypatch.setattr("lemmapy.lsp.prove", slow_prove)
+    monkeypatch.setattr("veripy.lsp.prove", slow_prove)
     out = io.BytesIO()
     server = Server(io.BytesIO(), out)
     for i in range(_MAX_INFLIGHT + 2):
         uri = f"file:///m{i}.py"          # a DIFFERENT document each time
         server.documents[uri] = GOOD
-        server.handle({"jsonrpc": "2.0", "id": i, "method": "lemmapy/verify",
+        server.handle({"jsonrpc": "2.0", "id": i, "method": "veripy/verify",
                        "params": {"textDocument": {"uri": uri}}})
     refusals = [r for r in _parse(out.getvalue())
                 if r.get("error", {}).get("code") == _REQUEST_FAILED]
@@ -670,7 +670,7 @@ def test_an_edit_cannot_land_between_the_check_and_the_reply(monkeypatch):
 
     order = []
     uri = "file:///m.py"
-    monkeypatch.setattr("lemmapy.lsp.prove",
+    monkeypatch.setattr("veripy.lsp.prove",
                         lambda text, filename, time_limit=20:
                         _proof_payload("ok", ["bump"]))
     server = Server(io.BytesIO(), io.BytesIO())
@@ -692,7 +692,7 @@ def test_an_edit_cannot_land_between_the_check_and_the_reply(monkeypatch):
 
     edits: list = []
     monkeypatch.setattr(Server, "_reply", hooked_reply)
-    server.handle({"jsonrpc": "2.0", "id": 1, "method": "lemmapy/verify",
+    server.handle({"jsonrpc": "2.0", "id": 1, "method": "veripy/verify",
                    "params": {"textDocument": {"uri": uri}}})
     for w in server._workers:
         w.join(timeout=5)

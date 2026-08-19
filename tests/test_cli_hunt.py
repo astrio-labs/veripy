@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.cli import _find_crosshair, cmd_hunt
+from veripy.cli import _find_crosshair, cmd_hunt
 
 pytestmark = pytest.mark.skipif(
     _find_crosshair() is None, reason="crosshair not installed"
@@ -28,7 +28,7 @@ def test_hunt_clean_on_correct_function(tmp_path, capsys):
 def test_hunt_crosshair_error_is_not_a_counterexample(tmp_path, capsys, monkeypatch):
     import subprocess
 
-    from lemmapy import cli
+    from veripy import cli
 
     def fake_run(cmd, **kwargs):
         return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="ImportError: boom")
@@ -42,7 +42,7 @@ def test_hunt_crosshair_error_is_not_a_counterexample(tmp_path, capsys, monkeypa
 
 
 def test_emit_rejects_same_stem_inputs(tmp_path, capsys):
-    from lemmapy.cli import cmd_emit
+    from veripy.cli import cmd_emit
 
     a = tmp_path / "a"
     b = tmp_path / "b"

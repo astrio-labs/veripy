@@ -9,8 +9,8 @@ message named the symptom and not the remedy, and the remedy was one
 
 from dataclasses import dataclass
 
-from lemmapy.frontend.extract import parse_source
-from lemmapy.hints import proof_hint
+from veripy.frontend.extract import parse_source
+from veripy.hints import proof_hint
 
 LOOP_NO_INVARIANT = (
     "#@ ensures 0 <= result <= len(xs)\n"

@@ -1,12 +1,12 @@
 """The failure taxonomy is the host's branching surface, so it must not
 drift silently: every `kind` the package can emit has to be published in
-lemmapy/failures.py, and the version has to travel with the payload."""
+veripy/failures.py, and the version has to travel with the payload."""
 
 import re
 from pathlib import Path
 
-from lemmapy.backends.dafny.driver import _OBLIGATION_KINDS, classify_obligation
-from lemmapy.failures import (
+from veripy.backends.dafny.driver import _OBLIGATION_KINDS, classify_obligation
+from veripy.failures import (
     FAILURE_KINDS,
     PROVER_KINDS,
     TAXONOMY_VERSION,
@@ -14,7 +14,7 @@ from lemmapy.failures import (
     is_known,
 )
 
-PACKAGE = Path(__file__).resolve().parent.parent / "lemmapy"
+PACKAGE = Path(__file__).resolve().parent.parent / "veripy"
 _KIND_LITERAL = re.compile(r'"kind":\s*"([a-z-]+)"')
 
 
@@ -62,7 +62,7 @@ def test_every_published_kind_has_actionable_guidance():
 
 
 def test_taxonomy_version_travels_with_the_payload(tmp_path):
-    from lemmapy.agentio import verify_structured
+    from veripy.agentio import verify_structured
 
     src = tmp_path / "m.py"
     src.write_text("#@ ensures result == x\ndef f(x: int) -> int:\n    return x\n")
@@ -78,7 +78,7 @@ def test_prover_and_frontend_kinds_are_disjoint():
     # means both.
     import itertools
 
-    from lemmapy.failures import (FRONTEND_KINDS, HARNESS_KINDS,
+    from veripy.failures import (FRONTEND_KINDS, HARNESS_KINDS,
                                   UNCLASSIFIED_KINDS)
 
     groups = [PROVER_KINDS, FRONTEND_KINDS, HARNESS_KINDS, UNCLASSIFIED_KINDS]
@@ -98,9 +98,9 @@ def test_every_status_carries_provenance(tmp_path, monkeypatch):
     # documented field would KeyError on a reachable outcome.
     import json
 
-    from lemmapy.agentio import new_payload
-    from lemmapy.cli import main
-    from lemmapy.frontend.typegate import find_basedpyright
+    from veripy.agentio import new_payload
+    from veripy.cli import main
+    from veripy.frontend.typegate import find_basedpyright
 
     skeleton = new_payload("x.py")
     assert set(skeleton["toolchain"]) == {"preamble_version", "dafny_version",
@@ -145,9 +145,9 @@ def test_unattributable_failure_reports_null_region(tmp_path, monkeypatch):
     # caller a failure record — but it must not FABRICATE where the failure
     # lives. The contract routes `unknown` by `region`, so a hardcoded
     # "source" would send a repair agent after the wrong file.
-    import lemmapy.agentio as agentio_mod
-    from lemmapy.backends.base import get_backend
-    from lemmapy.backends.dafny.driver import VerifyResult
+    import veripy.agentio as agentio_mod
+    from veripy.backends.base import get_backend
+    from veripy.backends.dafny.driver import VerifyResult
 
     # Patch the backend seam (what the pipeline actually calls), not the
     # driver function agentio once imported directly.

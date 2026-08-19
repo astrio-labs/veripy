@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.benchmark.exam import ExamScore
-from lemmapy.benchmark.experiment import (
+from veripy.backends.dafny.driver import find_dafny
+from veripy.benchmark.exam import ExamScore
+from veripy.benchmark.experiment import (
     ARMS,
     _AblatedEngine,
     completed_cells,
@@ -16,8 +16,8 @@ from lemmapy.benchmark.experiment import (
     run_experiment,
     summarize_ledger,
 )
-from lemmapy.cli import main
-from lemmapy.repair import build_request, make_engine, repair_file
+from veripy.cli import main
+from veripy.repair import build_request, make_engine, repair_file
 
 TASK_SRC = (
     "#@ ensures result == x\n"
@@ -39,7 +39,7 @@ def _mini_corpus(tmp_path, names=("mini",)):
 
 
 def test_wilson_interval_is_defensible_at_small_n():
-    from lemmapy.benchmark.experiment import wilson_interval
+    from veripy.benchmark.experiment import wilson_interval
 
     # The whole reason not to use the normal approximation: 5/5 must not
     # claim certainty from five observations.
@@ -62,7 +62,7 @@ def test_redaction_strips_failure_detail_preserves_contract():
     # Build through build_request so this test trips if the request schema
     # drifts. Structured detail must vanish; loop state must survive.
     payload = {
-        "schema": "lemmapy-failures/1", "status": "failed",
+        "schema": "veripy-failures/1", "status": "failed",
         "failures": [{"kind": "postcondition", "function": "f",
                       "py_line": 3, "message": "secret detail"}],
         "sidecar": {"text": "lemma Old()\n{\n}\n"},
@@ -88,7 +88,7 @@ def test_redaction_strips_failure_detail_preserves_contract():
 
 
 def test_ablated_engine_sees_generic_failures_only(tmp_path, monkeypatch):
-    import lemmapy.repair as repair_mod
+    import veripy.repair as repair_mod
 
     payloads = iter([
         {"status": "failed",
@@ -146,7 +146,7 @@ def _fake_exam(record):
 
 
 def test_matrix_covers_cells_and_arm_configs(tmp_path, monkeypatch):
-    import lemmapy.benchmark.experiment as exp_mod
+    import veripy.benchmark.experiment as exp_mod
 
     record = []
     monkeypatch.setattr(exp_mod, "run_repair_exam", _fake_exam(record))
@@ -169,8 +169,8 @@ def test_matrix_covers_cells_and_arm_configs(tmp_path, monkeypatch):
     assert len({str(c["workdir"]) for c in record}) == 6
     # The ledger holds a run header plus one row per (task, cell).
     lines = [json.loads(l) for l in ledger.read_text().splitlines()]
-    headers = [l for l in lines if l["schema"] == "lemmapy-exam-run/1"]
-    rows = [l for l in lines if l["schema"] == "lemmapy-exam-trial/1"]
+    headers = [l for l in lines if l["schema"] == "veripy-exam-run/1"]
+    rows = [l for l in lines if l["schema"] == "veripy-exam-trial/1"]
     assert len(headers) == 1 and len(rows) == 12
     assert headers[0]["roster"] == ["alpha", "beta"]
     assert {r["task"] for r in rows} == {"alpha", "beta"}
@@ -179,7 +179,7 @@ def test_matrix_covers_cells_and_arm_configs(tmp_path, monkeypatch):
 
 
 def test_ledger_append_resume_and_torn_tail(tmp_path, monkeypatch):
-    import lemmapy.benchmark.experiment as exp_mod
+    import veripy.benchmark.experiment as exp_mod
 
     record = []
     monkeypatch.setattr(exp_mod, "run_repair_exam", _fake_exam(record))
@@ -192,7 +192,7 @@ def test_ledger_append_resume_and_torn_tail(tmp_path, monkeypatch):
     assert len(first) == 2
     # A torn tail line (crash mid-append) must not poison resume.
     with open(ledger, "a") as fh:
-        fh.write('{"schema": "lemmapy-exam-trial/1", "exam": "proof-re')
+        fh.write('{"schema": "veripy-exam-trial/1", "exam": "proof-re')
     second = run_experiment(*args)
     assert second == []  # everything already recorded -> nothing re-run
     assert len(record) == 2  # no third/fourth exam invocation
@@ -239,7 +239,7 @@ def test_experiment_refuses_corpus_overlap(tmp_path):
 
 
 def test_summarize_groups_and_rejection_breakdown(tmp_path, monkeypatch):
-    import lemmapy.benchmark.experiment as exp_mod
+    import veripy.benchmark.experiment as exp_mod
 
     def fake(tasks_root, workdir, factory, max_iterations=4, time_limit=60,
              only=None):
@@ -273,7 +273,7 @@ def test_summarize_groups_and_rejection_breakdown(tmp_path, monkeypatch):
     assert "bodiless: 1" in table and "forbidden-token: 1" in table
     assert "100" in table  # 2 rejections / 2 proposals
     rows = [json.loads(l) for l in ledger.read_text().splitlines()
-            if json.loads(l).get("schema") == "lemmapy-exam-trial/1"]
+            if json.loads(l).get("schema") == "veripy-exam-trial/1"]
     assert rows[0]["usage_total"] == {"input_tokens": 30, "output_tokens": 12,
                                       "cost_usd": 0.03}
 
@@ -308,7 +308,7 @@ def test_resume_does_not_hide_failed_cells(tmp_path, capsys):
 def test_resume_reports_success_when_the_matrix_passed(tmp_path, monkeypatch):
     # The mirror case: a fully-resumed matrix of successes must exit 0, not
     # fall through the "nothing recorded" branch.
-    import lemmapy.benchmark.experiment as exp_mod
+    import veripy.benchmark.experiment as exp_mod
 
     monkeypatch.setattr(exp_mod, "run_repair_exam", _fake_exam([]))
     corpus = _mini_corpus(tmp_path)
@@ -357,8 +357,8 @@ def test_stale_task_rows_do_not_fail_the_current_matrix(tmp_path, capsys):
 
 
 def test_matrix_rows_scopes_to_the_requested_cells(tmp_path, monkeypatch):
-    import lemmapy.benchmark.experiment as exp_mod
-    from lemmapy.benchmark.experiment import matrix_rows
+    import veripy.benchmark.experiment as exp_mod
+    from veripy.benchmark.experiment import matrix_rows
 
     monkeypatch.setattr(exp_mod, "run_repair_exam", _fake_exam([]))
     corpus = _mini_corpus(tmp_path, names=("alpha", "beta"))
@@ -412,8 +412,8 @@ def test_cli_experiment_exit_codes_and_summary(tmp_path, capsys):
 
 
 def test_spec_writing_matrix_records_strength(tmp_path, monkeypatch):
-    import lemmapy.benchmark.experiment as exp_mod
-    from lemmapy.benchmark.specexam import SpecExamScore
+    import veripy.benchmark.experiment as exp_mod
+    from veripy.benchmark.specexam import SpecExamScore
 
     seen = []
 
@@ -463,8 +463,8 @@ def test_failed_spec_answer_scores_zero_against_goldens_panel(tmp_path,
     panel makes FAILING the profitable move: an engine that answers only
     the tasks it is sure of would outscore one that attempts them all.
     """
-    import lemmapy.benchmark.experiment as exp_mod
-    from lemmapy.benchmark.specexam import SpecExamScore
+    import veripy.benchmark.experiment as exp_mod
+    from veripy.benchmark.specexam import SpecExamScore
 
     def fake_spec_exam(tasks_root, workdir, factory, retries=2, only=None,
                        **ladder):
@@ -499,7 +499,7 @@ def test_exam_score_carries_attempts_and_wall(tmp_path):
     attempts = tmp_path / "attempts"
     attempts.mkdir()
     (attempts / "1.dfy").write_text(GOLDEN)
-    from lemmapy.benchmark.exam import run_repair_exam
+    from veripy.benchmark.exam import run_repair_exam
 
     scores = run_repair_exam(corpus, tmp_path / "work",
                              lambda: make_engine(f"file:{attempts}"),
@@ -535,7 +535,7 @@ def _spec_ledger(path, rows):
     """Write spec-writing trial rows straight into a ledger."""
     import json
 
-    from lemmapy.benchmark.experiment import TRIAL_SCHEMA
+    from veripy.benchmark.experiment import TRIAL_SCHEMA
 
     with path.open("w") as fh:
         for i, extra in enumerate(rows):
@@ -601,8 +601,8 @@ def test_engine_wall_reaches_every_arm_factory(monkeypatch):
     # Run 3's harness failure WAS the default wall; a matrix silently run at
     # 600s is not a repeat of a 1800s run, it is a different experiment. The
     # wall must reach the engine every arm constructs.
-    import lemmapy.benchmark.experiment as exp_mod
-    from lemmapy.benchmark.experiment import _arm_config
+    import veripy.benchmark.experiment as exp_mod
+    from veripy.benchmark.experiment import _arm_config
 
     seen = []
 
@@ -626,7 +626,7 @@ def test_engine_wall_reaches_every_arm_factory(monkeypatch):
 
 
 def test_cli_experiment_rejects_a_non_positive_engine_wall(tmp_path, capsys):
-    from lemmapy.cli import main
+    from veripy.cli import main
 
     import pytest as _pytest
     with _pytest.raises(SystemExit) as exc:
@@ -639,8 +639,8 @@ def test_every_trial_row_records_the_resolved_wall(tmp_path, monkeypatch):
     # Self-describing rows: the RESOLVED wall, never None, even when the
     # invocation took the default — a row must say what it was measured
     # under without the reader reconstructing the command line.
-    import lemmapy.benchmark.experiment as exp_mod
-    from lemmapy.repair import DEFAULT_ENGINE_WALL_S
+    import veripy.benchmark.experiment as exp_mod
+    from veripy.repair import DEFAULT_ENGINE_WALL_S
 
     def fake(tasks_root, workdir, factory, max_iterations=4, time_limit=60,
              only=None):
@@ -656,8 +656,8 @@ def test_every_trial_row_records_the_resolved_wall(tmp_path, monkeypatch):
     run_experiment(corpus, tmp_path / "c", [f"file:{empty}"], ["full"], 1,
                    ledger, engine_wall=1800)
     rows = [json.loads(l) for l in ledger.read_text().splitlines()]
-    header = [r for r in rows if r.get("schema") == "lemmapy-exam-run/1"]
-    trials = [r for r in rows if r.get("schema", "").startswith("lemmapy-exam-trial")]
+    header = [r for r in rows if r.get("schema") == "veripy-exam-run/1"]
+    trials = [r for r in rows if r.get("schema", "").startswith("veripy-exam-trial")]
     assert header and header[0]["engine_wall"] == 1800
     assert trials and all(r["engine_wall"] == 1800 for r in trials)
     # Default taken -> the default is what gets recorded.
@@ -671,7 +671,7 @@ def test_every_trial_row_records_the_resolved_wall(tmp_path, monkeypatch):
 
 def test_resume_refuses_a_ledger_measured_under_a_different_wall(
         tmp_path, monkeypatch):
-    import lemmapy.benchmark.experiment as exp_mod
+    import veripy.benchmark.experiment as exp_mod
 
     def fake(tasks_root, workdir, factory, max_iterations=4, time_limit=60,
              only=None):
@@ -728,7 +728,7 @@ def test_wall_guard_ignores_rows_this_matrix_cannot_reuse(tmp_path, monkeypatch)
     # at another wall sharing the ledger, a retired task's rows, or an
     # engine not in this invocation can never stand in for one of this
     # run's cells — refusing over them blocks a perfectly valid resume.
-    import lemmapy.benchmark.experiment as exp_mod
+    import veripy.benchmark.experiment as exp_mod
 
     def fake(tasks_root, workdir, factory, max_iterations=4, time_limit=60,
              only=None):

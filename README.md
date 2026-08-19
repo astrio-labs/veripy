@@ -1,6 +1,6 @@
-# LemmaPy
+# VeriPy
 
-> **Status: M0–M2 complete** on the v1 fragment. `#@` specs parse ([grammar v0.2, frozen](docs/SPEC-GRAMMAR.md)), compile to runtime contracts that CrossHair searches for counterexamples, and translate to Dafny for SMT proofs (`lemmapy verify`). All four soundness layers are built — encoder admission (`lemmapy check`), boundary guards (`lemmapy guard`), island integrity with assumptions A1–A7 in the verification report (`--report`), and continuous translation validation (`lemmapy difftest`, in CI on every PR). The M2 agent layer is live: structured failures (`verify --json`), the proof-repair loop (`lemmapy repair`), benchmark-derived repair and spec-writing exams, and an LSP (`lemmapy lsp`) that runs at two speeds — instant conformance diagnostics on every keystroke, prover verdicts on explicit request, expiring the moment the buffer changes ([docs/EDITOR.md](docs/EDITOR.md)). Sixteen corpus functions are proven — including `gcd`'s full maximality spec, `modp`'s modular-power spec and `sum_to_n`'s closed form via the `#@ proof` lemma-sidecar mechanism, and `isqrt`'s maximality spec with no proof additions at all — and scored 16/16 on [lemmapy-benchmark](docs/BENCHMARK.md)'s assurance ladder (62/77 mutants refuted by the specs, 81%; 13 more crash and 2 diverge under mutation — caught by the interpreter or the wall rather than by the specification, so reported separately and never credited). Licensed under [MIT](LICENSE).
+> **Status: M0–M2 complete** on the v1 fragment. `#@` specs parse ([grammar v0.2, frozen](docs/SPEC-GRAMMAR.md)), compile to runtime contracts that CrossHair searches for counterexamples, and translate to Dafny for SMT proofs (`veripy verify`). All four soundness layers are built — encoder admission (`veripy check`), boundary guards (`veripy guard`), island integrity with assumptions A1–A7 in the verification report (`--report`), and continuous translation validation (`veripy difftest`, in CI on every PR). The M2 agent layer is live: structured failures (`verify --json`), the proof-repair loop (`veripy repair`), benchmark-derived repair and spec-writing exams, and an LSP (`veripy lsp`) that runs at two speeds — instant conformance diagnostics on every keystroke, prover verdicts on explicit request, expiring the moment the buffer changes ([docs/EDITOR.md](docs/EDITOR.md)). Sixteen corpus functions are proven — including `gcd`'s full maximality spec, `modp`'s modular-power spec and `sum_to_n`'s closed form via the `#@ proof` lemma-sidecar mechanism, and `isqrt`'s maximality spec with no proof additions at all — and scored 16/16 on [veripy-benchmark](docs/BENCHMARK.md)'s assurance ladder (62/77 mutants refuted by the specs, 81%; 13 more crash and 2 diverge under mutation — caught by the interpreter or the wall rather than by the specification, so reported separately and never credited). Licensed under [MIT](LICENSE).
 
 Developers (and LLM agents) annotate a **typed Python fragment** with specifications in `#@` comments. The toolchain translates that fragment into [Dafny](https://dafny.org/), where an SMT-backed verifier discharges the proofs — with LLM assistance for the ones automation misses. The Python file stays the source of truth: CPython ignores the annotations, and no code is rewritten in another language.
 
@@ -23,7 +23,7 @@ def isqrt(n: int) -> int:
     return r
 ```
 
-That's integer square root, verified against its maximality spec with no proof sidecar (`lemmapy verify examples/isqrt.py`).
+That's integer square root, verified against its maximality spec with no proof sidecar (`veripy verify examples/isqrt.py`).
 
 ## Try it
 
@@ -34,7 +34,7 @@ pip install -e ".[dev]"
 Hunt for counterexamples at runtime (no proof needed — CrossHair searches the compiled `#@` contracts):
 
 ```bash
-lemmapy hunt examples/clamp.py
+veripy hunt examples/clamp.py
 ```
 
 This prints `false when calling clamp(-1, 0, 0)` — a concrete counterexample to the seeded bug in [examples/clamp.py](examples/clamp.py), found from the specs alone, with no test written.
@@ -42,8 +42,8 @@ This prints `false when calling clamp(-1, 0, 0)` — a concrete counterexample t
 Prove a function correct for **all** inputs (typed fragment → Dafny → SMT; requires [Dafny](https://dafny.org/) on PATH):
 
 ```bash
-lemmapy verify examples/isqrt.py --time-limit 30
-lemmapy verify examples/contact/he_humaneval_13.py --time-limit 60
+veripy verify examples/isqrt.py --time-limit 30
+veripy verify examples/contact/he_humaneval_13.py --time-limit 60
 ```
 
 The second is Euclid's `gcd` verified against its full spec — divides both arguments *and* is the greatest such divisor — with the divisibility lemma pack supplied in a [`.proofs.dfy` sidecar](examples/contact/he_humaneval_13.proofs.dfy) referenced from a `#@ proof` clause. Failures map back to the Python source line.
@@ -51,7 +51,7 @@ The second is Euclid's `gcd` verified against its full spec — divides both arg
 Score the whole task corpus on the assurance ladder (gate → hunt → mutants → encode → prove → fidelity):
 
 ```bash
-lemmapy benchmark
+veripy benchmark
 ```
 
 ## Why this is not "just run a verifier on Python"
@@ -60,7 +60,7 @@ Python is dynamically typed, and a type checker's acceptance is not soundness. T
 
 | Threat | Mechanism |
 | --- | --- |
-| Code uses constructs with no defined Dafny meaning (`cast`, reflection, aliased mutation) | **Encoder admission** — allowlist lowering; `lemmapy check` dry-runs the encoder. Ownership-lite rejects `append` on a borrowed list. |
+| Code uses constructs with no defined Dafny meaning (`cast`, reflection, aliased mutation) | **Encoder admission** — allowlist lowering; `veripy check` dry-runs the encoder. Ownership-lite rejects `append` on a borrowed list. |
 | Untyped callers pass values the proof never assumed | **Generated boundary guards** — deep type checks, executable preconditions, copy-in, blame |
 | Runtime patching swaps out the verified code | **Island integrity** — verbatim island copy + explicit assumptions A1–A7 |
 | The Dafny model silently means something different from CPython (`7 // -2`, truthiness, aliasing) | **Translation validation** — continuous differential testing via Dafny's Python backend |
@@ -96,7 +96,7 @@ The result is a precise, honest guarantee: *verified properties hold for every e
 | [SPEC-GRAMMAR.md](docs/SPEC-GRAMMAR.md) | The `#@` spec language: clauses, expression syntax, desugaring rules, decisions | ✅ (v0.2, frozen) |
 | [GRAMMAR-CONTACT.md](docs/GRAMMAR-CONTACT.md) | The M0 exit exercise: 20 annotated HumanEval/MBPP tasks, mutation-tested; friction findings and the freeze decision | ✅ |
 | [CORPUS-RESULTS.md](docs/CORPUS-RESULTS.md) | Fragment-coverage numbers: nine OSS repos + the HumanEval/MBPP greenfield contrast | ✅ (survey still untyped) |
-| [BENCHMARK.md](docs/BENCHMARK.md) | lemmapy-benchmark: assurance-ladder scoring over 16 annotated-Python tasks, mutant-panel spec strength | ✅ (v0) |
+| [BENCHMARK.md](docs/BENCHMARK.md) | veripy-benchmark: assurance-ladder scoring over 16 annotated-Python tasks, mutant-panel spec strength | ✅ (v0) |
 | [EVALUATION.md](docs/EVALUATION.md) | Research questions; RQ1/RQ2/RQ4 measured; RQ3 and held-out repair still open | ✅ (partial draft) |
 | SUBSET.md | The versioned fragment definition (seeded from the lowering catalog) | planned |
 | DECISIONS.md | Resolved design decisions with rationale and revisit tripwires | planned |

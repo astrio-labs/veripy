@@ -17,9 +17,9 @@ RQ4 is the headline DX metric and gets the most design attention here.
 
 ---
 
-## lemmapy-benchmark (RQ4 and the headline)
+## veripy-benchmark (RQ4 and the headline)
 
-The native benchmark is **lemmapy-benchmark** ([BENCHMARK.md](BENCHMARK.md)): tasks
+The native benchmark is **veripy-benchmark** ([BENCHMARK.md](BENCHMARK.md)): tasks
 are annotated-Python modules scored on the assurance ladder (gate → hunt →
 mutant panel → encode → prove → fidelity), with **spec strength measured
 mechanically** via deterministic mutant kill rates — a dimension no
@@ -76,7 +76,7 @@ Per cost-ladder rung ([ARCHITECTURE.md §4.4](ARCHITECTURE.md)): micro-benchmark
 
 ## Measured proof-repair runs (August 2026) — the M2 exit metric
 
-**Setup.** `lemmapy benchmark --exam proof-repair --engine claude` over the
+**Setup.** `veripy benchmark --exam proof-repair --engine claude` over the
 sidecar-bearing golden corpus. Engine: headless `claude -p` (claude CLI
 2.1.193, default model configuration), **all tools denied and an isolated
 empty working directory** (invocation pinned by unit tests, including the
@@ -91,7 +91,7 @@ failed one. Runs 1–3 used the 600 s default; Run 4 (the current figure)
 used `--engine-wall 1800`:
 
 ```
-lemmapy benchmark --exam proof-repair --engine claude --engine-wall 1800
+veripy benchmark --exam proof-repair --engine claude --engine-wall 1800
 ```
 
 ### Run 1 — roster n=1 (gcd)
@@ -135,7 +135,7 @@ six-task roster.
 Each was **screened before adoption**: the strengthened spec had to fail
 to prove *without* its pack. A task Z3 proves from its invariants alone
 makes an exam row that measures nothing, so the screen is permanent, as
-`test_sidecar_is_load_bearing` over the roster and as `lemmapy benchmark
+`test_sidecar_is_load_bearing` over the roster and as `veripy benchmark
 --screen` for candidates. (For the same reason the divisibility family is
 deliberately **not** promoted into the preamble while the exam depends on
 those lemmas being absent.)
@@ -154,7 +154,7 @@ against the roster on the corrected screen: **6/6 load-bearing**
 pre-adoption screening was real; it was the standing tripwire that was
 not.
 
-Runs are now driven by `lemmapy experiment`, which executes an exam as a
+Runs are now driven by `veripy experiment`, which executes an exam as a
 (task × engine × arm × trial) matrix against an append-only JSONL ledger:
 resumable, with the run's git rev and tool versions in the header, three
 arms (full loop / one-shot / feedback-ablated) to separate what the loop
@@ -258,7 +258,7 @@ sentence describing it quietly wrong. A timeout is never accepted as a
 disproof — the taxonomy is explicit that the property may still hold.
 
 **What to do about it, in order of leverage:** repeated trials at fixed
-configuration (the `lemmapy experiment` matrix already supports this, and
+configuration (the `veripy experiment` matrix already supports this, and
 is the only thing that measures the variance rather than being surprised
 by it), then roster growth — n=7 landed after this run, so this figure is
 already one task stale. *Both were done: see Run 5, which supersedes this
@@ -272,7 +272,7 @@ could only gesture at. Same configuration throughout: `--engine claude`,
 full loop, 4-iteration budget, 60 s verify, `--engine-wall 1800`.
 
 ```
-lemmapy experiment --exam proof-repair --engines claude --arms full \
+veripy experiment --exam proof-repair --engines claude --arms full \
   --trials 3 --engine-wall 1800 --time-limit 60 -o build/run5-matrix
 ```
 
@@ -409,7 +409,7 @@ positive AND negative probes before trusting either a good or a bad score.
 ## Planned interface-ablation study (unmeasured)
 
 **Purpose.** The existing one-shot/full-loop comparison measures whether
-iteration helps, but it does not isolate what LemmaPy's structured failure
+iteration helps, but it does not isolate what VeriPy's structured failure
 taxonomy and sidecar whitelist contribute over raw verifier interaction.
 Until this study is measured, the paper may claim that the interface is
 constrained and machine-readable, but not that either component improves
@@ -419,7 +419,7 @@ proof-completion rate.
 
 Run the same six frozen, load-bearing repair tasks under four conditions:
 
-1. **Full LemmaPy:** structured failures, whitelist validation, and at most
+1. **Full VeriPy:** structured failures, whitelist validation, and at most
    four repair iterations.
 2. **Raw feedback:** retain the whitelist and sidecar-only edit boundary,
    but return raw Dafny output instead of the versioned failure taxonomy.
@@ -486,7 +486,7 @@ normal sidecar audit. Also report:
 
 ### Interpretation
 
-- Full LemmaPy outperforming raw feedback is evidence that the structured
+- Full VeriPy outperforming raw feedback is evidence that the structured
   taxonomy improves repair.
 - Similar success with lower token or iteration cost is still an interface
   benefit and should be reported as efficiency, not completion.
@@ -495,7 +495,7 @@ normal sidecar audit. Also report:
 - If unvalidated arms produce no unsound proposals, describe the whitelist
   as preventive infrastructure rather than empirically load-bearing on
   this sample.
-- Full LemmaPy outperforming raw Dafny is evidence for the combined
+- Full VeriPy outperforming raw Dafny is evidence for the combined
   agent-native interface, but the component arms are required to explain
   why.
 - A null result remains useful: it narrows the contribution to safety,

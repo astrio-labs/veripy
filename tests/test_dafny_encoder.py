@@ -1,8 +1,8 @@
 import pytest
 
-from lemmapy.backends.dafny.encoder import EncodeError, encode_module
-from lemmapy.backends.dafny.preamble import PREAMBLE_NAMES
-from lemmapy.frontend.extract import parse_source
+from veripy.backends.dafny.encoder import EncodeError, encode_module
+from veripy.backends.dafny.preamble import PREAMBLE_NAMES
+from veripy.frontend.extract import parse_source
 
 
 def _encode(source: str) -> str:
@@ -718,7 +718,7 @@ def test_proof_clause_must_be_a_call():
 
 
 def _sidecar_error(tmp_path, content: str) -> str:
-    from lemmapy.backends.dafny.encoder import load_proof_sidecar
+    from veripy.backends.dafny.encoder import load_proof_sidecar
 
     src = tmp_path / "m.py"
     src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
@@ -818,7 +818,7 @@ def test_proof_sidecar_verbatim_strings_forbidden(tmp_path):
 
 
 def test_proof_sidecar_string_in_body_still_fine(tmp_path):
-    from lemmapy.backends.dafny.encoder import load_proof_sidecar
+    from veripy.backends.dafny.encoder import load_proof_sidecar
 
     src = tmp_path / "m.py"
     src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
@@ -829,7 +829,7 @@ def test_proof_sidecar_string_in_body_still_fine(tmp_path):
 
 
 def test_proof_sidecar_implication_still_legal(tmp_path):
-    from lemmapy.backends.dafny.encoder import load_proof_sidecar
+    from veripy.backends.dafny.encoder import load_proof_sidecar
 
     src = tmp_path / "m.py"
     src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
@@ -840,7 +840,7 @@ def test_proof_sidecar_implication_still_legal(tmp_path):
 
 
 def test_proof_sidecar_body_after_signature_still_accepted(tmp_path):
-    from lemmapy.backends.dafny.encoder import load_proof_sidecar
+    from veripy.backends.dafny.encoder import load_proof_sidecar
 
     src = tmp_path / "m.py"
     src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
@@ -860,7 +860,7 @@ def test_proof_sidecar_rejects_assume_and_attributes(tmp_path):
 
 
 def test_proof_sidecar_loads_lemmas(tmp_path):
-    from lemmapy.backends.dafny.encoder import load_proof_sidecar
+    from veripy.backends.dafny.encoder import load_proof_sidecar
 
     src = tmp_path / "m.py"
     src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
@@ -873,7 +873,7 @@ def test_proof_sidecar_loads_lemmas(tmp_path):
 
 
 def _sidecar_rule(content: str) -> str | None:
-    from lemmapy.backends.dafny.encoder import validate_sidecar_text
+    from veripy.backends.dafny.encoder import validate_sidecar_text
 
     with pytest.raises(EncodeError) as exc:
         validate_sidecar_text(content, "m.proofs.dfy")
@@ -904,7 +904,7 @@ def test_sidecar_rejection_rules_classified():
 
 
 def test_validate_sidecar_text_accepts_good_pack():
-    from lemmapy.backends.dafny.encoder import validate_sidecar_text
+    from veripy.backends.dafny.encoder import validate_sidecar_text
 
     lemmas = validate_sidecar_text(
         "lemma A(x: int)\n  ensures x == x\n{\n}\n"
@@ -918,7 +918,7 @@ def test_sidecar_decreases_cardinality_before_body_accepted():
     # `decreases |s|` right before the body brace is idiomatic Dafny; the
     # closing pipe must count as a value ender or every engine writing it
     # burns an iteration on a false rejection.
-    from lemmapy.backends.dafny.encoder import validate_sidecar_text
+    from veripy.backends.dafny.encoder import validate_sidecar_text
 
     lemmas = validate_sidecar_text(
         "lemma Sum(s: seq<int>)\n  ensures 0 <= |s|\n  decreases |s|\n"
@@ -1388,7 +1388,7 @@ def test_empty_list_exception_does_not_leak(body, sig, ret):
 # --- sidecar line mapping ------------------------------------------------------
 
 def test_sidecar_locate_maps_stub_lines_to_the_files_own_lines(tmp_path):
-    from lemmapy.backends.dafny.encoder import ProofSidecar, load_proof_sidecar
+    from veripy.backends.dafny.encoder import ProofSidecar, load_proof_sidecar
 
     src = tmp_path / "m.py"
     src.write_text("#@ ensures result == 0\ndef f() -> int:\n    return 0\n")
@@ -1409,7 +1409,7 @@ def test_sidecar_locate_maps_stub_lines_to_the_files_own_lines(tmp_path):
 
 
 def test_map_line_refuses_to_answer_past_the_generated_region():
-    from lemmapy.backends.dafny.driver import _map_line
+    from veripy.backends.dafny.driver import _map_line
 
     line_map = {10: 3, 20: 7}
     # Inside the generated region: exact hit, then nearest-above (statements

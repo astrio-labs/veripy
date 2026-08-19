@@ -1,4 +1,4 @@
-# LemmaPy CI: the differential harness and full suite run on every PR
+# VeriPy CI: the differential harness and full suite run on every PR
 # (an M1 exit criterion). Two tiers so the fast signal is never blocked
 # on the prover install.
 name: ci
@@ -51,4 +51,4 @@ jobs:
       - name: Full suite (proofs + difftest)
         run: python -m pytest tests/ -q
       - name: Benchmark scorecard (quick tier)
-        run: lemmapy benchmark --quick
+        run: veripy benchmark --quick

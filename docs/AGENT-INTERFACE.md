@@ -1,17 +1,17 @@
 # Agent interface
 
 > **Status: stable surface, taxonomy version 1.** This is the
-> contract for programs that consume LemmaPy — a repair agent, or a host
+> contract for programs that consume VeriPy — a repair agent, or a host
 > embedding it as a proof backend. The human CLI output is not a contract;
 > this is.
 
-## Embedding LemmaPy
+## Embedding VeriPy
 
-`lemmapy.api` is the surface a host program calls. One import path, and
+`veripy.api` is the surface a host program calls. One import path, and
 everything outside it is internal:
 
 ```python
-from lemmapy import api
+from veripy import api
 
 if api.conformance(path)["conformant"]:          # cheap gate, no prover
     payload = api.verify(path, workdir)          # the structured outcome
@@ -34,19 +34,19 @@ writing a file, because where generated code lands is the host's decision.
 host should compare across runs.
 
 Note the root package deliberately does **not** re-export these:
-`lemmapy.repair` is already a submodule, so a root-level `repair` function
+`veripy.repair` is already a submodule, so a root-level `repair` function
 would resolve to the function or the module depending on import order.
 
 ## Getting a structured outcome
 
 ```bash
-lemmapy verify path/to/module.py --json failures.json
+veripy verify path/to/module.py --json failures.json
 ```
 
 or, in process:
 
 ```python
-from lemmapy.agentio import verify_structured
+from veripy.agentio import verify_structured
 payload = verify_structured(Path("module.py"), Path("build/out"))
 ```
 
@@ -59,7 +59,7 @@ tool or input error.
 
 ```json
 {
-  "schema": "lemmapy-failures/1",
+  "schema": "veripy-failures/1",
   "file": "module.py",
   "toolchain": {
     "preamble_version": "0.6",
@@ -221,7 +221,7 @@ never a path that no longer exists.
 
 - Fields are **added**, never repurposed; `schema` bumps if one is removed
   or its meaning changes.
-- The `kind` set is closed and published in `lemmapy/failures.py`. A kind
+- The `kind` set is closed and published in `veripy/failures.py`. A kind
   reaching a caller without appearing there is a bug — a test scans the
   package for kind literals and fails on an undocumented one.
 - Adding a kind bumps `taxonomy_version` and updates this file.

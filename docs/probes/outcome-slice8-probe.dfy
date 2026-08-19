@@ -1,4 +1,4 @@
-// LemmaPy Dafny preamble v0.5 -- Python-exact arithmetic, indexing,
+// VeriPy Dafny preamble v0.5 -- Python-exact arithmetic, indexing,
 // slicing, Optionals, folds, powers (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int

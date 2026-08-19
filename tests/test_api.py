@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-import lemmapy
-from lemmapy import api
-from lemmapy.backends.dafny.driver import find_dafny
-from lemmapy.failures import is_known
+import veripy
+from veripy import api
+from veripy.backends.dafny.driver import find_dafny
+from veripy.failures import is_known
 
 GOOD = "#@ ensures result == x + 1\ndef bump(x: int) -> int:\n    return x + 1\n"
 OUTSIDE = ("#@ ensures result >= 0\n"
@@ -35,16 +35,16 @@ def _silently(fn, *args, **kwargs):
 
 
 def test_root_does_not_shadow_submodules_with_api_names():
-    # `lemmapy.repair` is a SUBMODULE. Re-exporting an api function of the
-    # same name at the root makes `lemmapy.repair` a function or a module
+    # `veripy.repair` is a SUBMODULE. Re-exporting an api function of the
+    # same name at the root makes `veripy.repair` a function or a module
     # depending on import order — this test pins the hazard so nobody
     # re-adds the convenience export.
-    import lemmapy.repair as repair_module
+    import veripy.repair as repair_module
 
-    assert getattr(lemmapy, "repair") is repair_module
-    assert not hasattr(lemmapy, "__all__"), (
+    assert getattr(veripy, "repair") is repair_module
+    assert not hasattr(veripy, "__all__"), (
         "the root must not advertise an api surface it cannot keep stable; "
-        "the surface is lemmapy.api")
+        "the surface is veripy.api")
     for name in api.__all__:
         assert callable(getattr(api, name)), name
 
@@ -187,6 +187,6 @@ def test_verify_returns_the_documented_payload(tmp_path):
     src.write_text(GOOD)
     payload = api.verify(src, tmp_path / "w")
     assert payload["status"] == "ok"
-    assert payload["schema"] == "lemmapy-failures/1"
+    assert payload["schema"] == "veripy-failures/1"
     assert payload["toolchain"]["taxonomy_version"] == \
         api.toolchain_info()["taxonomy_version"]
