@@ -861,6 +861,210 @@ def test_invariants_must_sit_at_the_loop_head():
         _encode(no_loop)
 
 
+def test_divmod_emits_python_semantics_not_lean_operators():
+    # Python's `//`/`%` are FLOOR division and a divisor-signed remainder
+    # (fdiv/fmod). Lean's own `/` and `%` are ediv/emod and differ on
+    # negative divisors, so the encoder must never emit them directly.
+    src = ("#@ requires p >= 2\n"
+           "#@ ensures 0 <= result < p\n"
+           "def mod_bound(a: int, p: int) -> int:\n"
+           "    return a % p\n")
+    enc = _encode(src)
+    assert "(LemmaPy.PyMod «a» «p»)" in enc.lean_source
+    # The variable divisor's bounds are supplied explicitly: omega reasons
+    # about `%` natively ONLY for constant divisors (measured).
+    assert "LemmaPy.PyMod_nonneg" in enc.lean_source
+    assert "LemmaPy.PyMod_lt" in enc.lean_source
+    assert "have hdpos0 : (0:Int) < «p» := by omega" in enc.lean_source
+
+    # A constant divisor DOES get bridged to `%`, which is what unlocks
+    # omega's native arithmetic.
+    half = ("#@ requires n >= 0\n#@ ensures result * 2 <= n\n"
+            "def half(n: int) -> int:\n    return n // 2\n")
+    assert "LemmaPy.PyFloorDiv_pos" in _encode(half).lean_source
+
+
+def test_divisor_wellformedness_is_discharged_not_assumed():
+    # Python RAISES ZeroDivisionError on a zero divisor; Lean's fdiv/fmod
+    # are total and return 0. A divisor that is not provably nonzero would
+    # let Lean certify a program CPython cannot run, so it is refused.
+    for src in (
+        # no contract bound on the divisor at all
+        "#@ ensures result >= 0\ndef f(a: int, b: int) -> int:\n"
+        "    return a % b\n",
+        # a literal zero divisor
+        "#@ ensures result >= 0\ndef f(a: int) -> int:\n"
+        "    return a // 0\n",
+        # `p != 0` alone is not positivity, and this slice discharges the
+        # obligation only via positivity (where the omega bridges apply)
+        "#@ requires p != 0\n#@ ensures result >= 0\n"
+        "def f(a: int, p: int) -> int:\n    return a % p\n",
+        # the bound is under an `or`, so it is not a guarantee
+        "#@ requires p > 0 or p < -5\n#@ ensures result >= 0\n"
+        "def f(a: int, p: int) -> int:\n    return a % p\n",
+    ):
+        with pytest.raises(EncodeError, match="divisor"):
+            _encode(src)
+
+    # ...while a top-level requires conjunct proving positivity licenses it.
+    ok = ("#@ requires p >= 2 and a >= 0\n#@ ensures 0 <= result < p\n"
+          "def f(a: int, p: int) -> int:\n    return a % p\n")
+    assert "LemmaPy.PyMod" in _encode(ok).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_divmod_model_matches_cpython_on_both_signs(tmp_path):
+    # The differential fidelity rung for `//`/`%`: CPython computes the
+    # expected values, Lean proves the prelude's model agrees. The negative
+    # divisors are the point — the earlier design note claimed `Int.emod`
+    # matched Python, and emod DOES agree whenever the divisor is positive,
+    # so a positive-only suite would have ratified the wrong model.
+    import subprocess
+
+    from lemmapy.backends.lean.prelude import PRELUDE
+
+    pairs = [(a, b) for a in (-7, -1, 0, 7) for b in (-3, -2, 2, 3)]
+
+    def _suite(prelude: str, ps) -> str:
+        lines = [prelude]
+        for a, b in ps:
+            lines.append(f"example : LemmaPy.PyMod ({a} : Int) ({b}) "
+                         f"= ({a % b}) := by rfl")
+            lines.append(f"example : LemmaPy.PyFloorDiv ({a} : Int) ({b}) "
+                         f"= ({a // b}) := by rfl")
+        return "\n".join(lines) + "\n"
+
+    def _errors(text: str) -> int:
+        path = tmp_path / "probe.lean"
+        path.write_text(text)
+        out = subprocess.run([str(find_lean()), str(path)],
+                             capture_output=True, text=True)
+        return out.stdout.count("error") + out.stderr.count("error")
+
+    # The shipped model agrees with CPython everywhere.
+    assert _errors(_suite(PRELUDE, pairs)) == 0
+
+    # ...and the suite has TEETH: the ediv/emod model it rules out fails
+    # here, but passes when restricted to positive divisors.
+    wrong = ("namespace LemmaPy\n"
+             "def PyMod (a b : Int) : Int := Int.emod a b\n"
+             "def PyFloorDiv (a b : Int) : Int := Int.ediv a b\n"
+             "end LemmaPy\n")
+    assert _errors(_suite(wrong, pairs)) > 0
+    assert _errors(_suite(wrong, [(a, b) for a, b in pairs if b > 0])) == 0
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_divmod_verifies(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    # Variable divisor: the bounds ride the prelude lemmas.
+    mb = tmp_path / "mod_bound.py"
+    mb.write_text("#@ requires p >= 2\n"
+                  "#@ ensures 0 <= result < p\n"
+                  "def mod_bound(a: int, p: int) -> int:\n"
+                  "    return a % p\n")
+    assert verify_structured(mb, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # Constant divisors: bridged, so omega does real arithmetic.
+    par = tmp_path / "parity.py"
+    par.write_text("#@ ensures result == (n % 2 == 0)\n"
+                   "def is_even(n: int) -> bool:\n"
+                   "    return n % 2 == 0\n"
+                   "\n"
+                   "#@ requires n >= 0\n"
+                   "#@ ensures result * 2 <= n\n"
+                   "#@ ensures n < result * 2 + 2\n"
+                   "def half(n: int) -> int:\n"
+                   "    return n // 2\n")
+    assert verify_structured(par, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # A false division spec still fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ requires p >= 2\n"
+                   "#@ ensures result < p - 1\n"
+                   "def f(a: int, p: int) -> int:\n"
+                   "    return a % p\n")
+    assert verify_structured(bad, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_index_free_invariant_still_proves(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    # Regression: the fuel-cast rewrite was the one UNGUARDED step in the
+    # generated script. An invariant that never mentions the loop index
+    # leaves no `↑bound.toNat` in the instantiated hypothesis once the
+    # invariant unfolds, so the rewrite failed and took a TRUE spec down
+    # with it. Every generated step is guarded now.
+    src = tmp_path / "grow.py"
+    src.write_text("#@ requires n >= 0\n"
+                   "#@ ensures result >= 0\n"
+                   "def grow(n: int) -> int:\n"
+                   "    c = 0\n"
+                   "    for i in range(n):\n"
+                   "        #@ invariant c >= 0\n"
+                   "        c = c + 2\n"
+                   "    return c\n")
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_division_inside_a_loop_verifies(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    # The loop machinery and the division machinery compose: the mod
+    # bounds are supplied in LOOP context, where the induction theorem
+    # carries the invariant but not the function's `requires` (so only
+    # constant divisors qualify there).
+    src = tmp_path / "count_mod.py"
+    src.write_text("#@ requires n >= 0\n"
+                   "#@ ensures result >= 0\n"
+                   "def count_mod(n: int) -> int:\n"
+                   "    c = 0\n"
+                   "    for i in range(n):\n"
+                   "        #@ invariant c >= 0\n"
+                   "        c = c + i % 3\n"
+                   "    return c\n")
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The divisor obligation is enforced inside the loop too, where the
+    # theorem-level site scan cannot reach (it would read the loop index).
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ requires n >= 0\n"
+                   "#@ ensures result >= 0\n"
+                   "def f(n: int, d: int) -> int:\n"
+                   "    c = 0\n"
+                   "    for i in range(n):\n"
+                   "        #@ invariant c >= 0\n"
+                   "        c = c + i % d\n"
+                   "    return c\n")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(bad.read_text())
+
+
+def test_while_loops_are_refused_with_their_own_message():
+    # A `while` function carries invariants that no supported loop shape
+    # claims. Reporting "this function has no loop" would send the reader
+    # hunting for a missing `for`, so the unsupported construct is named.
+    src = ("#@ requires n >= 0\n"
+           "#@ ensures result >= 0\n"
+           "def isqrt(n: int) -> int:\n"
+           "    r = 0\n"
+           "    while (r + 1) * (r + 1) <= n:\n"
+           "        #@ invariant 0 <= r <= n\n"
+           "        #@ decreases n - r\n"
+           "        r = r + 1\n"
+           "    return r\n")
+    with pytest.raises(EncodeError, match="`while` loops are outside"):
+        _encode(src)
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against

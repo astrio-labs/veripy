@@ -19,8 +19,8 @@ failure mapped to the ensures clause.
 Everything outside the slice is REJECTED loudly with the shared
 `EncodeError` (kind `conformance` in the payload): loops, non-`int`
 params, parameter reassignment, `#@ proof` clauses (the sidecar channel
-lands in P3), and operators this slice does not model (`//`, `%`, `**`
-arrive with the P2 prelude growth). The Dafny fragment is the outer
+lands in P3), and operators this slice does not model (`**` arrives with
+further P2 prelude growth). The Dafny fragment is the outer
 bound; this slice is a strict subset of it, and a construct the Dafny
 backend accepts but this one does not must fail loudly rather than
 verify vacuously.
@@ -41,6 +41,14 @@ induction theorem, and `list[int]` parameters arrive with `len`/`sum`
 (the prelude's PySum, with a PROVED prefix-sum lemma pack), indexing
 where in-bounds is guaranteed by construction (`_ListCtx`), and
 `sum(xs[:i])` prefix sums in invariants.
+
+`//` and `%` model Python EXACTLY (floor division, divisor-signed
+remainder — `Int.fdiv`/`Int.fmod`, never Lean's own `/` and `%`, which
+are ediv/emod and agree only for positive divisors). Because Python
+RAISES on a zero divisor while the Lean models are total, every divisor
+carries a well-formedness obligation discharged from the contract, and
+the generated proof supplies the bounds omega cannot derive for a
+variable divisor.
 """
 
 from __future__ import annotations
@@ -139,6 +147,19 @@ class _ListCtx:
     # violating the requires are outside the contract (Python raises,
     # the runtime gate rejects, the theorem assumes the hypothesis).
     min_len: dict[str, int] | None = None
+    # Contract-derived positivity, the same kind of fact as `min_len`: names
+    # a top-level `requires` conjunct proves are > 0. Python's `//` and `%`
+    # RAISE on a zero divisor while Lean's fdiv/fmod return 0, so a divisor
+    # that is not provably nonzero would let Lean certify a program CPython
+    # cannot run. This slice discharges that obligation only via positivity,
+    # which is also the domain where the prelude's omega bridges apply.
+    pos_names: frozenset[str] = frozenset()
+
+    def positive(self, e: "ast.expr") -> bool:
+        if isinstance(e, ast.Constant) and isinstance(e.value, int) \
+                and not isinstance(e.value, bool):
+            return e.value > 0
+        return isinstance(e, ast.Name) and e.id in self.pos_names
 
     def safe(self, idx: str) -> str | None:
         return self.safe_idx.get(idx)
@@ -189,6 +210,18 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
         a = _int_expr(e.left, names, line, result, rename, lc)
         b = _int_expr(e.right, names, line, result, rename, lc)
         return f"({a} {_ARITH[type(e.op)]} {b})"
+    if isinstance(e, ast.BinOp) and isinstance(e.op, (ast.FloorDiv, ast.Mod)):
+        if not lc.positive(e.right):
+            raise _reject(
+                "the divisor of `//`/`%` must be a positive literal or a "
+                "parameter a top-level `requires` proves positive — Python "
+                "RAISES on a zero divisor while Lean's total fdiv/fmod "
+                "return 0, so an undischarged divisor obligation would "
+                "certify a program CPython cannot run", line)
+        a = _int_expr(e.left, names, line, result, rename, lc)
+        b = _int_expr(e.right, names, line, result, rename, lc)
+        op = "PyFloorDiv" if isinstance(e.op, ast.FloorDiv) else "PyMod"
+        return f"(LemmaPy.{op} {a} {b})"
     if isinstance(e, ast.Subscript) and isinstance(e.value, ast.Name) \
             and e.value.id in lc.lists:
         if isinstance(e.slice, ast.Slice):
@@ -340,7 +373,7 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         safe[v] = hi_arg.args[0].id
     body_lc = _ListCtx(lc.lists, safe,
                        None if lc.take_idx == v else lc.take_idx,
-                       lc.scaffold, lc.min_len)
+                       lc.scaffold, lc.min_len, lc.pos_names)
     # Two capture hazards at the binder, both measured classes:
     # 1. The theorem's rename map (param named after its own function)
     #    must NOT apply under a binder that reuses the renamed name —
@@ -645,6 +678,68 @@ def _requires_min_len(spec_fn: FunctionSpec,
         except SyntaxError:
             continue  # the clause parser rejects it loudly later
     return bounds
+
+
+def _requires_positive(spec_fn: FunctionSpec) -> frozenset[str]:
+    """Names a TOP-LEVEL `requires` conjunct proves strictly positive
+    (`p > c` for c >= 0, `p >= c` for c >= 1, and the mirrored forms).
+    Top-level only: under a `not` or an `or` the comparison stops being
+    a guarantee — the same discipline as the length scan."""
+    out: set[str] = set()
+
+    def _conjunct(e: ast.expr) -> None:
+        if isinstance(e, ast.BoolOp) and isinstance(e.op, ast.And):
+            for v in e.values:
+                _conjunct(v)
+            return
+        if not (isinstance(e, ast.Compare) and len(e.ops) == 1):
+            return
+        left, op, right = e.left, e.ops[0], e.comparators[0]
+        if isinstance(left, ast.Name) and isinstance(right, ast.Constant) \
+                and isinstance(right.value, int) \
+                and not isinstance(right.value, bool):
+            if (isinstance(op, ast.Gt) and right.value >= 0) \
+                    or (isinstance(op, ast.GtE) and right.value >= 1):
+                out.add(left.id)
+        if isinstance(right, ast.Name) and isinstance(left, ast.Constant) \
+                and isinstance(left.value, int) \
+                and not isinstance(left.value, bool):
+            if (isinstance(op, ast.Lt) and left.value >= 0) \
+                    or (isinstance(op, ast.LtE) and left.value >= 1):
+                out.add(right.id)
+
+    for clause in spec_fn.by_kind("requires"):
+        text = clause.desugared if clause.desugared is not None else clause.raw
+        try:
+            _conjunct(ast.parse(text, mode="eval").body)
+        except SyntaxError:
+            continue  # the clause parser rejects it loudly later
+    return frozenset(out)
+
+
+def _divmod_sites(fn: ast.FunctionDef,
+                  spec_fn: FunctionSpec) -> list[tuple[ast.expr, ast.expr, bool]]:
+    """Every `//`/`%` node in the body and the spec clauses, as
+    (dividend, divisor, is_mod). The generated proof supplies each site's
+    positivity fact and mod bounds, because omega reasons about `%`
+    natively ONLY for constant divisors (measured)."""
+    trees: list[ast.AST] = [fn]
+    for kind in ("requires", "ensures", "invariant"):
+        for clause in spec_fn.by_kind(kind):
+            text = clause.desugared if clause.desugared is not None \
+                else clause.raw
+            try:
+                trees.append(ast.parse(text, mode="eval").body)
+            except SyntaxError:
+                continue
+    sites: list[tuple[ast.expr, ast.expr, bool]] = []
+    for tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.BinOp) \
+                    and isinstance(node.op, (ast.FloorDiv, ast.Mod)):
+                sites.append((node.left, node.right,
+                              isinstance(node.op, ast.Mod)))
+    return sites
 
 
 def _loop_invariants(spec_fn: FunctionSpec,
@@ -1070,7 +1165,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         lists0 = frozenset(p for p, t in ptypes.items()
                            if t == "List Int")
         lc0 = _ListCtx(lists0, {}, None,
-                       min_len=_requires_min_len(spec_fn, lists0))
+                       min_len=_requires_min_len(spec_fn, lists0),
+                       pos_names=_requires_positive(spec_fn))
         ret = fn.returns
         if not (isinstance(ret, ast.Name) and ret.id in ("int", "bool")):
             raise _reject("return type must be `int` or `bool` in this "
@@ -1103,7 +1199,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         loop = _split_loop(fn, spec_fn)
         if loop is None and spec_fn.by_kind("invariant"):
             # No loop claims it, so it would be silently dropped — the
-            # Dafny backend's unclaimed-clause error, mirrored.
+            # Dafny backend's unclaimed-clause error, mirrored. A `while`
+            # gets its OWN message: saying "this function has no loop"
+            # about a function whose loop is simply unsupported sends the
+            # reader hunting for a missing `for`.
+            if any(isinstance(n, ast.While) for n in ast.walk(fn)):
+                raise _reject(
+                    "`while` loops are outside this slice — for-range "
+                    "accumulator and search loops only (while arrives "
+                    "with the termination-measure machinery)", fn.lineno)
             raise _reject("`invariant` must sit at the top of a loop "
                           "body, and this function has no loop",
                           spec_fn.by_kind("invariant")[0].line)
@@ -1147,9 +1251,11 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     and b.args[0].id in lc0.lists:
                 safe[loop.index] = b.args[0].id
             step_lc = _ListCtx(lc0.lists, safe, None,
-                               min_len=lc0.min_len)
+                               min_len=lc0.min_len,
+                               pos_names=lc0.pos_names)
             inv_lc = _ListCtx(lc0.lists, dict(safe), loop.index,
-                              scaffold=True, min_len=lc0.min_len)
+                              scaffold=True, min_len=lc0.min_len,
+                              pos_names=lc0.pos_names)
             iv, av = _ident(loop.index), _ident(loop.acc)
             acc_ty = "Bool" if loop.acc_bool else "Int"
             # The generated fuel and induction binders are plain
@@ -1244,18 +1350,45 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                       "      all_goals (try simp_all)",
                       "      all_goals (try (congr 2 <;> omega))",
                       "      all_goals (first | omega | trivial)"]
+            # Division facts for sites INSIDE the loop. Only constant
+            # divisors: the induction theorem carries the invariant and
+            # the fuel bound, not the function's `requires`, so a
+            # variable divisor's positivity is not provable here (that
+            # stays honest incompleteness rather than a false proof).
+            div_facts: list[str] = []
+            for di, (dnum, dden, dis_mod) in enumerate(
+                    _divmod_sites(fn, spec_fn)):
+                if not (dis_mod and isinstance(dden, ast.Constant)
+                        and isinstance(dden.value, int)
+                        and dden.value > 0):
+                    continue
+                try:
+                    dn = _int_expr(dnum, body_names, loop.for_line,
+                                   lc=step_lc)
+                except EncodeError:
+                    continue
+                div_facts.append(
+                    f"      have hlo{di} := LemmaPy.PyMod_nonneg "
+                    f"{dn} {dden.value} (by omega)")
+                div_facts.append(
+                    f"      have hhi{di} := LemmaPy.PyMod_lt "
+                    f"{dn} {dden.value} (by omega)")
             emit(f"  intro {fuel}", loop.inv_line)
             emit(f"  induction {fuel} with", loop.inv_line)
             emit(f"  | zero =>", loop.inv_line)
             emit(f"      intro {iv} {av} h hi hb", loop.inv_line)
             emit(f"      simp only [{_ident(gen_loop)}, {_ident(gen_inv)}]"
                  f" at h ⊢", loop.inv_line)
+            for fact in div_facts:
+                emit(fact, loop.inv_line)
             emit("      all_goals (try push_cast)", loop.inv_line)
             for step_line in ladder:
                 emit(step_line, loop.inv_line)
             emit(f"  | succ {kvar} ih =>", loop.inv_line)
             emit(f"      intro {iv} {av} h hi hb", loop.inv_line)
             emit(f"      simp only [{_ident(gen_loop)}]", loop.inv_line)
+            for fact in div_facts:
+                emit(fact, loop.inv_line)
             # The inner `by` is the invariant-preservation VC. Linear
             # invariants close on omega alone; take-slice invariants
             # need (i+1).toNat unfolded to i.toNat+1 (sound under hi)
@@ -1532,8 +1665,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                  first_ensures_line)
             emit(f"  simp only [{_ident(f'{spec_fn.name}_inv')}] at hfin",
                  first_ensures_line)
-            emit(f"  rw [Int.toNat_of_nonneg "
-                 f"(by omega : (0:Int) ≤ {t_bound})] at hfin",
+            # Guarded like every other generated step: an invariant
+            # that never mentions the loop index leaves no `↑bound.toNat`
+            # in hfin once the invariant is unfolded, and an unguarded
+            # `rw` then fails the whole proof (measured: a true spec
+            # whose invariant was index-free failed as postcondition).
+            emit(f"  all_goals (try rw [Int.toNat_of_nonneg "
+                 f"(by omega : (0:Int) ≤ {t_bound})] at hfin)",
                  first_ensures_line)
             # For a `range(len(xs))` loop the invariant lands at
             # `take (0 + ↑xs.length).toNat`: normalize the casts and
@@ -1548,6 +1686,46 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # fixed script could otherwise witness — the invariant
             # induction carries the witness through the loop).
             emit("  all_goals (try (exact hfin))", first_ensures_line)
+        # Division sites: supply the positivity fact each one's
+        # well-formedness rests on, the mod bounds omega cannot derive for
+        # a VARIABLE divisor, and the bridges to Lean's own `/` and `%`
+        # (which omega does reason about natively, for constant divisors).
+        seen_div: dict[str, str] = {}
+        for si, (num, den, is_mod) in enumerate(_divmod_sites(fn, spec_fn)):
+            try:
+                den_t = _int_expr(den, names, first_ensures_line,
+                                  rename=rename, lc=lc0)
+                num_t = _int_expr(num, names, first_ensures_line,
+                                  result=app, rename=rename, lc=lc0)
+            except EncodeError:
+                # The site reads a name bound INSIDE the loop (the index
+                # or the accumulator), which theorem context does not
+                # bind. Skipping costs proof hints, never safety: the
+                # divisor obligation is enforced where the expression is
+                # actually translated, under the loop's own context.
+                continue
+            hname = seen_div.get(den_t)
+            if hname is None:
+                hname = f"hdpos{len(seen_div)}"
+                seen_div[den_t] = hname
+                emit(f"  have {hname} : (0:Int) < {den_t} := by omega",
+                     first_ensures_line)
+            if is_mod:
+                emit(f"  have hdlo{si} := LemmaPy.PyMod_nonneg "
+                     f"{num_t} {den_t} {hname}", first_ensures_line)
+                emit(f"  have hdhi{si} := LemmaPy.PyMod_lt "
+                     f"{num_t} {den_t} {hname}", first_ensures_line)
+            # Bridge ONLY for a constant divisor. omega reasons about
+            # `%` and `/` natively there, so the rewrite unlocks real
+            # arithmetic. For a VARIABLE divisor omega treats `a % p` as
+            # an opaque atom either way (measured), and rewriting the
+            # goal while the bound hypotheses stay in PyMod form splits
+            # one atom into two unrelated ones — which is exactly how
+            # this first failed.
+            if isinstance(den, ast.Constant):
+                bridge = "PyMod_pos" if is_mod else "PyFloorDiv_pos"
+                emit(f"  all_goals (try rw [LemmaPy.{bridge} {num_t} "
+                     f"{den_t} {hname}])", first_ensures_line)
         # Prelude definitions are opaque to omega — a goal containing
         # LemmaPy.PyAbs is unprovable until it unfolds to its
         # if-then-else (measured: every abs()-using module failed as
