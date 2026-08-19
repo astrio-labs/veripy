@@ -1551,6 +1551,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     f"in this function — Python treats it as local "
                     f"throughout (UnboundLocalError here), so the call "
                     f"cannot mean the builtin", node.lineno)
+            if isinstance(node, (ast.Break, ast.Continue)):
+                raise _reject(
+                    "break/continue are outside the Lean slice — the "
+                    "Dafny backend admits them; this slice's fuel "
+                    "recursion has no continue that still advances the "
+                    "index", node.lineno)
         # The same question in SPEC clauses, which are comments and so
         # are invisible to the walk above. A clause calling a name the
         # function also binds as a local is ambiguous — the builtin at

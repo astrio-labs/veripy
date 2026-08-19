@@ -9,7 +9,9 @@ rejection):
   including negative indices, normalized Python-exactly via PyIndex)
 - statements: assignment (incl. parallel tuple), if/elif/else, while,
   `for i in range(...)` (lowered to while with an auto bounds invariant),
-  return
+  `for x in xs` (snapshot + hidden index), break/continue (continue on a
+  desugared for emits the hidden-index step first — a bare Dafny
+  `continue` would skip it and spin), return, assert
 - expressions: arithmetic with PyFloorDiv/PyMod (INT operands only, except
   `+` which also concatenates two lists or two strs), comparisons
   (chained), and/or/not, len/min/max/abs, indexing, conditional expressions
@@ -536,6 +538,10 @@ class _MethodEncoder:
         # binders): indexed bare, keeping spec and body terms trigger-
         # compatible; everything else goes through PyIndex.
         self.nonneg: set[str] = set()
+        # Innermost loop first. `continue` on a desugared for must run the
+        # hidden-index step BEFORE Dafny's `continue`, or the loop spins
+        # (the increment lives after the body in the while lowering).
+        self._loops: list[tuple[str, ...]] = []
 
     # -- naming ---------------------------------------------------------------
 
@@ -1488,6 +1494,16 @@ class _MethodEncoder:
                 ast.copy_location(synthetic, stmt)
                 ast.fix_missing_locations(synthetic)
                 self.emit(f"{indent}{self._mangle(name)} := {self.expr(synthetic)};", stmt.lineno)
+            case ast.Break():
+                if not self._loops:
+                    raise _err(stmt, "`break` is only meaningful inside a loop")
+                self.emit(f"{indent}break;", stmt.lineno)
+            case ast.Continue():
+                if not self._loops:
+                    raise _err(stmt, "`continue` is only meaningful inside a loop")
+                for step in self._loops[-1]:
+                    self.emit(f"{indent}{step}", stmt.lineno)
+                self.emit(f"{indent}continue;", stmt.lineno)
             case ast.Return(value=value):
                 if value is None:
                     raise _err(stmt, "bare `return` is outside the slice-1 encoder")
@@ -1522,7 +1538,9 @@ class _MethodEncoder:
                 self.emit(f"{indent}while {self._bool_ctx(test)}", stmt.lineno)
                 self._loop_clauses(stmt, indent)
                 self.emit(f"{indent}{{")
+                self._loops.append(())
                 self.block(body, indent + "  ")
+                self._loops.pop()
                 self.emit(f"{indent}}}")
                 # The body may run zero or many times: keep only names owned
                 # both before the loop and at the end of its body.
@@ -1563,7 +1581,8 @@ class _MethodEncoder:
             case _:
                 raise _err(stmt, f"statement {type(stmt).__name__} is outside the slice-1 encoder "
                                  f"-- admitted: assignment, if/else, while, for over "
-                                 f"range/list, assert, return, append; see docs/SEMANTICS.md")
+                                 f"range/list, break, continue, assert, return, append; "
+                                 f"see docs/SEMANTICS.md")
 
     def _loop_clauses(self, loop: ast.While | ast.For, indent: str, extra: tuple[str, ...] = ()) -> None:
         for inv in extra:
@@ -1587,8 +1606,6 @@ class _MethodEncoder:
         if var in self.params:
             raise _err(stmt, "the loop index may not shadow a parameter (parameters are immutable)")
         for n in ast.walk(ast.Module(body=stmt.body, type_ignores=[])):
-            if isinstance(n, (ast.Break, ast.Continue)):
-                raise _err(n, "break/continue inside range-for is outside the slice-1 encoder")
             if isinstance(n, ast.Name) and n.id == var and isinstance(n.ctx, ast.Store):
                 raise _err(n, "reassigning the loop index is outside the fragment")
         if len(it.args) == 1:
@@ -1614,7 +1631,9 @@ class _MethodEncoder:
         self.emit(f"{indent}while {mv} < {hi}", stmt.lineno)
         self._loop_clauses(stmt, indent, extra=(f"{lo} <= {mv} <= PyMax({lo}, {hi})",))
         self.emit(f"{indent}{{")
+        self._loops.append((f"{mv} := {mv} + 1;",))
         self.block(stmt.body, indent + "  ")
+        self._loops.pop()
         self.emit(f"{indent}  {mv} := {mv} + 1;")
         self.emit(f"{indent}}}")
         self.owned &= pre_owned
@@ -1639,8 +1658,6 @@ class _MethodEncoder:
         if self._declared(var):
             raise _err(stmt, "the for-each target may not reuse an existing variable")
         for n in ast.walk(ast.Module(body=stmt.body, type_ignores=[])):
-            if isinstance(n, (ast.Break, ast.Continue)):
-                raise _err(n, "break/continue inside for-each is outside the slice encoder")
             if isinstance(n, ast.Name) and n.id == var and isinstance(n.ctx, ast.Store):
                 raise _err(n, "reassigning the loop target is outside the fragment")
         for clause in self._invariants_by_loop.get(id(stmt), []):
@@ -1677,10 +1694,12 @@ class _MethodEncoder:
                 self.frozen.add(n.id)
         self.scopes.append({var})
         self.types[var] = it_type[4:-1]
+        self._loops.append((f"{idx} := {idx} + 1;",))
         try:
             for body_stmt in stmt.body:
                 self.stmt(body_stmt, indent + "  ")
         finally:
+            self._loops.pop()
             self.scopes.pop()
             self.frozen -= frozen_added
         self.owned &= pre_owned

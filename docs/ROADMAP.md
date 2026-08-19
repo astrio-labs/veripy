@@ -59,7 +59,7 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 ### Close the design catalog already written ([ARCHITECTURE.md §7](ARCHITECTURE.md))
 
 - [ ] Tuples / multiple returns / unpacking with arity VCs
-- [ ] `break` / `continue`
+- [x] `break` / `continue`
 - [ ] Full comprehensions + eager `all` / `any` / `sum` genexp folds
       (partial today)
 - [ ] `for x in xs` snapshot iteration as first-class (partial today)

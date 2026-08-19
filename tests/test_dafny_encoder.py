@@ -1422,3 +1422,96 @@ def test_map_line_refuses_to_answer_past_the_generated_region():
     assert _map_line(line_map, 99, 30) is None
     # Unbounded callers keep the old behaviour.
     assert _map_line(line_map, 99) == 7
+
+
+def test_while_break_and_continue_lower_directly():
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    i = 0\n"
+        "    while i < n:\n"
+        "        #@ invariant 0 <= i <= n\n"
+        "        #@ decreases n - i\n"
+        "        if False:\n"
+        "            continue\n"
+        "        if False:\n"
+        "            break\n"
+        "        i = i + 1\n"
+        "    return i\n"
+    )
+    dfy = _encode(src)
+    assert "continue;" in dfy
+    assert "break;" in dfy
+    lines = dfy.splitlines()
+    cont = next(i for i, ln in enumerate(lines) if ln.strip() == "continue;")
+    # A while has no hidden index; continue must not invent a step.
+    assert ":= " not in lines[cont - 1]
+
+
+def test_range_for_continue_advances_the_index_before_continue():
+    # The range-for lowering puts `i := i + 1` AFTER the body. A bare
+    # Dafny `continue` would skip it and spin. The encoder must emit the
+    # step, then continue.
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def skip_evens(n: int) -> int:\n"
+        "    s = 0\n"
+        "    for i in range(n):\n"
+        "        #@ invariant 0 <= i <= n\n"
+        "        #@ invariant s >= 0\n"
+        "        if i % 2 == 0:\n"
+        "            continue\n"
+        "        s = s + i\n"
+        "    return s\n"
+    )
+    dfy = _encode(src)
+    lines = dfy.splitlines()
+    cont = next(i for i, ln in enumerate(lines) if ln.strip() == "continue;")
+    assert lines[cont - 1].strip() == "i := i + 1;"
+    assert sum(1 for ln in lines if ln.strip() == "i := i + 1;") >= 2
+
+
+def test_foreach_continue_advances_the_snapshot_index():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def skip_neg(xs: list[int]) -> int:\n"
+        "    s = 0\n"
+        "    for x in xs:\n"
+        "        #@ invariant s >= 0\n"
+        "        if x < 0:\n"
+        "            continue\n"
+        "        s = s + x\n"
+        "    return s\n"
+    )
+    dfy = _encode(src)
+    lines = dfy.splitlines()
+    cont = next(i for i, ln in enumerate(lines) if ln.strip() == "continue;")
+    prev = lines[cont - 1].strip()
+    assert prev.endswith("+ 1;") and ":=" in prev
+
+
+def test_nested_while_continue_does_not_step_the_enclosing_for():
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def f(n: int) -> int:\n"
+        "    s = 0\n"
+        "    for i in range(n):\n"
+        "        #@ invariant 0 <= i <= n\n"
+        "        #@ invariant s >= 0\n"
+        "        j = 0\n"
+        "        while j < 1:\n"
+        "            #@ invariant 0 <= j <= 1\n"
+        "            #@ decreases 1 - j\n"
+        "            if False:\n"
+        "                continue\n"
+        "            j = j + 1\n"
+        "        s = s + i\n"
+        "    return s\n"
+    )
+    dfy = _encode(src)
+    lines = dfy.splitlines()
+    cont = next(i for i, ln in enumerate(lines) if ln.strip() == "continue;")
+    assert "i := i + 1;" not in lines[cont - 1]

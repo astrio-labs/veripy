@@ -1807,3 +1807,22 @@ def test_end_to_end_false_spec_fails_as_postcondition(tmp_path):
     failure = payload["failures"][0]
     assert failure["kind"] == "postcondition"
     assert failure["py_line"] == 1  # the ensures clause, not Lean plumbing
+
+
+def test_lean_rejects_break_and_continue_loudly():
+    # The Dafny backend admits these; Lean's fuel-recursion lowering has
+    # no continue that still advances the index, so they must fail here
+    # rather than verify vacuously.
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def f(n: int) -> int:\n"
+        "    s = 0\n"
+        "    for i in range(n):\n"
+        "        #@ invariant s >= 0\n"
+        "        continue\n"
+        "        s = s + 1\n"
+        "    return s\n"
+    )
+    with pytest.raises(EncodeError, match="break/continue are outside the Lean slice"):
+        _encode(src)
