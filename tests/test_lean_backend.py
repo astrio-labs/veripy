@@ -1366,6 +1366,37 @@ def test_shadowed_builtins_do_not_become_propositions():
     with pytest.raises(EncodeError, match="shadowed by a parameter"):
         _encode(shadow_all)
 
+    # A spec clause calling a name the function also binds as a LOCAL is
+    # ambiguous — the builtin at spec scope, that binding inside the
+    # function. Spec clauses are comments, so the body-side
+    # assigned-anywhere scan never saw them; they are scanned now.
+    local_shadow = ("#@ ensures bool(result > 0) == bool(x > 0)\n"
+                    "def f(x: int) -> int:\n"
+                    "    bool = 1\n"
+                    "    return x + bool - 1\n")
+    with pytest.raises(EncodeError, match="also binds as a local"):
+        _encode(local_shadow)
+
+    # The same rule covers every encoder builtin, not just `bool`.
+    local_sum = ("#@ ensures result == sum(xs)\n"
+                 "def f(xs: list[int]) -> int:\n"
+                 "    sum = 0\n"
+                 "    return sum\n")
+    with pytest.raises(EncodeError, match="also binds as a local"):
+        _encode(local_sum)
+
+    # ...but a local merely NAMED after a builtin, never called in the
+    # spec, is ordinary Python and must keep working.
+    benign = ("#@ requires n >= 0\n"
+              "#@ ensures result >= 0\n"
+              "def f(n: int) -> int:\n"
+              "    sum = 0\n"
+              "    for i in range(n):\n"
+              "        #@ invariant sum >= 0\n"
+              "        sum = sum + 1\n"
+              "    return sum\n")
+    _encode(benign)
+
     # ...while the unshadowed spelling still yields the iff.
     ok = ("#@ ensures (x > 0) <==> (y > 0)\n"
           "def f(x: int, y: int) -> int:\n"

@@ -1438,6 +1438,30 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     f"in this function — Python treats it as local "
                     f"throughout (UnboundLocalError here), so the call "
                     f"cannot mean the builtin", node.lineno)
+        # The same question in SPEC clauses, which are comments and so
+        # are invisible to the walk above. A clause calling a name the
+        # function also binds as a local is ambiguous — the builtin at
+        # spec scope, that binding inside the function — and the
+        # encoder refuses ambiguity rather than picking a reading.
+        for kind in ("requires", "ensures", "invariant", "decreases"):
+            for clause in spec_fn.by_kind(kind):
+                text = clause.desugared if clause.desugared is not None \
+                    else clause.raw
+                try:
+                    tree = ast.parse(text, mode="eval").body
+                except SyntaxError:
+                    continue        # reported precisely elsewhere
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Call) \
+                            and isinstance(node.func, ast.Name) \
+                            and node.func.id in assigned_anywhere:
+                        raise _reject(
+                            f"the {kind} clause calls {node.func.id!r}, "
+                            f"which this function also binds as a local "
+                            f"— the call is ambiguous (the builtin at "
+                            f"spec scope, that binding inside the "
+                            f"function), so it is refused rather than "
+                            f"guessed", clause.line)
 
         binders = " ".join(f"({_ident(p)} : {ptypes[p]})" for p in params)
         loop = _split_loop(fn, spec_fn)
