@@ -397,7 +397,7 @@ def test_loop_shape_rejections():
                 "        #@ invariant s == i\n"
                 "        s = s + 1\n"
                 "    return s >= 0\n")
-    with pytest.raises(EncodeError, match="return `int`"):
+    with pytest.raises(EncodeError, match="match its return type"):
         _encode(boolloop)
 
 
@@ -577,6 +577,288 @@ def test_end_to_end_lists_verify(tmp_path):
                                     "result == sum(xs) + 1"))
     payload = verify_structured(bad, tmp_path / "o4", backend="lean")
     assert payload["status"] == "failed"
+
+
+BELOW_T = ("#@ ensures result == all(xs[k] < t for k in range(len(xs)))\n"
+           "def below_threshold(xs: list[int], t: int) -> bool:\n"
+           "    b = True\n"
+           "    for i in range(len(xs)):\n"
+           "        #@ invariant b == all(xs[k] < t for k in range(i))\n"
+           "        b = b and (xs[i] < t)\n"
+           "    return b\n")
+
+CONTAINS = ("#@ ensures result == any(xs[k] == v for k in range(len(xs)))\n"
+            "def contains(xs: list[int], v: int) -> bool:\n"
+            "    b = False\n"
+            "    for i in range(len(xs)):\n"
+            "        #@ invariant b == any(xs[k] == v for k in range(i))\n"
+            "        b = b or (xs[i] == v)\n"
+            "    return b\n")
+
+
+def test_bool_loops_emit_bool_fuel_recursion_and_iff_invariant():
+    # P2 slice 3: True/False-initialized accumulators with `and`/`or`
+    # steps compile to Bool fuel recursion; the invariant's
+    # `b == all(...)` rides the SAME Bool/Prop bridge as a bool
+    # ensures ((b = true) ↔ ∀ ...), and the induction theorem's
+    # inductive step is a generated constructor script that splits the
+    # fresh index off the quantified prefix.
+    enc = _encode(BELOW_T)
+    assert ("def «below_threshold_loop» («xs» : List Int) («t» : Int) : "
+            "Nat → Int → Bool → Bool") in enc.lean_source
+    assert "(«b» && (decide" in enc.lean_source
+    assert "((«b» = true) ↔ (∀ «k» : Int," in enc.lean_source
+    assert "Bool.and_eq_true" in enc.lean_source
+    assert "rintro ⟨hb, hlast⟩" in enc.lean_source
+
+    enc2 = _encode(CONTAINS)
+    assert "(«b» || (decide" in enc2.lean_source
+    assert "((«b» = true) ↔ (∃ «k» : Int," in enc2.lean_source
+    assert "Bool.or_eq_true" in enc2.lean_source
+    # The invariant's binder domain is range(i) — the index PREFIX, in
+    # bounds only as proof scaffolding (never executed), which is what
+    # the scaffold mode of the list context licenses.
+    assert "«k» < «i»" in enc2.lean_source
+
+
+def test_bool_loop_misuse_is_refused():
+    head = ("#@ ensures result == all(xs[k] < t for k in range(len(xs)))\n"
+            "def f(xs: list[int], t: int) -> bool:\n")
+    cases = [
+        # step must be `acc and P` / `acc or P`
+        (head + "    b = True\n    for i in range(len(xs)):\n"
+                "        #@ invariant b == all(xs[k] < t for k in range(i))\n"
+                "        b = xs[i] < t\n    return b\n",
+         "updates as"),
+        # the accumulator appears only as the left operand
+        (head + "    b = True\n    for i in range(len(xs)):\n"
+                "        #@ invariant b == all(xs[k] < t for k in range(i))\n"
+                "        b = b and (b or xs[i] < t)\n    return b\n",
+         "left operand"),
+        # bool loops return the bare accumulator
+        (head + "    b = True\n    for i in range(len(xs)):\n"
+                "        #@ invariant b == all(xs[k] < t for k in range(i))\n"
+                "        b = b and (xs[i] < t)\n    return b and True\n",
+         "bare accumulator"),
+        # a True-initialized accumulator in an int-returning function
+        ("#@ ensures result >= 0\ndef f(xs: list[int]) -> int:\n"
+         "    b = True\n    for i in range(len(xs)):\n"
+         "        #@ invariant b == True\n"
+         "        b = b and (xs[i] >= 0)\n    return b\n",
+         "match its return type"),
+        # `result` has no meaning in an invariant
+        (head + "    b = True\n    for i in range(len(xs)):\n"
+                "        #@ invariant result == True\n"
+                "        b = b and (xs[i] < t)\n    return b\n",
+         "only meaningful in `ensures`"),
+        # a quantifier binder shadowing the accumulator would be
+        # captured by the result substitution
+        (head + "    b = True\n    for i in range(len(xs)):\n"
+                "        #@ invariant b == all(b < t for b in range(i))\n"
+                "        b = b and (xs[i] < t)\n    return b\n",
+         "shadows the accumulator"),
+    ]
+    for src, needle in cases:
+        with pytest.raises(EncodeError, match=needle):
+            _encode(src)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_bool_loops_verify(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    # The all-accumulator (below_threshold) and or-accumulator
+    # (contains) classes both prove with the fixed cocktail. contains
+    # is the first ∃-postcondition the backend PROVES: the invariant
+    # induction carries the witness through the loop, where P1's fixed
+    # script had none to offer.
+    bt = tmp_path / "below_threshold.py"
+    bt.write_text(BELOW_T)
+    assert verify_structured(bt, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    ct = tmp_path / "contains.py"
+    ct.write_text(CONTAINS)
+    assert verify_structured(ct, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # A wrong bool spec still fails honestly (>= in the ensures, < in
+    # the loop).
+    bad = tmp_path / "bad.py"
+    bad.write_text(BELOW_T.replace("all(xs[k] < t for k in range(len(xs)))",
+                                   "all(xs[k] >= t for k in range(len(xs)))"))
+    assert verify_structured(bad, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
+
+
+EARLY_BT = ("#@ ensures result == "
+            "all(l[k] < t for k in range(len(l)))\n"
+            "def below_threshold(l: list[int], t: int) -> bool:\n"
+            "    for i in range(len(l)):\n"
+            "        #@ invariant all(l[k] < t for k in range(i))\n"
+            "        if l[i] >= t:\n"
+            "            return False\n"
+            "    return True\n")
+
+
+def test_early_return_loops_desugar_to_bool_accumulators():
+    # The HumanEval search-loop shape: `if TEST: return False` inside
+    # the loop desugars to the and-accumulator over not-TEST (return
+    # True on hit is the or-accumulator over TEST). Result-faithful:
+    # Python short-circuits, the fold runs on, and Bool and/or are
+    # monotone over a pure body. The accumulator is synthesized fresh,
+    # and the user's accumulator-free invariant becomes its iff-body.
+    enc = _encode(EARLY_BT)
+    assert "Nat → Int → Bool → Bool" in enc.lean_source
+    assert "(«b» && (decide (¬(" in enc.lean_source     # not-TEST step
+    assert "((«b» = true) ↔ (∀ «k» : Int," in enc.lean_source
+    # The omega leaves bridge `l[i] >= t` against the invariant's
+    # `l[k] < t` — same linear fact, different spelling.
+    assert "first | exact hpi | omega" in enc.lean_source
+
+    hit_true = ("#@ ensures result == "
+                "any(l[k] == v for k in range(len(l)))\n"
+                "def has(l: list[int], v: int) -> bool:\n"
+                "    for i in range(len(l)):\n"
+                "        #@ invariant all(l[k] != v for k in range(i))\n"
+                "        if l[i] == v:\n"
+                "            return True\n"
+                "    return False\n")
+    enc2 = _encode(hit_true)
+    assert "(«b» || (decide ((" in enc2.lean_source     # TEST step
+
+    # Non-literal returns and agreeing literals stay out.
+    with pytest.raises(EncodeError, match="bool literals"):
+        _encode(EARLY_BT.replace("return False", "return t > 0"))
+    with pytest.raises(EncodeError, match="must differ"):
+        _encode(EARLY_BT.replace("return True", "return False"))
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_early_return_loops_verify(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    # The frozen-corpus below_threshold (HumanEval/52) verbatim: the
+    # first corpus task whose Lean column moved from encode-error to
+    # proved by the early-return desugaring.
+    src = tmp_path / "bt.py"
+    src.write_text(EARLY_BT)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The invariant states the wrong prefix property: fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(EARLY_BT.replace("l[k] < t for k in range(i)",
+                                    "l[k] > t for k in range(i)"))
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
+MAX_ELEMENT = ("#@ requires len(l) > 0\n"
+               "#@ ensures exists i in range(len(l)) :: result == l[i]\n"
+               "#@ ensures forall i in range(len(l)) :: l[i] <= result\n"
+               "def max_element(l: list[int]) -> int:\n"
+               "    m: int = l[0]\n"
+               "    for i in range(len(l)):\n"
+               "        #@ invariant forall k in range(i) :: l[k] <= m\n"
+               "        #@ invariant exists k in range(len(l)) "
+               ":: m == l[k]\n"
+               "        if l[i] > m:\n"
+               "            m = l[i]\n"
+               "    return m\n")
+
+
+def test_max_element_class_emits_min_max_and_witness_machinery():
+    # P2 slice 5: conditional updates compile to max/min (omega-native,
+    # no ite inside the loop atom), multiple invariants conjoin, the
+    # literal init index is licensed by the requires length bound, and
+    # the fuel-bound hypothesis (i + fuel ≤ N) rides the induction so
+    # the ∃-witness survives the tail of the fold.
+    enc = _encode(MAX_ELEMENT)
+    assert "(max «m» («l».getD («i»).toNat 0))" in enc.lean_source
+    assert "(«l».getD 0 0)" in enc.lean_source            # guarded l[0]
+    assert "∧ (∃ «k» : Int," in enc.lean_source           # conjoined invs
+    assert "+ (m' : Int) ≤" in enc.lean_source            # fuel bound,
+    # freshened: the user accumulator is named m, so the machinery
+    # binder steps aside instead of colliding («m» IS m).
+    assert "by_cases hc :" in enc.lean_source             # witness step
+    assert "have hi0" in enc.lean_source
+
+    # An unguarded literal index refuses: no requires bound, no license.
+    with pytest.raises(EncodeError, match="structurally in bounds"):
+        _encode(MAX_ELEMENT.replace("#@ requires len(l) > 0\n", ""))
+
+    # A conditional update that is not max/min-shaped refuses.
+    with pytest.raises(EncodeError, match="max/min-shaped"):
+        _encode(MAX_ELEMENT.replace("if l[i] > m:", "if l[i] > 0:"))
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_max_element_verifies(tmp_path):
+    from lemmapy.agentio import verify_structured
+
+    # The frozen-corpus max_element (HumanEval/35) shape verbatim.
+    src = tmp_path / "max_element.py"
+    src.write_text(MAX_ELEMENT)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The min dual (mirrored guard) rides the same machinery.
+    mn = tmp_path / "min_element.py"
+    mn.write_text(MAX_ELEMENT
+                  .replace("max_element", "min_element")
+                  .replace("l[i] <= result", "l[i] >= result")
+                  .replace("l[k] <= m", "l[k] >= m")
+                  .replace("if l[i] > m:", "if l[i] < m:"))
+    assert verify_structured(mn, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # Flipping the guard against the invariant fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(MAX_ELEMENT.replace("if l[i] > m:", "if l[i] < m:"))
+    assert verify_structured(bad, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
+
+
+def test_invariants_must_sit_at_the_loop_head():
+    # The Dafny backend's placement rule verbatim: strictly between the
+    # `for` header and the first body statement. Multi-statement bodies
+    # (early-return, conditional update) opened a span where an
+    # invariant after an executable statement or inside a nested block
+    # would otherwise be silently adopted — source the documented
+    # fragment and the sibling backend refuse.
+    inside_if = ("#@ ensures result == "
+                 "all(l[k] < t for k in range(len(l)))\n"
+                 "def f(l: list[int], t: int) -> bool:\n"
+                 "    for i in range(len(l)):\n"
+                 "        if l[i] >= t:\n"
+                 "            #@ invariant all(l[k] < t for k in range(i))\n"
+                 "            return False\n"
+                 "    return True\n")
+    with pytest.raises(EncodeError, match="top of the loop body"):
+        _encode(inside_if)
+
+    after_stmt = ("#@ requires len(l) > 0\n"
+                  "#@ ensures forall i in range(len(l)) "
+                  ":: l[i] <= result\n"
+                  "def f(l: list[int]) -> int:\n"
+                  "    m: int = l[0]\n"
+                  "    for i in range(len(l)):\n"
+                  "        if l[i] > m:\n"
+                  "            m = l[i]\n"
+                  "        #@ invariant forall k in range(i) :: l[k] <= m\n"
+                  "    return m\n")
+    with pytest.raises(EncodeError, match="top of the loop body"):
+        _encode(after_stmt)
+
+    # ...and an invariant in a loop-free function has no loop to claim
+    # it: rejected, never silently dropped.
+    no_loop = ("#@ ensures result == x\n"
+               "def f(x: int) -> int:\n"
+               "    #@ invariant x >= 0\n"
+               "    return x\n")
+    with pytest.raises(EncodeError, match="no loop"):
+        _encode(no_loop)
 
 
 def test_duplicate_defs_are_refused_not_mispaired():
