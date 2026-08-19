@@ -1515,3 +1515,114 @@ def test_nested_while_continue_does_not_step_the_enclosing_for():
     lines = dfy.splitlines()
     cont = next(i for i, ln in enumerate(lines) if ln.strip() == "continue;")
     assert "i := i + 1;" not in lines[cont - 1]
+
+
+def test_tuple_return_and_constant_index():
+    src = (
+        "#@ ensures result[0] == x\n"
+        "#@ ensures result[1] == y\n"
+        "def pair(x: int, y: int) -> tuple[int, int]:\n"
+        "    return (x, y)\n"
+    )
+    dfy = _encode(src)
+    assert "returns (result: (int, int))" in dfy
+    assert "result := (x, y);" in dfy
+    assert "result.0 == x" in dfy
+    assert "result.1 == y" in dfy
+    assert "result[PyIndex" not in dfy
+
+
+def test_tuple_unpack_from_name_projects_components():
+    src = (
+        "#@ ensures result == p[0] + p[1]\n"
+        "def add_pair(p: tuple[int, int]) -> int:\n"
+        "    a, b = p\n"
+        "    return a + b\n"
+    )
+    dfy = _encode(src)
+    assert "var a, b := p.0, p.1;" in dfy
+    assert "a, b := p;" not in dfy
+
+
+def test_tuple_unpack_from_literal_stays_parallel():
+    src = (
+        "#@ ensures result == x + y\n"
+        "def add(x: int, y: int) -> int:\n"
+        "    a, b = x, y\n"
+        "    return a + b\n"
+    )
+    dfy = _encode(src)
+    assert "var a, b := x, y;" in dfy
+
+
+def test_tuple_negative_index_wraps():
+    src = (
+        "#@ ensures result == p[1]\n"
+        "def last(p: tuple[int, int]) -> int:\n"
+        "    return p[-1]\n"
+    )
+    dfy = _encode(src)
+    assert "result := p.1;" in dfy
+    assert "p[PyIndex" not in dfy
+
+
+def test_tuple_unpack_complex_rhs_binds_once():
+    src = (
+        "#@ ensures result == x + y\n"
+        "def add(x: int, y: int) -> int:\n"
+        "    a, b = (x + 1, y)\n"
+        "    return a + b - 1\n"
+    )
+    dfy = _encode(src)
+    # Literal RHS stays a parallel assignment of the elements, not one
+    # Dafny tuple that would fail `a, b := (x + 1, y)`.
+    assert "var a, b := (x + 1), y;" in dfy
+
+
+def test_tuple_arity_mismatch_rejected():
+    _expect_encode_error(
+        "#@ ensures result >= 0\n"
+        "def f(p: tuple[int, int, int]) -> int:\n"
+        "    a, b = p\n"
+        "    return a + b\n",
+        "arity 3",
+    )
+
+
+def test_tuple_concat_rejected():
+    _expect_encode_error(
+        "#@ ensures result[0] == 0\n"
+        "def f(a: tuple[int, int], b: tuple[int, int]) -> tuple[int, int]:\n"
+        "    return a + b\n",
+        "tuple concatenation",
+    )
+
+
+def test_tuple_one_elt_type_rejected():
+    _expect_encode_error(
+        "#@ ensures result == x\n"
+        "def f(x: int) -> tuple[int]:\n"
+        "    return (x,)\n",
+        "2–8 elements",
+    )
+
+
+def test_tuple_variable_index_rejected():
+    _expect_encode_error(
+        "#@ ensures result >= 0\n"
+        "def f(p: tuple[int, int], i: int) -> int:\n"
+        "    return p[i]\n",
+        "tuple index must be a constant",
+    )
+
+
+def test_nested_tuple_unpack_binds_projection_once():
+    src = (
+        "#@ ensures result == p[0][0] + p[0][1] + p[1]\n"
+        "def f(p: tuple[tuple[int, int], int]) -> int:\n"
+        "    a, b = p[0]\n"
+        "    return a + b + p[1]\n"
+    )
+    dfy = _encode(src)
+    assert "var tup := p.0;" in dfy
+    assert "var a, b := tup.0, tup.1;" in dfy

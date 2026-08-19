@@ -327,3 +327,33 @@ def test_guarded_corpus_imports_cleanly(tmp_path):
         mod = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(mod)
+
+
+def test_tuple_boundary_checks_arity_and_element_types(tmp_path):
+    src = (
+        "#@ ensures result[0] == p[0]\n"
+        "#@ ensures result[1] == p[1]\n"
+        "def ident(p: tuple[int, int]) -> tuple[int, int]:\n"
+        "    return p\n"
+    )
+    mod = _load_guarded(tmp_path, src)
+    assert mod.ident((1, 2)) == (1, 2)
+    with pytest.raises(TypeGuardError, match="got list"):
+        mod.ident([1, 2])
+    with pytest.raises(TypeGuardError, match="arity 2"):
+        mod.ident((1, 2, 3))
+    with pytest.raises(TypeGuardError, match=r"p\[1\]: expected int, got bool"):
+        mod.ident((1, True))
+
+
+def test_tuple_copy_in_copies_nested_lists(tmp_path):
+    src = (
+        "#@ ensures len(result) == len(p[0])\n"
+        "def fst(p: tuple[list[int], int]) -> list[int]:\n"
+        "    return p[0]\n"
+    )
+    mod = _load_guarded(tmp_path, src)
+    xs = [1]
+    out = mod.fst((xs, 2))
+    out.append(9)
+    assert xs == [1]

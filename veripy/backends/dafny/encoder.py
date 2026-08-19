@@ -6,7 +6,9 @@ hard error, not a warning. There is no fragment IR — output is Dafny.
 Scope (deliberately small; everything else is a detected, explained
 rejection):
 - types: int, bool, str, list[int|str|bool] (reads only: len, indexing —
-  including negative indices, normalized Python-exactly via PyIndex)
+  including negative indices, normalized Python-exactly via PyIndex),
+  tuple[T, ...] of 2–8 fragment elements (Dafny `(T, U, …)`; index is a
+  constant, unpacking is arity-checked)
 - statements: assignment (incl. parallel tuple), if/elif/else, while,
   `for i in range(...)` (lowered to while with an auto bounds invariant),
   `for x in xs` (snapshot + hidden index), break/continue (continue on a
@@ -386,14 +388,24 @@ def _dafny_type(ann: ast.expr | None, where: ast.AST) -> str:
             return f"seq<{_dafny_type(inner, where)}>"
         case ast.Subscript(value=ast.Name(id="Optional"), slice=inner):
             return f"PyOpt<{_dafny_type(inner, where)}>"
+        case ast.Subscript(value=ast.Name(id=("tuple" | "Tuple")), slice=sl):
+            elts = sl.elts if isinstance(sl, ast.Tuple) else [sl]
+            if not (2 <= len(elts) <= 8):
+                raise _err(where, (
+                    "tuple types in the fragment have 2–8 elements "
+                    "(a 1-tuple is just the element; longer tuples are "
+                    "outside the slice encoder)"
+                ))
+            parts = [_dafny_type(e, where) for e in elts]
+            return "(" + ", ".join(parts) + ")"
         case ast.BinOp(left=left, op=ast.BitOr(), right=ast.Constant(value=None)):
             return f"PyOpt<{_dafny_type(left, where)}>"
         case ast.BinOp(left=ast.Constant(value=None), op=ast.BitOr(), right=right):
             return f"PyOpt<{_dafny_type(right, where)}>"
         case _:
             raise _err(where, f"type {ast.unparse(ann)!r} is outside the slice-1 encoder "
-                       f"-- fragment types are int, bool, str, list[T], and "
-                       f"Optional[T] / T | None")
+                       f"-- fragment types are int, bool, str, list[T], "
+                       f"tuple[T, ...], and Optional[T] / T | None")
 
 
 def _py_type_name(tdesc: str | None) -> str:
@@ -405,6 +417,8 @@ def _py_type_name(tdesc: str | None) -> str:
         return "str"
     if tdesc.startswith("seq<"):
         return f"list[{_py_type_name(tdesc[4:-1])}]"
+    if _is_tuple(tdesc):
+        return "tuple[" + ", ".join(_py_type_name(p) for p in _tuple_elems(tdesc)) + "]"
     return tdesc
 
 
@@ -436,6 +450,39 @@ def _opt_inner(tdesc: str | None) -> str | None:
     """PyOpt<T> -> T, else None."""
     if tdesc is not None and tdesc.startswith("PyOpt<") and tdesc.endswith(">"):
         return tdesc[6:-1]
+    return None
+
+
+def _is_tuple(tdesc: str | None) -> bool:
+    return bool(tdesc) and tdesc[0] == "(" and tdesc[-1] == ")"
+
+
+def _tuple_elems(tdesc: str) -> list[str]:
+    """Split a Dafny `(T, U, …)` descriptor, respecting nested tuples."""
+    inner = tdesc[1:-1]
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(inner):
+        if ch in "({<":
+            depth += 1
+        elif ch in ")}>":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(inner[start:i].strip())
+            start = i + 1
+    parts.append(inner[start:].strip())
+    return parts
+
+
+def _const_int_index(node: ast.expr) -> int | None:
+    """A constant tuple index, including the unary-minus form `p[-1]`."""
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        inner = _const_int_index(node.operand)
+        if inner is not None:
+            return -inner
     return None
 
 
@@ -655,8 +702,18 @@ class _MethodEncoder:
                 return self.types.get(name)
             case ast.Subscript(value=value, slice=ast.Slice()):
                 return self._infer(value)  # a slice keeps the sequence type
-            case ast.Subscript(value=value):
+            case ast.Subscript(value=value, slice=index):
                 base = self._infer(value)
+                if _is_tuple(base):
+                    k = _const_int_index(index)
+                    if k is None:
+                        return None
+                    elems = _tuple_elems(base)
+                    if k < 0:
+                        k += len(elems)
+                    if 0 <= k < len(elems):
+                        return elems[k]
+                    return None
                 if base == "string":
                     return "char"
                 if base is not None and base.startswith("seq<"):
@@ -670,6 +727,15 @@ class _MethodEncoder:
                 if len(inner) == 1 and None not in inner:
                     return f"seq<{inner.pop()}>"
                 return None
+            case ast.Tuple(elts=elts):
+                if any(isinstance(e, ast.Starred) for e in elts):
+                    return None
+                if not (2 <= len(elts) <= 8):
+                    return None
+                parts = [self._infer(e) for e in elts]
+                if any(p is None for p in parts):
+                    return None
+                return "(" + ", ".join(parts) + ")"
             case ast.ListComp(elt=elt, generators=[comp]) if not comp.ifs:
                 binder_type = self._comp_binder_type(comp)
                 if binder_type is None or not isinstance(comp.target, ast.Name):
@@ -780,12 +846,19 @@ class _MethodEncoder:
                 return f"(if {self.expr(test)} then {self.expr(body)} else {self.expr(orelse)})"
             case ast.Subscript(value=value, slice=index):
                 if isinstance(index, ast.Slice):
+                    if _is_tuple(self._infer(value)):
+                        raise _err(node, (
+                            "slicing a tuple is outside the slice encoder — "
+                            "index with a constant or unpack the components"
+                        ))
                     if index.step is not None:
                         raise _err(node, "slice steps are outside the slice encoder")
                     base = self.expr(value)
                     lo = self.expr(index.lower) if index.lower is not None else "0"
                     hi = self.expr(index.upper) if index.upper is not None else f"|{base}|"
                     return f"PySlice({base}, {lo}, {hi})"
+                if _is_tuple(self._infer(value)):
+                    return self._tuple_index_expr(node, value, index)
                 base = self.expr(value)
                 idx = self.expr(index)
                 # Python normalizes negative indices from the end; Dafny does
@@ -803,6 +876,19 @@ class _MethodEncoder:
                 if provably_nonneg:
                     return f"{base}[{idx}]"
                 return f"{base}[PyIndex({idx}, |{base}|)]"
+            case ast.Tuple(elts=elts):
+                if any(isinstance(e, ast.Starred) for e in elts):
+                    raise _err(node, (
+                        "starred tuple construction is outside the fragment — "
+                        "write each component"
+                    ))
+                if not (2 <= len(elts) <= 8):
+                    raise _err(node, (
+                        "tuple literals in the fragment have 2–8 elements "
+                        "(a 1-tuple is just the element; longer tuples are "
+                        "outside the slice encoder)"
+                    ))
+                return "(" + ", ".join(self.expr(e) for e in elts) + ")"
             case ast.List(elts=elts):
                 return "[" + ", ".join(self.expr(e) for e in elts) + "]"
             case ast.ListComp(elt=elt, generators=[comp]) if not comp.ifs \
@@ -813,6 +899,32 @@ class _MethodEncoder:
             case _:
                 raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder "
                                  f"-- see the admitted-construct table in docs/SEMANTICS.md")
+
+    def _tuple_index_expr(self, node: ast.Subscript, value: ast.expr,
+                          index: ast.expr) -> str:
+        """Project `p[k]` as Dafny `p.k`. The index is a constant (negative
+        wrap is Python's); a variable index would treat a product as a
+        sequence, which Dafny tuples are not."""
+        elems = _tuple_elems(self._infer(value) or "")
+        k = _const_int_index(index)
+        if k is None:
+            raise _err(node, (
+                "tuple index must be a constant (Dafny tuples are product "
+                "types, not sequences) — write `p[0]`/`p[1]` or unpack"
+            ))
+        n = len(elems)
+        if k < 0:
+            k += n
+        if not (0 <= k < n):
+            raise _err(node, (
+                f"tuple index {ast.unparse(index)} is out of range for a "
+                f"{n}-tuple (Python would raise IndexError) — the fragment "
+                f"checks arity at encode time"
+            ))
+        base = self.expr(value)
+        if not isinstance(value, ast.Name):
+            base = f"({base})"
+        return f"{base}.{k}"
 
     def _list_comp(self, node: ast.ListComp | ast.GeneratorExp, elt: ast.expr,
                    comp: ast.comprehension, require_int_elt: bool = False) -> str:
@@ -920,6 +1032,19 @@ class _MethodEncoder:
         if isinstance(op, ast.Add) and lt is not None and lt == rt \
                 and self._is_seqish(lt):
             return  # concatenation: same meaning in both languages
+        if isinstance(op, ast.Add) and _is_tuple(lt) and _is_tuple(rt):
+            raise _err(node, (
+                "tuple concatenation (`t + u`) is outside the slice encoder "
+                "— Dafny tuples are product types, not sequences; construct "
+                "a new tuple from the components"
+            ))
+        if isinstance(op, ast.Mult) and (
+                (_is_tuple(lt) and rt == "int")
+                or (lt == "int" and _is_tuple(rt))):
+            raise _err(node, (
+                "tuple repetition (`t * n`) is outside the slice encoder "
+                "— Dafny tuples are product types with fixed arity"
+            ))
 
         # Python DOES define these; they are simply not modeled yet. Say so,
         # rather than implying the program is wrong.
@@ -985,6 +1110,12 @@ class _MethodEncoder:
                 ))
             if isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
                 lt, rt = self._eff_type(current), self._eff_type(comp)
+                if _is_tuple(lt) or _is_tuple(rt):
+                    raise _err(node, (
+                        "order comparison on tuples is outside the slice "
+                        "encoder — Dafny's tuple ordering is not Python's "
+                        "lexicographic order"
+                    ))
                 if not (lt in _ORDER_OK and lt == rt):
                     raise _err(node, (
                         f"order comparison on non-int operands (inferred {lt}/{rt}) — "
@@ -1048,7 +1179,18 @@ class _MethodEncoder:
             # (e.g. max(a, b, key=abs)) would change the meaning.
             raise _err(node, f"keyword arguments to {name}() are outside the fragment")
         if name == "len" and len(args) == 1:
+            t = self._infer(args[0])
+            if _is_tuple(t):
+                # Dafny `|p|` is sequence length; a tuple's len is its
+                # (static) arity. Fragment expressions are pure, so
+                # emitting the constant does not drop observable effects.
+                return str(len(_tuple_elems(t)))
             return f"|{self.expr(args[0])}|"
+        if name == "tuple":
+            raise _err(node, (
+                "tuple() conversion is outside the slice encoder — write "
+                "a tuple literal `(a, b)`"
+            ))
         if name in ("min", "max") and len(args) == 2:
             for a in args:
                 if self._eff_type(a) != "int":
@@ -1196,10 +1338,23 @@ class _MethodEncoder:
                         record_store(name, path, value, stmt)
                         record_expr_loads(value, path)
                     case ast.Assign(targets=[ast.Tuple(elts=elts)], value=value):
-                        vals = value.elts if isinstance(value, ast.Tuple) else []
-                        for j, e in enumerate(elts):
-                            if isinstance(e, ast.Name):
-                                record_store(e.id, path, vals[j] if j < len(vals) else None, stmt)
+                        if isinstance(value, ast.Tuple):
+                            vals = value.elts
+                            for j, e in enumerate(elts):
+                                if isinstance(e, ast.Name):
+                                    record_store(
+                                        e.id, path,
+                                        vals[j] if j < len(vals) else None,
+                                        stmt,
+                                    )
+                        else:
+                            vt = self._infer(value)
+                            elems = _tuple_elems(vt) if _is_tuple(vt) else []
+                            for j, e in enumerate(elts):
+                                if isinstance(e, ast.Name):
+                                    record_store(e.id, path, None, stmt)
+                                    if j < len(elems) and e.id not in ann_types:
+                                        ann_types[e.id] = elems[j]
                         record_expr_loads(value, path)
                     case ast.AnnAssign(target=ast.Name(id=name), annotation=ann, value=value):
                         record_store(name, path, value, stmt)
@@ -1365,6 +1520,82 @@ class _MethodEncoder:
             self.types[name] = ann or (self._infer(rhs_node) if rhs_node is not None else None)
         self._update_ownership(name, rhs_node)
 
+    def _assign_unpack(self, stmt: ast.Assign, elts: list[ast.expr],
+                       value: ast.expr, indent: str) -> None:
+        """Parallel `a, b = x, y` or unpack `a, b = p` from a tuple-typed
+        RHS. Dafny rejects `a, b := p` (one RHS), so a tuple-typed name
+        projects as `a, b := p.0, p.1`. A complex RHS is bound once so
+        the projections do not double-evaluate it."""
+        if any(isinstance(e, ast.Starred) for e in elts):
+            raise _err(stmt, (
+                "starred unpacking is outside the fragment — name each "
+                "component"
+            ))
+        if not all(isinstance(e, ast.Name) for e in elts):
+            raise _err(stmt, "unpacking targets must be plain names")
+        names = [e.id for e in elts]  # type: ignore[union-attr]
+        if len(set(names)) != len(names):
+            raise _err(stmt, "repeated names in tuple assignment are outside the fragment")
+        for n in names:
+            if n in self.params:
+                raise _err(stmt, "parameter rebinding is outside the fragment (parameters are immutable)")
+            self.retired.discard(n)
+
+        if isinstance(value, ast.Tuple):
+            if any(isinstance(e, ast.Starred) for e in value.elts):
+                raise _err(stmt, (
+                    "starred tuple construction is outside the fragment — "
+                    "write each component"
+                ))
+            if len(value.elts) != len(names):
+                raise _err(stmt, (
+                    f"unpacking expects {len(names)} values, got "
+                    f"{len(value.elts)} (Python would raise ValueError)"
+                ))
+            rhs = ", ".join(
+                self._coerce(v, self.types.get(n) or self.hoisted.get(n))
+                for n, v in zip(names, value.elts)
+            )
+            rhs_types = [self._infer(v) for v in value.elts]
+            rhs_nodes: list[ast.expr | None] = list(value.elts)
+        else:
+            got = self._infer(value)
+            if not _is_tuple(got):
+                raise _err(stmt, (
+                    "unpacking a non-tuple is outside the fragment — only "
+                    "a tuple-typed name or a tuple literal `(a, b)`"
+                ))
+            elems = _tuple_elems(got)
+            if len(elems) != len(names):
+                raise _err(stmt, (
+                    f"unpacking expects {len(names)} values, got a tuple "
+                    f"of arity {len(elems)} (Python would raise ValueError)"
+                ))
+            if isinstance(value, ast.Name):
+                base = self._mangle(value.id)
+            else:
+                tmp = self._fresh("tup")
+                self.emit(f"{indent}var {tmp} := {self.expr(value)};", stmt.lineno)
+                base = tmp
+            rhs = ", ".join(f"{base}.{i}" for i in range(len(names)))
+            rhs_types = elems
+            rhs_nodes = [None] * len(names)
+
+        lhs = ", ".join(self._mangle(n) for n in names)
+        fresh = [n for n in names if not (self._declared(n) or n in self.hoisted)]
+        if len(fresh) == len(names):
+            self.emit(f"{indent}var {lhs} := {rhs};", stmt.lineno)
+            for n, t, v in zip(names, rhs_types, rhs_nodes):
+                self._declare(n)
+                self.types.setdefault(n, t)
+                self._update_ownership(n, v)
+        elif not fresh:
+            self.emit(f"{indent}{lhs} := {rhs};", stmt.lineno)
+            for n, v in zip(names, rhs_nodes):
+                self._update_ownership(n, v)
+        else:
+            raise _err(stmt, "tuple assignment mixing new and existing variables is outside the slice-1 encoder")
+
     def _update_ownership(self, name: str, rhs_node: ast.expr | None) -> None:
         """Ownership-lite: fresh allocations are appendable; aliases are not,
         and aliasing a list forfeits the source's ownership too."""
@@ -1453,35 +1684,8 @@ class _MethodEncoder:
                     self._coerce(value, self.types.get(name) or self.hoisted.get(name)),
                     indent, stmt, rhs_node=value,
                 )
-            case ast.Assign(targets=[ast.Tuple(elts=elts)], value=ast.Tuple(elts=values)) \
-                    if len(elts) == len(values) and all(isinstance(e, ast.Name) for e in elts):
-                names = [e.id for e in elts]  # type: ignore[union-attr]
-                if len(set(names)) != len(names):
-                    raise _err(stmt, "repeated names in tuple assignment are outside the fragment")
-                for n in names:
-                    if n in self.params:
-                        raise _err(stmt, "parameter rebinding is outside the fragment (parameters are immutable)")
-                    self.retired.discard(n)
-                # Route every element through the same Optional injection/
-                # projection coercion single assignments get.
-                rhs = ", ".join(
-                    self._coerce(v, self.types.get(n) or self.hoisted.get(n))
-                    for n, v in zip(names, values)
-                )
-                lhs = ", ".join(self._mangle(n) for n in names)
-                fresh = [n for n in names if not (self._declared(n) or n in self.hoisted)]
-                if len(fresh) == len(names):
-                    self.emit(f"{indent}var {lhs} := {rhs};", stmt.lineno)
-                    for n, v in zip(names, values):
-                        self._declare(n)
-                        self.types.setdefault(n, self._infer(v))
-                        self._update_ownership(n, v)
-                elif not fresh:
-                    self.emit(f"{indent}{lhs} := {rhs};", stmt.lineno)
-                    for n, v in zip(names, values):
-                        self._update_ownership(n, v)
-                else:
-                    raise _err(stmt, "tuple assignment mixing new and existing variables is outside the slice-1 encoder")
+            case ast.Assign(targets=[ast.Tuple(elts=elts)], value=value):
+                self._assign_unpack(stmt, elts, value, indent)
             case ast.AugAssign(target=ast.Name(id=name), op=op, value=value):
                 if name in self.params:
                     raise _err(stmt, "parameter rebinding is outside the fragment (parameters are immutable)")
@@ -1576,7 +1780,8 @@ class _MethodEncoder:
                 raise _err(stmt,
                            "this assignment form is outside the slice-1 "
                            "encoder -- admitted targets: a single name, or a "
-                           "tuple of names for a parallel swap",
+                           "tuple of names for a parallel swap, or unpacking "
+                           "a tuple-typed value",
                            rule="unsupported-assignment")
             case _:
                 raise _err(stmt, f"statement {type(stmt).__name__} is outside the slice-1 encoder "

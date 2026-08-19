@@ -16,7 +16,8 @@ proof's assumptions. Guards make that boundary checkable:
   callee/toolchain (a proven property failed at runtime).
 
 Type descriptors are nested tuples mirroring the fragment's annotation
-grammar: ("int",), ("bool",), ("str",), ("list", inner), ("opt", inner).
+grammar: ("int",), ("bool",), ("str",), ("list", inner), ("opt", inner),
+("tuple", *inners).
 """
 
 from __future__ import annotations
@@ -60,6 +61,8 @@ def describe(desc: Descriptor) -> str:
         return f"list[{describe(desc[1])}]"
     if kind == "opt":
         return f"{describe(desc[1])} | None"
+    if kind == "tuple":
+        return "tuple[" + ", ".join(describe(d) for d in desc[1:]) + "]"
     return kind
 
 
@@ -79,6 +82,22 @@ def check_value(value: object, desc: Descriptor, *, function: str, path: str) ->
             )
         for i, element in enumerate(value):
             check_value(element, desc[1], function=function, path=f"{path}[{i}]")
+        return
+    if kind == "tuple":
+        if type(value) is not tuple:
+            raise TypeGuardError(
+                function,
+                f"{path}: expected {describe(desc)}, got {type(value).__name__}",
+            )
+        inners = desc[1:]
+        if len(value) != len(inners):  # type: ignore[arg-type]
+            raise TypeGuardError(
+                function,
+                f"{path}: expected {describe(desc)} (arity {len(inners)}), "
+                f"got tuple of length {len(value)}",  # type: ignore[arg-type]
+            )
+        for i, (element, inner) in enumerate(zip(value, inners)):  # type: ignore[arg-type]
+            check_value(element, inner, function=function, path=f"{path}[{i}]")
         return
     expected = {"int": int, "bool": bool, "str": str}[kind]
     if type(value) is not expected:
@@ -104,6 +123,8 @@ def copy_value(value: object, desc: Descriptor) -> object:
     kind = desc[0]
     if kind == "list":
         return [copy_value(e, desc[1]) for e in value]  # type: ignore[union-attr]
+    if kind == "tuple":
+        return tuple(copy_value(e, d) for e, d in zip(value, desc[1:]))  # type: ignore[arg-type]
     if kind == "opt" and value is not None:
         return copy_value(value, desc[1])
     return value
