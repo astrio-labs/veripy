@@ -1,6 +1,6 @@
 # Evaluation
 
-> **Status: partial draft, with measured RQ1 / RQ2 / RQ4.** Guard-overhead methodology (RQ3), a held-out private repair set, and the ablation arms of the experiment harness are still open. A second backend is a design commitment; there is no fragment IR yet, so rungs R3–R5 are Dafny-only. Companion to [ARCHITECTURE.md](ARCHITECTURE.md) (what the measurements are claims about) and [BENCHMARK.md](BENCHMARK.md) (the corpus and ladder).
+> **Status: partial draft, with measured RQ1 / RQ2 / RQ4.** Guard-overhead methodology (RQ3), a held-out private repair set, and the interface-ablation study specified below are still open. A second backend is a design commitment; there is no fragment IR yet, so rungs R3–R5 are Dafny-only. Companion to [ARCHITECTURE.md](ARCHITECTURE.md) (what the measurements are claims about) and [BENCHMARK.md](BENCHMARK.md) (the corpus and ladder).
 
 ## Research questions
 
@@ -405,3 +405,106 @@ opposite directions, and both are part of the record:**
 The general lesson both directions teach: record the engine invocation
 verbatim next to any reported number, and validate the harness with
 positive AND negative probes before trusting either a good or a bad score.
+
+## Planned interface-ablation study (unmeasured)
+
+**Purpose.** The existing one-shot/full-loop comparison measures whether
+iteration helps, but it does not isolate what LemmaPy's structured failure
+taxonomy and sidecar whitelist contribute over raw verifier interaction.
+Until this study is measured, the paper may claim that the interface is
+constrained and machine-readable, but not that either component improves
+proof-completion rate.
+
+### Arms
+
+Run the same six frozen, load-bearing repair tasks under four conditions:
+
+1. **Full LemmaPy:** structured failures, whitelist validation, and at most
+   four repair iterations.
+2. **Raw feedback:** retain the whitelist and sidecar-only edit boundary,
+   but return raw Dafny output instead of the versioned failure taxonomy.
+   This isolates the taxonomy.
+3. **No whitelist:** retain structured failures and the sidecar answer
+   shape, but do not reject proposals during the loop. Audit every proposal
+   afterward with the normal validator. This measures constraint pressure
+   without silently crediting unsound output.
+4. **Raw Dafny baseline:** give the engine the exact generated Dafny module
+   seen by the prover, freeze implementation and specification regions, and
+   accept free-form appended proof declarations with raw Dafny feedback.
+   Audit `assume`, axioms, attributes, and bodiless declarations
+   separately; an audited-unsound apparent success is never credited.
+
+The existing full-loop and one-shot ledgers may be reused only when their
+model identity, prompt version, task snapshot, verifier version, time
+limits, and retrieval controls exactly match the new arms. Otherwise,
+re-run all compared cells.
+
+### Engines and scale
+
+Use Sonnet 5 and Opus 5 first. Both gained five successful cells from the
+loop in the frozen paper snapshot, so they are strong enough to act on
+semantic feedback while leaving room for an interface effect. With six
+tasks and three trials, each new arm costs 36 trials across the two
+engines. The two component ablations require 72 new trials; adding the raw
+Dafny baseline brings the total to 108.
+
+If resources permit, extend the same frozen protocol to one weaker engine
+to test the observed hypothesis that feedback helps only after proposals
+reach the prover. Do not mix the extension into the two-engine result
+without reporting both views.
+
+### Controls
+
+Hold constant across arms:
+
+- task order, source/specification hashes, and proof-call sites;
+- prompt information other than the feedback representation under test;
+- four-iteration budget, engine wall, verifier timeout, Dafny/Z3 versions,
+  model invocation, and reasoning-effort setting;
+- OS-level read denial and positive/negative retrieval preflight probes;
+- generated Dafny module and final verifier used to judge success; and
+- append-only ledger schema and subject-independent denominators.
+
+The raw Dafny arm must use the encoder's emitted module rather than a
+hand-translated baseline, or it could receive credit for proving a
+mistranslation. No arm may remove a failed or invalid answer from its
+denominator.
+
+### Outcomes
+
+The primary outcome is **sound verification success**, meaning the frozen
+program and specification verify and the accepted proof additions pass the
+normal sidecar audit. Also report:
+
+- audited-unsound apparent successes;
+- iterations, wall time, and tokens to sound success;
+- failures before the prover versus typed prover obligations;
+- sidecar-validation violations by rule;
+- task-majority success with task-level confidence intervals; and
+- per-task paired arm outcomes, without claiming a fine-grained model
+  ranking from six clusters.
+
+### Interpretation
+
+- Full LemmaPy outperforming raw feedback is evidence that the structured
+  taxonomy improves repair.
+- Similar success with lower token or iteration cost is still an interface
+  benefit and should be reported as efficiency, not completion.
+- Unsound proposals in the no-whitelist or raw-Dafny arms quantify the
+  whitelist's safety value.
+- If unvalidated arms produce no unsound proposals, describe the whitelist
+  as preventive infrastructure rather than empirically load-bearing on
+  this sample.
+- Full LemmaPy outperforming raw Dafny is evidence for the combined
+  agent-native interface, but the component arms are required to explain
+  why.
+- A null result remains useful: it narrows the contribution to safety,
+  standardization, and reproducibility rather than model capability.
+
+### Completion gate for the paper
+
+Do not add an interface-effect claim to the abstract or contributions until
+all planned cells are frozen, audited, and regenerated from the ledgers.
+When complete, add one compact ablation table to the main evaluation
+section and move arm-level telemetry and unsafe-proposal examples to the
+paper appendix.
