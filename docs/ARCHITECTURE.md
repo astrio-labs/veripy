@@ -17,7 +17,7 @@ flowchart TD
     ENC -- reject --> DIAG
     ENC --> STUB["model stub .dfy<br/>(preamble inlined, regenerated every run)"]
     SIDE["<stem>.proofs.dfy sidecar<br/>(additions-only, human/LLM-owned)"] --> VERIFY
-    PRE["Versioned Dafny preamble v0.6<br/>(PyMod, PySlice, PyOpt, PyOutcome, …)"] --> STUB
+    PRE["Versioned Dafny preamble v0.7<br/>(PyMod, PySlice, PyOpt, PyFlatten, …)"] --> STUB
     STUB --> VERIFY["Verifier driver<br/>dafny verify (Boogie/Z3)"]
     VERIFY -- failures --> AGENT["LLM proof-repair loop<br/>(edits sidecar only)"]
     AGENT --> SIDE
@@ -52,7 +52,7 @@ The full §3.2 ownership dataflow pass is **not** a standalone checker. The enco
 
 Emits **one regenerated stub per module**, with the versioned preamble inlined. Proof additions live in a sibling `<stem>.proofs.dfy` sidecar — lemmas only, whitelist-validated (no `assume`, no bodiless axioms). The sidecar is concatenated after a `STUB END` marker; the encoder never hand-edits it, and the repair loop may edit nothing else.
 
-Admitted surface today (everything else is a detected, explained rejection): `int` / `bool` / `str` / `list[T]` / `Optional[T]` / `tuple[T, …]` (arity 2–8; constant index or unpacking, arity-checked); assignment, `if`/`elif`/`else`, `while`, `for i in range(...)`, `for x in xs`, `break`/`continue` (continue on a desugared `for` steps the hidden index first), `return`; arithmetic via `PyFloorDiv`/`PyMod`/`PyPow`; `append` on owned fresh lists; specs `requires`/`ensures`/`invariant`/`decreases`/`proof`. See the encoder module docstring for the miscompilation classes it closes.
+Admitted surface today (everything else is a detected, explained rejection): `int` / `bool` / `str` / `list[T]` / `Optional[T]` / `tuple[T, …]` (arity 2–8; constant index or unpacking, arity-checked); assignment, `if`/`elif`/`else`, `while`, `for i in range(...)`, `for x in xs`, `break`/`continue` (continue on a desugared `for` steps the hidden index first), `return`; arithmetic via `PyFloorDiv`/`PyMod`/`PyPow`; `append` on owned fresh lists; single-generator list comprehensions (optional `if` filter); eager `all`/`any`/`sum` genexp folds; specs `requires`/`ensures`/`invariant`/`decreases`/`proof`. See the encoder module docstring for the miscompilation classes it closes.
 
 A thin, backend-neutral **fragment IR** is the design's way of keeping a second backend (Laurel, Lean) open. It is not in the tree. Rungs R3–R5 of the benchmark are Dafny-only until it is.
 

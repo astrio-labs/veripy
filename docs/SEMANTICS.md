@@ -1,6 +1,6 @@
 # Fragment Semantics — big-step rules and the simulation statement
 
-> **Status: v1 fragment, preamble 0.6.** This is the paper-style companion to
+> **Status: v1 fragment, preamble 0.7.** This is the paper-style companion to
 > the lowering catalog ([ARCHITECTURE.md §7](ARCHITECTURE.md)): a big-step
 > operational semantics for the verified fragment and the statement of the
 > simulation claim the encoder is built to preserve. It is **not mechanized**;
@@ -89,7 +89,14 @@ over an int list with `sum([]) = 0`; `PySum` is snoc-recursive, which is
 extensionally equal by associativity of `+`. `sum(g(x) for x in xs)`
 evaluates `g` left-to-right over the elements — the fragment's `g` is
 side-effect-free (expressions cannot write σ), so the order is
-unobservable and the `seq(k, i ⇒ …)` model is exact.
+unobservable and the `seq(k, i ⇒ …)` model is exact. A filter
+`[e for x in xs if P]` is the same one-pass skip: each `x` is kept as
+`[e]` or dropped as `[]`, then concatenated (`PyFlatten`) so order is
+CPython's and omitted elements leave no hole. `sum(e for x in xs if P)`
+maps skipped elements to `0` (the identity of `+` on `int`). Eager
+`all`/`any` genexps, in specs **and** bodies, lower to `forall`/`exists`
+(pure generators, so short-circuit vs full evaluation is unobservable);
+a filter becomes a conjunct on the domain.
 
 **Quantifiers in specs.** `forall x in range(a, b) :: P` is bounded
 conjunction (empty domain ⇒ true), evaluated in the *enclosing* σ — binder
@@ -181,7 +188,9 @@ translation of the *same* stub the prover saw).
 | negative index | §3 index | `PyIndex` | corpus (is_palindrome) + unit |
 | slices | §3 slice | `PySlice` | corpus (rolling_max, below_zero) |
 | 1-arg min/max | §3 builtins | `PySeqMax/Min` (requires) | corpus (max_element, rolling_max) |
-| `sum`, genexp folds | §3 builtins | `PySum` (+ `seq` map) | corpus (below_zero, sum_squares) |
+| `sum`, genexp folds | §3 builtins | `PySum` (+ `seq` map; filter → `else 0`) | corpus (below_zero, sum_squares) + unit |
+| filtered list comps | §3 comps | `PyFlatten` of 0/1-element seqs | unit |
+| eager `all`/`any` genexp | §3 folds | Dafny `forall`/`exists` (body and spec) | unit |
 | Optionals | §1/§4 assign | `PyOpt` + coercions | corpus (rolling_max) |
 | list build | §4 append | `⧺` under ownership | corpus (incr_list, intersperse) |
 | for-range / for-each | §4 loops | hoisted while / snapshot | corpus-wide |

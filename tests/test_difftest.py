@@ -268,3 +268,29 @@ def test_optional_tuple_translation_faithful(tmp_path):
     assert result.functions and all(f.ok for f in result.functions), [
         (f.name, f.mismatch, f.error) for f in result.functions
     ]
+
+
+def test_filtered_comp_and_folds_translation_faithful(tmp_path):
+    src = tmp_path / "folds.py"
+    src.write_text(
+        "#@ ensures len(result) <= len(xs)\n"
+        "def positives(xs: list[int]) -> list[int]:\n"
+        "    return [x for x in xs if x > 0]\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def sum_pos(xs: list[int]) -> int:\n"
+        "    return sum(x for x in xs if x > 0)\n"
+        "\n"
+        "#@ ensures result == True or result == False\n"
+        "def all_pos(xs: list[int]) -> bool:\n"
+        "    return all(x > 0 for x in xs)\n"
+        "\n"
+        "#@ ensures result == True or result == False\n"
+        "def any_zero(xs: list[int]) -> bool:\n"
+        "    return any(x == 0 for x in xs)\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]
