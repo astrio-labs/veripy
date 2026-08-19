@@ -743,7 +743,7 @@ def _divmod_sites(fn: ast.FunctionDef,
 
 
 def _loop_invariants(spec_fn: FunctionSpec,
-                     loop: ast.For) -> tuple[ast.expr, int]:
+                     loop: ast.For | ast.While) -> tuple[ast.expr, int]:
     """Collect every `#@ invariant` at the loop HEAD and conjoin them
     (slice 5: max_element-class tasks state a prefix bound AND a
     witness). One generated Prop carries the conjunction; the
@@ -871,6 +871,143 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
                       inv=wrapped,
                       inv_line=inv_line, for_line=loop.lineno,
                       acc_bool=True)
+
+
+@dataclass
+class _WhileShape:
+    """One `while COND:` accumulator loop (P2 slice 7).
+
+    Python shape:  acc = init ; while COND: acc = STEP ; return RET
+    Lean shape:    fuel recursion again, but the fuel comes from the
+    `#@ decreases` MEASURE rather than a range bound. The generated
+    induction theorem concludes both that the invariant survives and
+    that the condition is FALSE at the end — the second half is what
+    distinguishes a loop that really exited from one that merely ran
+    out of fuel, and it follows from the invariant bounding the measure
+    below while the fuel bounds it above.
+    """
+
+    acc: str
+    init: ast.expr
+    cond: ast.expr
+    step: ast.expr
+    ret: ast.expr
+    inv: ast.expr
+    inv_line: int
+    meas: ast.expr
+    meas_line: int
+    while_line: int
+
+
+def _loop_decreases(spec_fn: FunctionSpec,
+                    loop: ast.While) -> tuple[ast.expr, int]:
+    """The single `#@ decreases` measure at the loop head. Placement is
+    the invariant rule verbatim, and the clause is REQUIRED: without a
+    measure there is no fuel bound, so nothing rules out a loop that
+    silently stops early."""
+    every = spec_fn.by_kind("decreases")
+    at_head = [c for c in every
+               if loop.lineno < c.line < loop.body[0].lineno]
+    misplaced = [c for c in every if c not in at_head]
+    if misplaced:
+        raise _reject("`decreases` must sit at the top of the loop body, "
+                      "before its first statement", misplaced[0].line)
+    if len(at_head) != 1:
+        raise _reject("a `while` loop needs exactly one `#@ decreases` "
+                      f"measure in this slice (found {len(at_head)}) — "
+                      f"the measure is the loop's fuel bound, and without "
+                      f"it a loop that stops early cannot be ruled out",
+                      loop.lineno)
+    clause = at_head[0]
+    text = clause.desugared if clause.desugared is not None else clause.raw
+    try:
+        return ast.parse(text, mode="eval").body, clause.line
+    except SyntaxError as exc:
+        raise _reject(f"cannot parse decreases: {exc.msg}", clause.line)
+
+
+def _squared_terms(exprs: list[ast.expr]) -> list[ast.expr]:
+    """Unique `X` such that `X * X` occurs. omega is linear and core Lean
+    has no nlinarith, so a squaring loop stalls without the prelude's
+    SqGeSelf; these are the instances worth handing it."""
+    out: list[ast.expr] = []
+    seen: set[str] = set()
+    for e in exprs:
+        for node in ast.walk(e):
+            if isinstance(node, ast.BinOp) \
+                    and isinstance(node.op, ast.Mult) \
+                    and ast.dump(node.left) == ast.dump(node.right):
+                key = ast.dump(node.left)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(node.left)
+    return out
+
+
+def _split_while(fn: ast.FunctionDef,
+                 spec_fn: FunctionSpec) -> _WhileShape:
+    """Match the P2 slice-7 while shape, or REJECT loudly. Only called
+    once a `while` is known to be present, so returning None would just
+    hand the body compiler a worse message."""
+    stmts = [st for st in fn.body
+             if not (isinstance(st, ast.Expr)
+                     and isinstance(st.value, ast.Constant))]
+    whiles = [st for st in stmts if isinstance(st, ast.While)]
+    if len(whiles) != 1 or any(isinstance(n, ast.While)
+                               for st in stmts if st is not whiles[0]
+                               for n in ast.walk(st)):
+        raise _reject("one `while` loop per function in this slice",
+                      whiles[0].lineno if whiles else fn.lineno)
+    if len(stmts) != 3 or not isinstance(stmts[0], (ast.Assign,
+                                                    ast.AnnAssign)) \
+            or not isinstance(stmts[1], ast.While) \
+            or not isinstance(stmts[2], ast.Return):
+        raise _reject("a `while` function must be exactly `acc = init; "
+                      "while ...: ...; return expr` in this slice",
+                      whiles[0].lineno)
+    init_stmt, loop, ret_stmt = stmts
+    if isinstance(init_stmt, ast.AnnAssign):
+        if not (isinstance(init_stmt.target, ast.Name)
+                and isinstance(init_stmt.annotation, ast.Name)
+                and init_stmt.annotation.id == "int"
+                and init_stmt.value is not None):
+            raise _reject("an annotated accumulator initializer must be "
+                          "`name: int = <expr>`", init_stmt.lineno)
+        init_value, acc = init_stmt.value, init_stmt.target.id
+    else:
+        if len(init_stmt.targets) != 1 \
+                or not isinstance(init_stmt.targets[0], ast.Name):
+            raise _reject("the accumulator initializer must assign one "
+                          "name", init_stmt.lineno)
+        init_value, acc = init_stmt.value, init_stmt.targets[0].id
+    if isinstance(init_value, ast.Constant) \
+            and isinstance(init_value.value, bool):
+        raise _reject("bool accumulators are outside the `while` slice "
+                      "(integer measures and accumulators only)",
+                      init_stmt.lineno)
+    if loop.orelse:
+        raise _reject("`while ... else` is outside the fragment",
+                      loop.lineno)
+    body = list(loop.body)
+    if len(body) != 1 or not isinstance(body[0], ast.Assign) \
+            or len(body[0].targets) != 1 \
+            or not isinstance(body[0].targets[0], ast.Name) \
+            or body[0].targets[0].id != acc:
+        raise _reject(f"the loop body must be a single assignment to the "
+                      f"accumulator {acc!r} in this slice", loop.lineno)
+    if ret_stmt.value is None:
+        raise _reject("bare `return` has no value to encode",
+                      ret_stmt.lineno)
+    inv_expr, inv_line = _loop_invariants(spec_fn, loop)
+    meas_expr, meas_line = _loop_decreases(spec_fn, loop)
+    for expr, ln in ((init_value, fn.lineno), (loop.test, loop.lineno),
+                     (body[0].value, loop.lineno),
+                     (ret_stmt.value, ret_stmt.lineno)):
+        _no_old(expr, ln)
+    return _WhileShape(acc=acc, init=init_value, cond=loop.test,
+                       step=body[0].value, ret=ret_stmt.value,
+                       inv=inv_expr, inv_line=inv_line, meas=meas_expr,
+                       meas_line=meas_line, while_line=loop.lineno)
 
 
 def _split_loop(fn: ast.FunctionDef,
@@ -1197,27 +1334,164 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
 
         binders = " ".join(f"({_ident(p)} : {ptypes[p]})" for p in params)
         loop = _split_loop(fn, spec_fn)
-        if loop is None and spec_fn.by_kind("invariant"):
+        wloop = None
+        if loop is None and any(isinstance(n, ast.While)
+                                for n in ast.walk(fn)):
+            # _split_while either matches or rejects with its own
+            # message, so a `while` never falls through to the
+            # "this function has no loop" error below.
+            wloop = _split_while(fn, spec_fn)
+            if is_bool:
+                raise _reject("`while` functions return `int` in this "
+                              "slice (integer measures and "
+                              "accumulators)", fn.lineno)
+        if loop is None and wloop is None \
+                and spec_fn.by_kind("invariant"):
             # No loop claims it, so it would be silently dropped — the
-            # Dafny backend's unclaimed-clause error, mirrored. A `while`
-            # gets its OWN message: saying "this function has no loop"
-            # about a function whose loop is simply unsupported sends the
-            # reader hunting for a missing `for`.
-            if any(isinstance(n, ast.While) for n in ast.walk(fn)):
-                raise _reject(
-                    "`while` loops are outside this slice — for-range "
-                    "accumulator and search loops only (while arrives "
-                    "with the termination-measure machinery)", fn.lineno)
+            # Dafny backend's unclaimed-clause error, mirrored.
             raise _reject("`invariant` must sit at the top of a loop "
                           "body, and this function has no loop",
                           spec_fn.by_kind("invariant")[0].line)
+        if wloop is None and spec_fn.by_kind("decreases"):
+            raise _reject("`decreases` is only meaningful on a `while` "
+                          "loop in this slice — a for-range loop's fuel "
+                          "is its range bound", 
+                          spec_fn.by_kind("decreases")[0].line)
         if loop is not None and is_bool != loop.acc_bool:
             raise _reject(
                 "a loop function's accumulator must match its return "
                 "type in this slice: True/False-initialized accumulators "
                 "return `bool`, integer accumulators return `int`",
                 fn.lineno)
-        if loop is not None:
+        if wloop is not None:
+            if wloop.acc in params:
+                raise _reject(f"accumulator {wloop.acc!r} shadows a "
+                              f"parameter — outside this slice",
+                              wloop.while_line)
+            fname = spec_fn.name
+            gen_cond, gen_meas = f"{fname}_cond", f"{fname}_meas"
+            gen_inv, gen_loop = f"{fname}_inv", f"{fname}_loop"
+            gen_thm = f"{fname}_loop_inv"
+            for g in (gen_cond, gen_meas, gen_inv, gen_loop, gen_thm):
+                _check_name(g, "generated declaration for", fn.lineno,
+                            taken)
+                taken.add(g)
+            args = " ".join(_ident(pn) for pn in params)
+            argsp = (args + " ") if args else ""
+            av = _ident(wloop.acc)
+            body_names = names | {wloop.acc}
+            # The generated fuel and induction binders are plain
+            # identifiers, so they must dodge every user name the
+            # emitted terms can mention («m» IS m).
+            used_plain = set(params) | {wloop.acc}
+            fuel = "f"
+            while fuel in used_plain:
+                fuel += "'"
+            kvar = "k"
+            while kvar in used_plain or kvar == fuel:
+                kvar += "'"
+            inv_lc = _ListCtx(lc0.lists, {}, None, scaffold=True,
+                              min_len=lc0.min_len,
+                              pos_names=lc0.pos_names)
+            init_t = _int_expr(wloop.init, names, fn.lineno, lc=lc0)
+            cond_t = _prop_expr(wloop.cond, body_names, wloop.while_line,
+                                lc=lc0)
+            step_t = _int_expr(wloop.step, body_names, wloop.while_line,
+                               lc=lc0)
+            meas_t = _int_expr(wloop.meas, body_names, wloop.meas_line,
+                               lc=lc0)
+            inv_t = _prop_expr(wloop.inv, body_names, wloop.inv_line,
+                               lc=inv_lc)
+            ret_t = _int_expr(wloop.ret, body_names, fn.lineno, lc=lc0)
+            emit("", None)
+            # The condition is a Bool def: it gives the `if` its
+            # Decidable instance and gives the theorem a uniform way to
+            # say "the condition is FALSE at the end".
+            emit(f"def {_ident(gen_cond)} {binders} ({av} : Int) : Bool :="
+                 f" decide {cond_t}", wloop.while_line)
+            emit(f"def {_ident(gen_meas)} {binders} ({av} : Int) : Int :="
+                 f" {meas_t}", wloop.meas_line)
+            emit(f"def {_ident(gen_inv)} {binders} ({av} : Int) : Prop :="
+                 f" {inv_t}", wloop.inv_line)
+            emit("", None)
+            emit(f"def {_ident(gen_loop)} {binders} : Nat → Int → Int",
+                 wloop.while_line)
+            emit(f"  | 0, {av} => {av}", wloop.while_line)
+            emit(f"  | ({fuel} + 1), {av} => "
+                 f"if {_ident(gen_cond)} {argsp}{av} then "
+                 f"{_ident(gen_loop)} {argsp}{fuel} {step_t} else {av}",
+                 wloop.while_line)
+            emit("", None)
+            # Concluding `cond = false` as well as the invariant is what
+            # separates a loop that EXITED from one that ran out of
+            # fuel: the invariant bounds the measure below, the fuel
+            # bounds it above, so at zero fuel a still-true condition
+            # would force the next measure negative.
+            emit(f"theorem {_ident(gen_thm)} {binders} : "
+                 f"∀ ({fuel} : Nat) ({av} : Int),", wloop.inv_line)
+            emit(f"    {_ident(gen_inv)} {argsp}{av} → "
+                 f"{_ident(gen_meas)} {argsp}{av} ≤ ({fuel} : Int) →",
+                 wloop.inv_line)
+            emit(f"    {_ident(gen_inv)} {argsp}"
+                 f"({_ident(gen_loop)} {argsp}{fuel} {av}) ∧",
+                 wloop.inv_line)
+            emit(f"      {_ident(gen_cond)} {argsp}"
+                 f"({_ident(gen_loop)} {argsp}{fuel} {av}) = false := by",
+                 wloop.inv_line)
+            sq_facts: list[str] = []
+            for qi, qe in enumerate(_squared_terms([wloop.cond,
+                                                    wloop.inv])):
+                try:
+                    qt = _int_expr(qe, body_names, wloop.while_line,
+                                   lc=lc0)
+                except EncodeError:
+                    continue  # reads a quantifier binder; not in scope
+                sq_facts.append(f"have hsq{qi} := VeriPy.SqGeSelf {qt}")
+            wladder = [*(f"      {f}" for f in sq_facts),
+                       "      all_goals (try omega)",
+                       "      all_goals (try simp_all)",
+                       "      all_goals (first | omega | trivial)"]
+            emit(f"  intro {fuel}", wloop.inv_line)
+            emit(f"  induction {fuel} with", wloop.inv_line)
+            emit("  | zero =>", wloop.inv_line)
+            emit(f"      intro {av} h hm", wloop.inv_line)
+            emit(f"      simp only [{_ident(gen_loop)}]", wloop.inv_line)
+            emit(f"      simp only [{_ident(gen_inv)}, "
+                 f"{_ident(gen_meas)}, {_ident(gen_cond)}, "
+                 f"decide_eq_false_iff_not] at *", wloop.inv_line)
+            for tl in wladder:
+                emit(tl, wloop.inv_line)
+            emit(f"  | succ {kvar} ih =>", wloop.inv_line)
+            emit(f"      intro {av} h hm", wloop.inv_line)
+            emit(f"      simp only [{_ident(gen_loop)}]", wloop.inv_line)
+            emit(f"      by_cases hc : {_ident(gen_cond)} {argsp}{av} "
+                 f"= true", wloop.inv_line)
+            emit("      · rw [if_pos hc]", wloop.inv_line)
+            emit(f"        refine ih {step_t} ?_ ?_", wloop.inv_line)
+            # Invariant preservation, then the measure's decrease — the
+            # two obligations a `decreases` clause owes, both linear
+            # whenever the measure and the invariant are.
+            emit(f"        · simp only [{_ident(gen_inv)}, "
+                 f"{_ident(gen_cond)}, decide_eq_true_eq] at *",
+                 wloop.inv_line)
+            for tl in wladder:
+                emit("    " + tl, wloop.inv_line)
+            emit(f"        · simp only [{_ident(gen_meas)}, "
+                 f"{_ident(gen_inv)}, {_ident(gen_cond)}, "
+                 f"decide_eq_true_eq] at *", wloop.inv_line)
+            for tl in wladder:
+                emit("    " + tl, wloop.inv_line)
+            emit("      · rw [if_neg hc]", wloop.inv_line)
+            emit("        simp only [Bool.not_eq_true] at hc",
+                 wloop.inv_line)
+            emit("        exact ⟨h, hc⟩", wloop.inv_line)
+            emit("", None)
+            emit(f"def {_ident(spec_fn.name)} {binders} : Int :=",
+                 fn.lineno)
+            emit(f"  let {av} := {_ident(gen_loop)} {argsp}"
+                 f"({_ident(gen_meas)} {argsp}{init_t}).toNat {init_t}; "
+                 f"{ret_t}", fn.lineno)
+        elif loop is not None:
             for nm, what in ((loop.index, "loop index"),
                              (loop.acc, "accumulator")):
                 if nm in params:
@@ -1606,7 +1880,31 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # to the first ensures clause so a `postcondition` failure points
         # at the contract, not at Lean plumbing.
         emit(f"  unfold {_ident(spec_fn.name)}", first_ensures_line)
-        if loop is not None:
+        if wloop is not None:
+            targs = " ".join(_ident(_tname(pn)) for pn in params)
+            targsp = (targs + " ") if targs else ""
+            w_init = _int_expr(wloop.init, names, fn.lineno,
+                               rename=rename, lc=lc0)
+            gi, gm = f"{spec_fn.name}_inv", f"{spec_fn.name}_meas"
+            gc, gt = f"{spec_fn.name}_cond", f"{spec_fn.name}_loop_inv"
+            emit("  try dsimp only", first_ensures_line)
+            emit(f"  have hi0 : {_ident(gi)} {targsp}{w_init} := by "
+                 f"simp only [{_ident(gi)}]; all_goals (try push_cast); "
+                 f"all_goals (try omega); all_goals (try simp_all); "
+                 f"all_goals (try intros); "
+                 f"all_goals (first | omega | trivial)",
+                 first_ensures_line)
+            # The fuel is the measure at entry, so the fuel-bound
+            # obligation is exactly "the measure starts non-negative".
+            emit(f"  have hfin := {_ident(gt)} {targsp}"
+                 f"({_ident(gm)} {targsp}{w_init}).toNat {w_init} hi0 "
+                 f"(by simp only [{_ident(gm)}]; omega)",
+                 first_ensures_line)
+            emit("  obtain ⟨hinv, hcond⟩ := hfin", first_ensures_line)
+            emit(f"  simp only [{_ident(gi)}, {_ident(gc)}, "
+                 f"decide_eq_false_iff_not] at hinv hcond",
+                 first_ensures_line)
+        elif loop is not None:
             # Bring the invariant through the loop: instantiate the
             # induction theorem at (fuel = bound.toNat, i = 0,
             # acc = init), then rewrite the fuel cast back to the bound

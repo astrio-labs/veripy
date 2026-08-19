@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.4"
+PRELUDE_VERSION = "lean-0.5"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -73,6 +73,21 @@ theorem PyMod_nonneg (a b : Int) (h : 0 < b) : 0 ≤ PyMod a b := by
 
 theorem PyMod_lt (a b : Int) (h : 0 < b) : PyMod a b < b := by
   rw [PyMod_pos _ _ h]; exact Int.emod_lt_of_pos a h
+
+-- omega is LINEAR, and core Lean has no nlinarith, so a squaring loop
+-- (isqrt) stalls on facts like `n < (n+1)*(n+1)`. This one lemma
+-- supplies the missing link, and it holds for EVERY integer: a <= 0
+-- gives a <= 0 <= a*a, and a >= 1 gives a*a >= a*1. Being
+-- hypothesis-free, it can be handed to omega unconditionally wherever a
+-- squared term appears, with no side goal to discharge and no risk of
+-- breaking a proof that did not need it.
+theorem SqGeSelf (a : Int) : a ≤ a * a := by
+  rcases Int.lt_or_le a 1 with h | h
+  · have hn : 0 ≤ (-a) * (-a) := Int.mul_nonneg (by omega) (by omega)
+    rw [Int.neg_mul_neg] at hn
+    omega
+  · calc a = a * 1 := by omega
+      _ ≤ a * a := Int.mul_le_mul_of_nonneg_left h (by omega)
 
 theorem PySum_take_succ (xs : List Int) (n : Nat) :
     PySum (xs.take (n + 1)) = PySum (xs.take n) + xs.getD n 0 := by
