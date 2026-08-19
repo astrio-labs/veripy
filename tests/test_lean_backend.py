@@ -1432,3 +1432,24 @@ def test_lean_rejects_tuple_params_loudly():
     )
     with pytest.raises(EncodeError, match="tuple types are outside the Lean slice"):
         _encode(src)
+
+
+def test_lean_encodes_range_all_in_a_bool_body():
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result == True\n"
+        "def f(n: int) -> bool:\n"
+        "    return all(i >= 0 for i in range(n))\n"
+    )
+    enc = _encode(src)
+    assert "∀" in enc.lean_source
+
+
+def test_lean_rejects_filtered_all_loudly():
+    src = (
+        "#@ ensures result == True or result == False\n"
+        "def f(n: int) -> bool:\n"
+        "    return all(i > 0 for i in range(n) if i % 2 == 0)\n"
+    )
+    with pytest.raises(EncodeError, match="filtered quantifiers are outside the Lean slice"):
+        _encode(src)

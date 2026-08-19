@@ -330,7 +330,12 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         raise _reject("only one quantifier binder per clause in slice 2",
                       line)
     comp = gen.generators[0]
-    if comp.ifs or comp.is_async or not isinstance(comp.target, ast.Name):
+    if comp.ifs:
+        raise _reject(
+            "filtered quantifiers are outside the Lean slice — the "
+            "Dafny backend admits them; write the filter as a conjunct "
+            "in the body (`all(P and Q for ...)`)", line)
+    if comp.is_async or not isinstance(comp.target, ast.Name):
         raise _reject("filtered or destructuring quantifier binders are "
                       "outside slice 2", line)
     it = comp.iter
@@ -524,6 +529,10 @@ def _bool_expr(e: ast.expr, names: set[str], line: int,
         return "true"
     if isinstance(e, ast.Constant) and e.value is False:
         return "false"
+    if isinstance(e, ast.Call):
+        q = _quantifier(e, names, line, None, None, False, None, lc)
+        if q is not None:
+            return f"(decide {q})"
     if isinstance(e, (ast.Compare, ast.BoolOp, ast.UnaryOp)):
         return f"(decide {_prop_expr(e, names, line, lc=lc)})"
     raise _reject("a bool return must be True/False or a boolean "

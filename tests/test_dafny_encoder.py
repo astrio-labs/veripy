@@ -375,14 +375,15 @@ def test_sum_needs_int_list():
         _encode(src)
 
 
-def test_sum_of_filtered_genexp_rejected():
+def test_sum_of_filtered_genexp_skips_with_zero():
     src = (
         "#@ ensures result >= 0\n"
         "def f(l: list[int]) -> int:\n"
         "    return sum(x for x in l if x > 0)\n"
     )
-    with pytest.raises(EncodeError, match="filterless"):
-        _encode(src)
+    dfy = _encode(src)
+    assert "else 0)" in dfy
+    assert "PySum(seq(|l|" in dfy
 
 
 def test_sum_of_non_int_genexp_rejected():
@@ -523,11 +524,11 @@ def test_preamble_names_are_exactly_the_globally_visible_declarations():
     # added later is reserved without anyone remembering to. The cost is
     # that a preamble rewritten in a shape the scraper cannot parse would
     # leave the set empty and reopen the hole with every test still green,
-    # so v0.6's globally visible names are pinned here: growing the
+    # so v0.7's globally visible names are pinned here: growing the
     # preamble has to be a deliberate edit in this test too.
     assert PREAMBLE_NAMES == {
         "PyMod", "PyFloorDiv", "PyMin", "PyMax", "PyAbs", "PyIndex",
-        "PySlice", "PySeqMax", "PySeqMin", "PySum", "PyPow",
+        "PySlice", "PySeqMax", "PySeqMin", "PySum", "PyFlatten", "PyPow",
         "PyOpt", "PyNone", "PySome",
         "PyExn", "ValueError", "IndexError", "ZeroDivisionError",
         "TypeError", "KeyError",
@@ -1142,13 +1143,15 @@ def test_list_comprehension_lowers_to_seq_constructor():
     assert "seq(|l|, e_c requires 0 <= e_c < |l| => (l[e_c] + 1))" in dfy
 
 
-def test_filtered_comprehension_rejected():
-    _expect_encode_error(
+def test_filtered_comprehension_flattens_kept_elements():
+    src = (
         "#@ ensures len(result) <= len(l)\n"
         "def f(l: list[int]) -> list[int]:\n"
-        "    return [e for e in l if e > 0]\n",
-        "filterless",
+        "    return [e for e in l if e > 0]\n"
     )
+    dfy = _encode(src)
+    assert "PyFlatten(seq(|l|" in dfy
+    assert "then [l[e_c]] else []" in dfy
 
 
 def test_list_truthiness_in_conditions():
@@ -1626,3 +1629,50 @@ def test_nested_tuple_unpack_binds_projection_once():
     dfy = _encode(src)
     assert "var tup := p.0;" in dfy
     assert "var a, b := tup.0, tup.1;" in dfy
+
+
+def test_all_any_genexp_in_body_lowers_to_quantifiers():
+    src = (
+        "#@ ensures result == True or result == False\n"
+        "def f(l: list[int]) -> bool:\n"
+        "    return all(x > 0 for x in l)\n"
+    )
+    dfy = _encode(src)
+    assert "forall x :: (x in l) ==> ((x > 0))" in dfy
+
+    src = (
+        "#@ ensures result == True or result == False\n"
+        "def g(l: list[int]) -> bool:\n"
+        "    return any(x == 0 for x in l)\n"
+    )
+    dfy = _encode(src)
+    assert "exists x :: (x in l) && ((x == 0))" in dfy
+
+
+def test_filtered_all_conjoins_the_guard():
+    src = (
+        "#@ ensures result == True or result == False\n"
+        "def f(l: list[int]) -> bool:\n"
+        "    return all(x > 0 for x in l if x % 2 == 0)\n"
+    )
+    dfy = _encode(src)
+    assert "x in l && (PyMod(x, 2) == 0)" in dfy
+    assert "==> ((x > 0))" in dfy
+
+
+def test_all_of_int_genexp_rejected():
+    _expect_encode_error(
+        "#@ ensures result == True or result == False\n"
+        "def f(l: list[int]) -> bool:\n"
+        "    return all(x for x in l)\n",
+        "bool-valued generator",
+    )
+
+
+def test_nested_list_comprehension_still_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(l: list[int]) -> list[int]:\n"
+        "    return [x + y for x in l for y in l]\n",
+        "single-generator",
+    )

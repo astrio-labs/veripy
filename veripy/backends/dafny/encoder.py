@@ -16,7 +16,10 @@ rejection):
   `continue` would skip it and spin), return, assert
 - expressions: arithmetic with PyFloorDiv/PyMod (INT operands only, except
   `+` which also concatenates two lists or two strs), comparisons
-  (chained), and/or/not, len/min/max/abs, indexing, conditional expressions
+  (chained), and/or/not, len/min/max/abs, indexing, conditional expressions,
+  single-generator list comprehensions (optional `if` filter via PyFlatten),
+  eager `all`/`any`/`sum` genexp folds (filters included; all/any →
+  forall/exists, sum → mapped PySum)
 - specs: requires/ensures/invariant/decreases; forall/exists over range or
   membership domains; `result`; `old(param)` lowers to the parameter (our
   fragment's parameters are immutable — guards copy in, ownership forbids
@@ -736,7 +739,7 @@ class _MethodEncoder:
                 if any(p is None for p in parts):
                     return None
                 return "(" + ", ".join(parts) + ")"
-            case ast.ListComp(elt=elt, generators=[comp]) if not comp.ifs:
+            case ast.ListComp(elt=elt, generators=[comp]) if not comp.is_async:
                 binder_type = self._comp_binder_type(comp)
                 if binder_type is None or not isinstance(comp.target, ast.Name):
                     return None
@@ -891,11 +894,15 @@ class _MethodEncoder:
                 return "(" + ", ".join(self.expr(e) for e in elts) + ")"
             case ast.List(elts=elts):
                 return "[" + ", ".join(self.expr(e) for e in elts) + "]"
-            case ast.ListComp(elt=elt, generators=[comp]) if not comp.ifs \
-                    and not comp.is_async and isinstance(comp.target, ast.Name):
+            case ast.ListComp(elt=elt, generators=[comp]) if not comp.is_async \
+                    and isinstance(comp.target, ast.Name):
                 return self._list_comp(node, elt, comp)
             case ast.ListComp():
-                raise _err(node, "only single-generator, filterless list comprehensions are in the slice encoder")
+                raise _err(node, (
+                    "only single-generator list comprehensions are in the "
+                    "slice encoder (no nested `for`, no async) — bind "
+                    "the inner sequence first, or write nested loops"
+                ))
             case _:
                 raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder "
                                  f"-- see the admitted-construct table in docs/SEMANTICS.md")
@@ -971,6 +978,9 @@ class _MethodEncoder:
                 body = self._deopt(elt)
             else:
                 body = self.expr(elt)
+            # Filters see the binder; Python evaluates each `if` in order
+            # and skips the element when any is false.
+            ifs = [self._bool_ctx(p) for p in comp.ifs]
         finally:
             if saved_override is None:
                 self.name_overrides.pop(raw, None)
@@ -980,7 +990,18 @@ class _MethodEncoder:
                 self.types.pop(raw, None)
             else:
                 self.types[raw] = saved_type
-        return f"seq({count}, {idx} requires 0 <= {idx} < {count} => {body})"
+        seq_of = lambda body: (
+            f"seq({count}, {idx} requires 0 <= {idx} < {count} => {body})"
+        )
+        if not ifs:
+            return seq_of(body)
+        pred = " && ".join(f"({p})" for p in ifs)
+        if require_int_elt:
+            # sum() of a filtered genexp: skipped elements contribute 0.
+            return seq_of(f"(if {pred} then {body} else 0)")
+        # [e for x in xs if P] → flatten a seq of 0/1-element seqs so
+        # order is preserved and omitted elements do not leave a hole.
+        return f"PyFlatten({seq_of(f'(if {pred} then [{body}] else [])')})"
 
     def _escape_str(self, value: str, node: ast.expr) -> str:
         out = []
@@ -1208,11 +1229,11 @@ class _MethodEncoder:
         if name == "sum" and len(args) == 1:
             arg = args[0]
             if isinstance(arg, ast.GeneratorExp):
-                if len(arg.generators) != 1 or arg.generators[0].ifs \
+                if len(arg.generators) != 1 \
                         or arg.generators[0].is_async \
                         or not isinstance(arg.generators[0].target, ast.Name):
                     raise _err(node, (
-                        "sum() accepts only single-generator, filterless "
+                        "sum() accepts only single-generator, non-async "
                         "generator expressions in the slice encoder"
                     ))
                 mapped = self._list_comp(arg, arg.elt, arg.generators[0],
@@ -1233,7 +1254,7 @@ class _MethodEncoder:
                     "comparison (e.g. `x != 0`) instead of relying on bool(<non-bool>)"
                 ))
             return f"({self.expr(args[0])})"
-        if name in ("all", "any") and self.spec_mode and len(args) == 1 \
+        if name in ("all", "any") and len(args) == 1 \
                 and isinstance(args[0], ast.GeneratorExp):
             return self._quantifier(name, args[0])
         raise _err(node, f"call to {name!r} is outside the slice-1 encoder")
@@ -1245,8 +1266,6 @@ class _MethodEncoder:
         saved_types: dict[str, str | None] = {}
         try:
             for comp in gen.generators:
-                if comp.ifs:
-                    raise _err(gen, "quantifier `if` guards are outside the slice-1 encoder")
                 if comp.is_async or not isinstance(comp.target, ast.Name):
                     raise _err(gen, "unsupported quantifier binder")
                 raw = comp.target.id
@@ -1286,7 +1305,14 @@ class _MethodEncoder:
                 binder_names.append(raw)
                 saved_types[raw] = self.types.get(raw)
                 self.types[raw] = binder_type
+                for pred in comp.ifs:
+                    domains.append(self._bool_ctx(pred))
             body = self.expr(gen.elt)
+            if not self.spec_mode and self._eff_type(gen.elt) != "bool":
+                raise _err(gen, (
+                    f"{kind}() needs a bool-valued generator expression — "
+                    "write an explicit comparison (e.g. `x > 0`)"
+                ))
         finally:
             for raw in binder_names:
                 prev = saved_types.get(raw)

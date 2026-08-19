@@ -10,11 +10,12 @@ times out without it) is designated future preamble work — see ROADMAP.
 
 import re
 
-PREAMBLE_VERSION = "0.6"
+PREAMBLE_VERSION = "0.7"
 
 PREAMBLE = """\
-// VeriPy Dafny preamble v0.6 -- Python-exact arithmetic, indexing,
-// slicing, Optionals, folds, powers, outcomes (ARCHITECTURE §7.1, §7 catalog).
+// VeriPy Dafny preamble v0.7 -- Python-exact arithmetic, indexing,
+// slicing, Optionals, folds, powers, outcomes, filtered comprehensions
+// (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int
   requires b != 0
@@ -77,6 +78,15 @@ function PySum(s: seq<int>): int
   decreases |s|
 {
   if |s| == 0 then 0 else PySum(s[..|s|-1]) + s[|s|-1]
+}
+
+// Flatten a seq of parts. Filtered list comprehensions lower to
+// seq(n, i => if P then [e] else []) — a seq of 0/1-element seqs —
+// and this concatenates them in order, matching CPython's one-pass skip.
+function PyFlatten<T>(parts: seq<seq<T>>): seq<T>
+  decreases |parts|
+{
+  if |parts| == 0 then [] else PyFlatten(parts[..|parts|-1]) + parts[|parts|-1]
 }
 
 // x ** e for ints; Python yields a float for negative exponents, so the

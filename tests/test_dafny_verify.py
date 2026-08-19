@@ -273,3 +273,18 @@ def test_tuple_pair_and_unpack_verify(tmp_path, capsys):
     )
     assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_filtered_comp_and_all_verify(tmp_path, capsys):
+    src = tmp_path / "folds.py"
+    src.write_text(
+        "#@ ensures result == all(x > 0 for x in xs)\n"
+        "def all_pos(xs: list[int]) -> bool:\n"
+        "    return all(x > 0 for x in xs)\n"
+        "\n"
+        "#@ ensures result == sum(x for x in xs if x > 0)\n"
+        "def sum_pos(xs: list[int]) -> int:\n"
+        "    return sum(x for x in xs if x > 0)\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out

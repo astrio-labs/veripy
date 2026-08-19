@@ -60,8 +60,8 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 
 - [x] Tuples / multiple returns / unpacking with arity VCs
 - [x] `break` / `continue`
-- [ ] Full comprehensions + eager `all` / `any` / `sum` genexp folds
-      (partial today)
+- [x] Full comprehensions + eager `all` / `any` / `sum` genexp folds
+      (single generator; nested `for` still rejected)
 - [ ] `for x in xs` snapshot iteration as first-class (partial today)
 
 ### Cheap coverage (survey’s admittable peak)
