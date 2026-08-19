@@ -107,7 +107,13 @@ fragment.
 **Assignment** rebinds a local: `σ ⊢ x = e ⇓ σ[x ↦ v]` where `σ ⊢ e ⇓ v`.
 Optional-typed targets inject/project through `PyOpt` (`_coerce`); tuple
 assignment evaluates the right side fully before binding (Python's
-simultaneous semantics — the gcd `a, b = b, a % b` case).
+simultaneous semantics — the gcd `a, b = b, a % b` case). Unpacking a
+tuple-typed name `a, b = p` projects as `a, b := p.0, p.1` (Dafny does
+not unpack a single tuple-typed RHS); arity mismatches are encode-time
+errors, matching Python's `ValueError`. Tuple index `p[k]` is a constant
+(negative wrap like Python) lowered to a Dafny destructor `p.k` — not
+`PyIndex`, which is sequence indexing. Tuple concatenation (`t + u`) is
+rejected: Dafny tuples are product types, not sequences.
 
 **append** on an owned-fresh list: `σ ⊢ xs.append(e) ⇓ σ[xs ↦ σ(xs) ⧺ [v]]`.
 Admission guarantees no alias observes the mutation, so the Dafny value
@@ -180,6 +186,7 @@ translation of the *same* stub the prover saw).
 | list build | §4 append | `⧺` under ownership | corpus (incr_list, intersperse) |
 | for-range / for-each | §4 loops | hoisted while / snapshot | corpus-wide |
 | `break` / `continue` | §4 loops | Dafny `break`/`continue`; for-desugar steps the hidden index before `continue` | unit (while cap, range-for skip) |
+| tuples / unpack / multi-return | §4 assign | Dafny `(T, U)` products; `p.k` / `a, b := p.0, p.1`; arity checked at encode time | unit (pair return, unpack, Hypothesis) |
 | assert | §4 | Dafny `assert` | corpus (rolling_max, below_zero) |
 | truthiness §7.3 | §3 | `\|xs\| != 0` | unit |
 

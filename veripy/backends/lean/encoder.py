@@ -1291,6 +1291,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     and isinstance(ann.slice, ast.Name) \
                     and ann.slice.id == "int":
                 ptypes[arg.arg] = "List Int"
+            elif isinstance(ann, ast.Subscript) \
+                    and isinstance(ann.value, ast.Name) \
+                    and ann.value.id in ("tuple", "Tuple"):
+                raise _reject(
+                    "tuple types are outside the Lean slice — the Dafny "
+                    "backend admits them; this slice has no product types",
+                    fn.lineno)
             else:
                 raise _reject(f"parameter {arg.arg!r} must be `int` or "
                               f"`list[int]` in this slice", fn.lineno)
@@ -1305,6 +1312,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                        min_len=_requires_min_len(spec_fn, lists0),
                        pos_names=_requires_positive(spec_fn))
         ret = fn.returns
+        if isinstance(ret, ast.Subscript) \
+                and isinstance(ret.value, ast.Name) \
+                and ret.value.id in ("tuple", "Tuple"):
+            raise _reject(
+                "tuple types are outside the Lean slice — the Dafny "
+                "backend admits them; this slice has no product types",
+                fn.lineno)
         if not (isinstance(ret, ast.Name) and ret.id in ("int", "bool")):
             raise _reject("return type must be `int` or `bool` in this "
                           "slice", fn.lineno)
@@ -1337,6 +1351,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "Dafny backend admits them; this slice's fuel "
                     "recursion has no continue that still advances the "
                     "index", node.lineno)
+            if isinstance(node, ast.Return) \
+                    and isinstance(node.value, ast.Tuple):
+                raise _reject(
+                    "tuple literals are outside the Lean slice — the "
+                    "Dafny backend admits them; this slice has no "
+                    "product types", node.lineno)
 
         binders = " ".join(f"({_ident(p)} : {ptypes[p]})" for p in params)
         loop = _split_loop(fn, spec_fn)

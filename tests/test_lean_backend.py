@@ -1412,3 +1412,23 @@ def test_lean_rejects_break_and_continue_loudly():
     )
     with pytest.raises(EncodeError, match="break/continue are outside the Lean slice"):
         _encode(src)
+
+
+def test_lean_rejects_tuple_types_loudly():
+    src = (
+        "#@ ensures result[0] == x\n"
+        "def pair(x: int, y: int) -> tuple[int, int]:\n"
+        "    return (x, y)\n"
+    )
+    with pytest.raises(EncodeError, match="tuple types are outside the Lean slice"):
+        _encode(src)
+
+
+def test_lean_rejects_tuple_params_loudly():
+    src = (
+        "#@ ensures result == p[0]\n"
+        "def fst(p: tuple[int, int]) -> int:\n"
+        "    return p[0]\n"
+    )
+    with pytest.raises(EncodeError, match="tuple types are outside the Lean slice"):
+        _encode(src)

@@ -37,7 +37,7 @@ SAFE_ENV = {
     if hasattr(_builtins, name)
 }
 
-# -- type descriptors ('int' | 'bool' | 'str' | ('list', inner)) --------------
+# -- type descriptors ('int' | 'bool' | 'str' | ('list', inner) | ('tuple', ...)) --------------
 
 
 def type_descriptor(ann: ast.expr | None):
@@ -46,6 +46,9 @@ def type_descriptor(ann: ast.expr | None):
             return n
         case ast.Subscript(value=ast.Name(id="list"), slice=inner):
             return ("list", type_descriptor(inner))
+        case ast.Subscript(value=ast.Name(id=("tuple" | "Tuple")), slice=sl):
+            elts = sl.elts if isinstance(sl, ast.Tuple) else [sl]
+            return ("tuple", *(type_descriptor(e) for e in elts))
         case _:
             raise ValueError(f"unsupported annotation: {ast.unparse(ann) if ann else None}")
 
@@ -62,6 +65,8 @@ def strategy_for(tdesc):
             return st.text(max_size=12)
         case ("list", inner):
             return st.lists(strategy_for(inner), max_size=12)
+        case ("tuple", *inners):
+            return st.tuples(*(strategy_for(t) for t in inners))
     raise ValueError(f"no strategy for {tdesc!r}")
 
 
@@ -75,6 +80,8 @@ def to_dafny(value, tdesc):
             return _dafny.Seq(map(_dafny.CodePoint, value))
         case ("list", inner):
             return _dafny.Seq(to_dafny(v, inner) for v in value)
+        case ("tuple", *inners):
+            return tuple(to_dafny(v, t) for v, t in zip(value, inners))
     raise ValueError(f"cannot adapt {tdesc!r}")
 
 
@@ -88,6 +95,8 @@ def from_dafny(value, tdesc):
             return "".join(str(cp) for cp in value)
         case ("list", inner):
             return [from_dafny(v, inner) for v in value]
+        case ("tuple", *inners):
+            return tuple(from_dafny(v, t) for v, t in zip(value, inners))
     raise ValueError(f"cannot adapt {tdesc!r}")
 
 

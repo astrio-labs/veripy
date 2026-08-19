@@ -195,3 +195,33 @@ def test_break_and_continue_translation_faithful(tmp_path):
     assert result.functions and all(f.ok for f in result.functions), [
         (f.name, f.mismatch, f.error) for f in result.functions
     ]
+
+
+def test_tuple_translation_faithful(tmp_path):
+    src = tmp_path / "pair.py"
+    src.write_text(
+        "#@ ensures result[0] == x\n"
+        "#@ ensures result[1] == y\n"
+        "def pair(x: int, y: int) -> tuple[int, int]:\n"
+        "    return (x, y)\n"
+        "\n"
+        "#@ ensures result == p[0] + p[1]\n"
+        "def add_pair(p: tuple[int, int]) -> int:\n"
+        "    a, b = p\n"
+        "    return a + b\n"
+        "\n"
+        "#@ ensures result == p[-1]\n"
+        "def last(p: tuple[int, bool]) -> bool:\n"
+        "    return p[-1]\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]
+
+
+def test_tuple_value_adapter_round_trips():
+    tdesc = ("tuple", "int", "bool")
+    value = (7, True)
+    assert from_dafny(to_dafny(value, tdesc), tdesc) == value

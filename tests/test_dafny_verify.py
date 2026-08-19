@@ -256,3 +256,20 @@ def test_while_break_cap_verifies(tmp_path, capsys):
     )
     assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_tuple_pair_and_unpack_verify(tmp_path, capsys):
+    src = tmp_path / "pair.py"
+    src.write_text(
+        "#@ ensures result[0] == x\n"
+        "#@ ensures result[1] == y\n"
+        "def pair(x: int, y: int) -> tuple[int, int]:\n"
+        "    return (x, y)\n"
+        "\n"
+        "#@ ensures result == p[0] + p[1]\n"
+        "def add_pair(p: tuple[int, int]) -> int:\n"
+        "    a, b = p\n"
+        "    return a + b\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out

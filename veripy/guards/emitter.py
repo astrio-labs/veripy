@@ -65,6 +65,14 @@ def _descriptor(ann: ast.expr | None, where: ast.AST) -> tuple:
             return ("list", _descriptor(inner, where))
         case ast.Subscript(value=ast.Name(id="Optional"), slice=inner):
             return ("opt", _descriptor(inner, where))
+        case ast.Subscript(value=ast.Name(id=("tuple" | "Tuple")), slice=sl):
+            elts = sl.elts if isinstance(sl, ast.Tuple) else [sl]
+            if not (2 <= len(elts) <= 8):
+                raise GuardGenError(
+                    "tuple types in the fragment have 2–8 elements",
+                    getattr(where, "lineno", None),
+                )
+            return ("tuple", *(_descriptor(e, where) for e in elts))
         case ast.BinOp(left=left, op=ast.BitOr(), right=ast.Constant(value=None)):
             return ("opt", _descriptor(left, where))
         case ast.BinOp(left=ast.Constant(value=None), op=ast.BitOr(), right=right):
