@@ -7,7 +7,6 @@ build/
 .crosshair/
 
 # Internal planning docs — kept locally, not published.
-docs/ROADMAP.md
 docs/PAPER-OUTLINE.md
 
 # Paper prep — private, not for publication.
