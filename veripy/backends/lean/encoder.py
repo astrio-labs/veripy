@@ -529,18 +529,21 @@ def _bool_expr(e: ast.expr, names: set[str], line: int,
         return "true"
     if isinstance(e, ast.Constant) and e.value is False:
         return "false"
-    if isinstance(e, ast.Call):
-        q = _quantifier(e, names, line, None, None, False, None, lc)
-        if q is not None:
-            # `decide (∀ n : Int, …)` has no Decidable instance — Int is
-            # infinite — so wrapping the spec-side Prop encoding would
-            # fail elaboration rather than reject at encode time.
-            raise _reject(
-                "all/any in a bool-returning body are outside the Lean "
-                "slice — `decide` has no instance for unbounded ∀/∃ "
-                "over Int; the Dafny backend admits them as forall/"
-                "exists",
-                line)
+    # `decide (∀ n : Int, …)` has no Decidable instance — Int is
+    # infinite — so wrapping the spec-side Prop encoding would fail
+    # elaboration rather than reject at encode time. Walk the whole
+    # return (not just a top-level `all`/`any` Call): `not all(...)`
+    # and `all(...) and P` otherwise still land under `decide`.
+    for node in ast.walk(e):
+        if isinstance(node, ast.Call):
+            q = _quantifier(node, names, line, None, None, False, None, lc)
+            if q is not None:
+                raise _reject(
+                    "all/any in a bool-returning body are outside the Lean "
+                    "slice — `decide` has no instance for unbounded ∀/∃ "
+                    "over Int; the Dafny backend admits them as forall/"
+                    "exists",
+                    line)
     if isinstance(e, (ast.Compare, ast.BoolOp, ast.UnaryOp)):
         return f"(decide {_prop_expr(e, names, line, lc=lc)})"
     raise _reject("a bool return must be True/False or a boolean "

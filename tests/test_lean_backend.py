@@ -1447,6 +1447,28 @@ def test_lean_rejects_all_in_a_bool_body():
         _encode(src)
 
 
+def test_lean_rejects_not_all_in_a_bool_body():
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result == True or result == False\n"
+        "def f(n: int) -> bool:\n"
+        "    return not all(i >= 0 for i in range(n))\n"
+    )
+    with pytest.raises(EncodeError, match="all/any in a bool-returning body"):
+        _encode(src)
+
+
+def test_lean_rejects_all_conjoined_in_a_bool_body():
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result == True or result == False\n"
+        "def f(n: int) -> bool:\n"
+        "    return all(i >= 0 for i in range(n)) and n >= 0\n"
+    )
+    with pytest.raises(EncodeError, match="all/any in a bool-returning body"):
+        _encode(src)
+
+
 def test_lean_rejects_filtered_all_loudly():
     src = (
         "#@ ensures result == True or result == False\n"
