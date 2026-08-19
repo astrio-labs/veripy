@@ -1434,15 +1434,17 @@ def test_lean_rejects_tuple_params_loudly():
         _encode(src)
 
 
-def test_lean_encodes_range_all_in_a_bool_body():
+def test_lean_rejects_all_in_a_bool_body():
+    # Dafny admits `return all(...)` as forall; wrapping that Prop in
+    # `decide` has no Decidable instance on unbounded Int.
     src = (
         "#@ requires n >= 0\n"
         "#@ ensures result == True\n"
         "def f(n: int) -> bool:\n"
         "    return all(i >= 0 for i in range(n))\n"
     )
-    enc = _encode(src)
-    assert "∀" in enc.lean_source
+    with pytest.raises(EncodeError, match="all/any in a bool-returning body"):
+        _encode(src)
 
 
 def test_lean_rejects_filtered_all_loudly():
