@@ -368,10 +368,7 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     # exactly the body. That licenses `x % d` under
     # `forall d in range(1, m)` without a contract clause.
     body_pos = set(lc.pos_names)
-    if len(it.args) == 2 and isinstance(it.args[0], ast.Constant) \
-            and isinstance(it.args[0].value, int) \
-            and not isinstance(it.args[0].value, bool) \
-            and it.args[0].value >= 1:
+    if len(it.args) == 2 and _positive_bound(it.args[0], lc):
         body_pos.add(v)
     else:
         body_pos.discard(v)   # the binder SHADOWS any outer fact
@@ -764,6 +761,36 @@ def _requires_min_len(spec_fn: FunctionSpec,
         except SyntaxError:
             continue  # the clause parser rejects it loudly later
     return bounds
+
+
+def _positive_bound(e: ast.expr, lc: "_ListCtx") -> bool:
+    """Is this range lower bound provably >= 1, so binders above it are
+    positive? A literal, a name the context already knows positive, or
+    either of those plus a non-negative literal — which is what
+    `range(result + 1, m)` needs once `result >= 1` is established by an
+    earlier clause."""
+    if isinstance(e, ast.Constant) and isinstance(e.value, int) \
+            and not isinstance(e.value, bool):
+        return e.value >= 1
+    if isinstance(e, ast.Name):
+        return e.id in lc.pos_names
+    if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
+        for a, b in ((e.left, e.right), (e.right, e.left)):
+            if isinstance(b, ast.Constant) and isinstance(b.value, int) \
+                    and not isinstance(b.value, bool) and b.value >= 0:
+                if _positive_bound(a, lc) or (b.value >= 1
+                                              and _nonneg_bound(a, lc)):
+                    return True
+    return False
+
+
+def _nonneg_bound(e: ast.expr, lc: "_ListCtx") -> bool:
+    """Is this expression provably >= 0? Positive implies non-negative;
+    a literal speaks for itself."""
+    if isinstance(e, ast.Constant) and isinstance(e.value, int) \
+            and not isinstance(e.value, bool):
+        return e.value >= 0
+    return _positive_bound(e, lc)
 
 
 def _sign_facts(e: ast.expr) -> tuple[set[str], set[str], set[str]]:
@@ -2210,10 +2237,25 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             hyps.append(
                 f"(h{i} : "
                 f"{_prop_expr(expr, names, line, rename=rename, avoid=avoid, lc=lc0)})")
-        posts = [(_prop_expr(expr, names, line, result=app,
-                             rename=rename, result_is_bool=is_bool,
-                             avoid=avoid, lc=lc0), line)
-                 for expr, line in ensures]
+        # Dafny's clause-ordering rule: an `ensures` may lean on the
+        # clauses BEFORE it for well-formedness, because those are
+        # proven first. `ensures result >= 1` therefore licenses a later
+        # `a % result`. Not circular — clause 1 is checked with no
+        # assumptions, and each later clause only assumes what is
+        # already established.
+        posts = []
+        post_lc = lc0
+        for expr, line in ensures:
+            posts.append((_prop_expr(expr, names, line, result=app,
+                                     rename=rename,
+                                     result_is_bool=is_bool,
+                                     avoid=avoid, lc=post_lc), line))
+            _, _, e_pos = _sign_facts(expr)
+            if e_pos:
+                post_lc = _ListCtx(post_lc.lists, post_lc.safe_idx,
+                                   post_lc.take_idx, post_lc.scaffold,
+                                   post_lc.min_len,
+                                   frozenset(post_lc.pos_names | e_pos))
         goal = " ∧ ".join(p for p, _ in posts)
         sig = " ".join(x for x in [thm_binders, *hyps] if x)
         first_ensures_line = posts[0][1]
