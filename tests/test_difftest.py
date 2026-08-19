@@ -13,6 +13,7 @@ from veripy.difftest.harness import (
     difftest_file,
     from_dafny,
     to_dafny,
+    type_descriptor,
 )
 
 
@@ -225,6 +226,48 @@ def test_tuple_value_adapter_round_trips():
     tdesc = ("tuple", "int", "bool")
     value = (7, True)
     assert from_dafny(to_dafny(value, tdesc), tdesc) == value
+
+
+def test_optional_in_tuple_type_descriptor():
+    import ast
+
+    tree = ast.parse(
+        "def f(p: tuple[int | None, int]) -> tuple[int | None, int]:\n"
+        "    return p\n"
+    )
+    fn = tree.body[0]
+    assert type_descriptor(fn.args.args[0].annotation) == (
+        "tuple", ("opt", "int"), "int"
+    )
+    assert type_descriptor(fn.returns) == ("tuple", ("opt", "int"), "int")
+
+
+def test_optional_from_dafny_projects_pynone_and_pysome():
+    class None_:
+        is_PyNone = True
+
+    class Some:
+        def __init__(self, v):
+            self.v = v
+            self.is_PyNone = False
+
+    assert from_dafny(None_(), ("opt", "int")) is None
+    assert from_dafny(Some(3), ("opt", "int")) == 3
+    assert from_dafny((None_(), 1), ("tuple", ("opt", "int"), "int")) == (None, 1)
+
+
+def test_optional_tuple_translation_faithful(tmp_path):
+    src = tmp_path / "optpair.py"
+    src.write_text(
+        "#@ ensures result[1] == p[1]\n"
+        "def ident(p: tuple[int | None, int]) -> tuple[int | None, int]:\n"
+        "    return p\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]
 
 
 def test_filtered_comp_and_folds_translation_faithful(tmp_path):
