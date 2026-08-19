@@ -2244,6 +2244,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # assumptions, and each later clause only assumes what is
         # already established.
         posts = []
+        earlier_posts: list[str] = []
         post_lc = lc0
         for expr, line in ensures:
             posts.append((_prop_expr(expr, names, line, result=app,
@@ -2252,6 +2253,11 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                      avoid=avoid, lc=post_lc), line))
             _, _, e_pos = _sign_facts(expr)
             if e_pos:
+                # Remember the TRANSLATED clause: if a later divisor
+                # rests on it, the generated proof has to establish it
+                # first, because it is part of the goal rather than a
+                # hypothesis.
+                earlier_posts.append(posts[-1][0])
                 post_lc = _ListCtx(post_lc.lists, post_lc.safe_idx,
                                    post_lc.take_idx, post_lc.scaffold,
                                    post_lc.min_len,
@@ -2379,12 +2385,18 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # a VARIABLE divisor, and the bridges to Lean's own `/` and `%`
         # (which omega does reason about natively, for constant divisors).
         seen_div: dict[str, str] = {}
+        emitted_earlier = False
         for si, (num, den, is_mod) in enumerate(_divmod_sites(fn, spec_fn)):
             try:
+                # Same context the ACCEPTANCE used, `result` included:
+                # translating the divisor without it silently skipped
+                # every site whose positivity came from an earlier
+                # clause, so a contract the encoder had just admitted
+                # went to the prover with no bounds at all.
                 den_t = _int_expr(den, names, first_ensures_line,
-                                  rename=rename, lc=lc0)
+                                  result=app, rename=rename, lc=post_lc)
                 num_t = _int_expr(num, names, first_ensures_line,
-                                  result=app, rename=rename, lc=lc0)
+                                  result=app, rename=rename, lc=post_lc)
             except EncodeError:
                 # The site reads a name bound INSIDE the loop (the index
                 # or the accumulator), which theorem context does not
@@ -2396,6 +2408,23 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             if hname is None:
                 hname = f"hdpos{len(seen_div)}"
                 seen_div[den_t] = hname
+                if app in den_t and earlier_posts and not emitted_earlier:
+                    # The divisor mentions `result`, so its positivity
+                    # rests on an earlier clause — which is a GOAL
+                    # conjunct, not a hypothesis. Prove it up front so
+                    # omega can use it.
+                    for ei, ep in enumerate(earlier_posts):
+                        emit(f"  have hpost{ei} : {ep} := by",
+                             first_ensures_line)
+                        for tl in ("    try unfold VeriPy.PyAbs",
+                                   "    try dsimp only",
+                                   "    try simp only [decide_eq_true_eq]",
+                                   "    repeat' split",
+                                   "    all_goals (try intros)",
+                                   "    all_goals (try simp_all)",
+                                   "    all_goals (first | omega | trivial)"):
+                            emit(tl, first_ensures_line)
+                    emitted_earlier = True
                 emit(f"  have {hname} : (0:Int) < {den_t} := by omega",
                      first_ensures_line)
             if is_mod:

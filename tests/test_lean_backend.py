@@ -1660,6 +1660,47 @@ def test_ensures_clauses_may_lean_on_earlier_ones():
         _encode(too_weak)
 
 
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_cross_clause_divisors_verify(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # Admission is only half the job. The divisor's positivity rests on
+    # an earlier clause, and that clause is a GOAL conjunct rather than
+    # a hypothesis — so the generated proof has to establish it first,
+    # or the contract encodes and then fails at the prover. It did
+    # exactly that until the hint path learned the same context the
+    # acceptance used.
+    src = tmp_path / "crossclause.py"
+    src.write_text("#@ requires n >= 1\n"
+                   "#@ ensures result >= 1\n"
+                   "#@ ensures n % result >= 0\n"
+                   "def f(n: int) -> int:\n"
+                   "    return n\n")
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The same, with the fact reaching a quantifier's lower bound.
+    q = tmp_path / "qbound.py"
+    q.write_text("#@ requires n >= 1\n"
+                 "#@ ensures result >= 1\n"
+                 "#@ ensures forall d in range(result + 1, n + 1) :: "
+                 "n % d >= 0\n"
+                 "def f(n: int) -> int:\n"
+                 "    return n\n")
+    assert verify_structured(q, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # A false clause in the same shape still fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ requires n >= 1\n"
+                   "#@ ensures result >= 1\n"
+                   "#@ ensures n % result >= 1\n"
+                   "def f(n: int) -> int:\n"
+                   "    return n\n")
+    assert verify_structured(bad, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against
