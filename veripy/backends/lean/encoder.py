@@ -363,6 +363,18 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     hi_arg = it.args[-1]
     lo_is_zero = len(it.args) == 1 \
         or (isinstance(it.args[0], ast.Constant) and it.args[0].value == 0)
+    # A binder over `range(lo, hi)` with a positive literal `lo` is
+    # itself positive wherever the bound hypothesis guards it, which is
+    # exactly the body. That licenses `x % d` under
+    # `forall d in range(1, m)` without a contract clause.
+    body_pos = set(lc.pos_names)
+    if len(it.args) == 2 and isinstance(it.args[0], ast.Constant) \
+            and isinstance(it.args[0].value, int) \
+            and not isinstance(it.args[0].value, bool) \
+            and it.args[0].value >= 1:
+        body_pos.add(v)
+    else:
+        body_pos.discard(v)   # the binder SHADOWS any outer fact
     if lc.scaffold:
         safe[v] = "*"
     elif lo_is_zero and isinstance(hi_arg, ast.Call) \
@@ -374,7 +386,7 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         safe[v] = hi_arg.args[0].id
     body_lc = _ListCtx(lc.lists, safe,
                        None if lc.take_idx == v else lc.take_idx,
-                       lc.scaffold, lc.min_len, lc.pos_names)
+                       lc.scaffold, lc.min_len, frozenset(body_pos))
     # Two capture hazards at the binder, both measured classes:
     # 1. The theorem's rename map (param named after its own function)
     #    must NOT apply under a binder that reuses the renamed name —
@@ -752,6 +764,63 @@ def _requires_min_len(spec_fn: FunctionSpec,
         except SyntaxError:
             continue  # the clause parser rejects it loudly later
     return bounds
+
+
+def _sign_facts(e: ast.expr) -> tuple[set[str], set[str], set[str]]:
+    """(nonneg, nonzero, positive) names a conjunction of comparisons
+    establishes. Only TOP-LEVEL conjuncts count: under a `not` or an
+    `or` the comparison stops being a guarantee."""
+    nonneg: set[str] = set()
+    nonzero: set[str] = set()
+    positive: set[str] = set()
+
+    def walk(x: ast.expr) -> None:
+        if isinstance(x, ast.BoolOp) and isinstance(x.op, ast.And):
+            for v in x.values:
+                walk(v)
+            return
+        if not isinstance(x, ast.Compare):
+            return
+        # Chained comparisons (`0 <= i <= n`) are conjunctions.
+        left = x.left
+        for op, right in zip(x.ops, x.comparators):
+            for a, o, b in ((left, op, right),):
+                if isinstance(a, ast.Name) and isinstance(b, ast.Constant) \
+                        and isinstance(b.value, int) \
+                        and not isinstance(b.value, bool):
+                    c = b.value
+                    if isinstance(o, ast.GtE) and c >= 0:
+                        nonneg.add(a.id)
+                        if c >= 1:
+                            positive.add(a.id)
+                    elif isinstance(o, ast.Gt) and c >= -1:
+                        nonneg.add(a.id)
+                        if c >= 0:
+                            positive.add(a.id)
+                    elif isinstance(o, ast.NotEq) and c == 0:
+                        nonzero.add(a.id)
+                    elif isinstance(o, ast.Eq) and c >= 1:
+                        positive.add(a.id)
+                if isinstance(b, ast.Name) and isinstance(a, ast.Constant) \
+                        and isinstance(a.value, int) \
+                        and not isinstance(a.value, bool):
+                    c = a.value
+                    if isinstance(o, ast.LtE) and c >= 0:
+                        nonneg.add(b.id)
+                        if c >= 1:
+                            positive.add(b.id)
+                    elif isinstance(o, ast.Lt) and c >= -1:
+                        nonneg.add(b.id)
+                        if c >= 0:
+                            positive.add(b.id)
+                    elif isinstance(o, ast.NotEq) and c == 0:
+                        nonzero.add(b.id)
+                    elif isinstance(o, ast.Eq) and c >= 1:
+                        positive.add(b.id)
+            left = right
+
+    walk(e)
+    return nonneg, nonzero, positive
 
 
 def _requires_positive(spec_fn: FunctionSpec) -> frozenset[str]:
@@ -1571,15 +1640,43 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             pvar = "p"
             while pvar in used_plain or pvar in (fuel, kvar):
                 pvar += "'"
+            # Divisor positivity from LOOP CONTEXT. After substitution
+            # every step expression is written in terms of the loop-HEAD
+            # accumulator values, so facts holding at the head apply to
+            # it. The invariant holds at the head; the condition holds
+            # additionally wherever the body runs. A `while y != 0` body
+            # under an invariant `y >= 0` therefore has y > 0, which is
+            # what makes `x % y` well-formed there.
+            inv_nn, inv_nz, inv_pos = _sign_facts(wloop.inv)
+            cnd_nn, cnd_nz, cnd_pos = _sign_facts(wloop.cond)
+            nn = inv_nn | cnd_nn
+            nz = inv_nz | cnd_nz
+            body_pos = frozenset(lc0.pos_names | inv_pos | cnd_pos
+                                 | (nn & nz))
+            # The condition is evaluated BEFORE it is known to hold, so
+            # only the INVARIANT's facts are available to it — but all of
+            # them, including a positivity that two separate conjuncts
+            # establish together (`y >= 0` and `y != 0`). Taking only the
+            # directly-positive names here rejected valid loops. The
+            # condition's own facts stay out, since using the condition
+            # to justify its own well-formedness would be circular. The
+            # invariant gets neither (same reason); quantifier bounds
+            # still apply there.
+            cond_pos = frozenset(lc0.pos_names | inv_pos
+                                 | (inv_nn & inv_nz))
+            body_lc = _ListCtx(lc0.lists, {}, None, min_len=lc0.min_len,
+                               pos_names=body_pos)
+            cond_lc = _ListCtx(lc0.lists, {}, None, min_len=lc0.min_len,
+                               pos_names=cond_pos)
             inv_lc = _ListCtx(lc0.lists, {}, None, scaffold=True,
                               min_len=lc0.min_len,
                               pos_names=lc0.pos_names)
             init_ts = [_int_expr(e, names, fn.lineno, lc=lc0)
                        for e in wloop.inits]
             cond_t = _prop_expr(wloop.cond, body_names, wloop.while_line,
-                                lc=lc0)
+                                lc=cond_lc)
             meas_t = _int_expr(wloop.meas, body_names, wloop.meas_line,
-                               lc=lc0)
+                               lc=body_lc)
             inv_t = _prop_expr(wloop.inv, body_names, wloop.inv_line,
                                lc=inv_lc)
             # Sequential substitution: each body assignment is rewritten
@@ -1596,7 +1693,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     copy.deepcopy(rhs)) for nm, rhs in group}
                 subst.update(updated)
             step_ts = [
-                _int_expr(subst[a], body_names, wloop.while_line, lc=lc0)
+                _int_expr(subst[a], body_names, wloop.while_line,
+                          lc=body_lc)
                 if a in subst else _ident(a)
                 for a in wloop.accs]
             acc_ty = "Int" if nacc == 1 else \
@@ -1639,6 +1737,37 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                  wloop.inv_line)
             emit(f"      {_ident(gen_cond)} {argsp}{projs} = false := by",
                  wloop.inv_line)
+            # Variable-divisor mod bounds, now supplyable inside the
+            # induction: the invariant and the condition are unfolded
+            # into the context by the simp above, so `0 < y` is provable
+            # there even though the theorem carries no `requires`. Each
+            # `have` is guarded, so a divisor whose positivity is not
+            # provable in a given branch simply contributes nothing
+            # rather than breaking the proof.
+            wdiv_facts: list[str] = []
+            wsites: list[tuple[ast.expr, ast.expr]] = []
+            for expr in ([wloop.cond, wloop.meas]
+                         + [v for g in wloop.steps for _, v in g]):
+                for node in ast.walk(expr):
+                    if isinstance(node, ast.BinOp) \
+                            and isinstance(node.op, ast.Mod):
+                        wsites.append((node.left, node.right))
+            for wi, (wn, wd) in enumerate(wsites):
+                if isinstance(wd, ast.Constant):
+                    continue          # already handled by the bridge
+                try:
+                    wnt = _int_expr(wn, body_names, wloop.while_line,
+                                    lc=body_lc)
+                    wdt = _int_expr(wd, body_names, wloop.while_line,
+                                    lc=body_lc)
+                except EncodeError:
+                    continue
+                wdiv_facts.append(
+                    f"      all_goals (try (have hwlo{wi} := "
+                    f"VeriPy.PyMod_nonneg {wnt} {wdt} (by omega)))")
+                wdiv_facts.append(
+                    f"      all_goals (try (have hwhi{wi} := "
+                    f"VeriPy.PyMod_lt {wnt} {wdt} (by omega)))")
             sq_facts: list[str] = []
             for qi, qe in enumerate(_squared_terms([wloop.cond,
                                                     wloop.inv])):
@@ -1648,7 +1777,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 except EncodeError:
                     continue
                 sq_facts.append(f"have hsq{qi} := VeriPy.SqGeSelf {qt}")
-            wladder = [*(f"      {f}" for f in sq_facts),
+            wladder = [*wdiv_facts,
+                       *(f"      {f}" for f in sq_facts),
                        "      all_goals (try omega)",
                        "      all_goals (try simp_all)",
                        "      all_goals (first | omega | trivial)"]
