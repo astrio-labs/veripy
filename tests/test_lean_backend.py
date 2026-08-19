@@ -1552,6 +1552,55 @@ def test_divisor_positivity_from_loop_context():
             _encode(src), why
 
 
+def test_condition_divisors_may_use_the_whole_invariant():
+    # The invariant holds at the loop HEAD, which is exactly where the
+    # condition is evaluated, so all of its facts are available there —
+    # including a positivity that two separate conjuncts establish
+    # together. Taking only the directly-positive names rejected valid
+    # loops.
+    base = ("#@ requires n >= 1\n"
+            "#@ ensures result >= 0\n"
+            "def f(n: int) -> int:\n"
+            "    y = n\n"
+            "    r = 0\n"
+            "    while n % y != 0:\n"
+            "{inv}"
+            "        #@ decreases y\n"
+            "        r = r + 1\n"
+            "        y = y - 1\n"
+            "    return r\n")
+    both = base.format(inv="        #@ invariant y >= 0\n"
+                           "        #@ invariant y != 0\n"
+                           "        #@ invariant r >= 0\n")
+    assert "VeriPy.PyMod" in _encode(both).lean_source
+
+    # Nonneg alone still leaves y == 0 possible.
+    only_nn = base.format(inv="        #@ invariant y >= 0\n"
+                              "        #@ invariant r >= 0\n")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(only_nn)
+
+    # The condition's OWN facts stay out: using a condition to justify
+    # its own well-formedness would be circular. Python's `and` does
+    # short-circuit, so this particular program is safe in CPython;
+    # modeling that is a separate feature, and refusing is the
+    # conservative side of it.
+    circular = ("#@ requires n >= 1\n"
+                "#@ ensures result >= 0\n"
+                "def f(n: int) -> int:\n"
+                "    y = n\n"
+                "    r = 0\n"
+                "    while y != 0 and n % y != 0:\n"
+                "        #@ invariant y >= 0\n"
+                "        #@ invariant r >= 0\n"
+                "        #@ decreases y\n"
+                "        r = r + 1\n"
+                "        y = y - 1\n"
+                "    return r\n")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(circular)
+
+
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_context_positive_divisor_verifies(tmp_path):
     from veripy.agentio import verify_structured

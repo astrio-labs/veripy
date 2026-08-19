@@ -1654,10 +1654,16 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             body_pos = frozenset(lc0.pos_names | inv_pos | cnd_pos
                                  | (nn & nz))
             # The condition is evaluated BEFORE it is known to hold, so
-            # only the invariant's facts are available to it. The
-            # invariant gets neither (its own well-formedness must not
-            # lean on itself); quantifier bounds still apply there.
-            cond_pos = frozenset(lc0.pos_names | inv_pos)
+            # only the INVARIANT's facts are available to it — but all of
+            # them, including a positivity that two separate conjuncts
+            # establish together (`y >= 0` and `y != 0`). Taking only the
+            # directly-positive names here rejected valid loops. The
+            # condition's own facts stay out, since using the condition
+            # to justify its own well-formedness would be circular. The
+            # invariant gets neither (same reason); quantifier bounds
+            # still apply there.
+            cond_pos = frozenset(lc0.pos_names | inv_pos
+                                 | (inv_nn & inv_nz))
             body_lc = _ListCtx(lc0.lists, {}, None, min_len=lc0.min_len,
                                pos_names=body_pos)
             cond_lc = _ListCtx(lc0.lists, {}, None, min_len=lc0.min_len,
@@ -1741,7 +1747,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             wdiv_facts: list[str] = []
             wsites: list[tuple[ast.expr, ast.expr]] = []
             for expr in ([wloop.cond, wloop.meas]
-                         + [v for _, v in wloop.steps]):
+                         + [v for g in wloop.steps for _, v in g]):
                 for node in ast.walk(expr):
                     if isinstance(node, ast.BinOp) \
                             and isinstance(node.op, ast.Mod):
