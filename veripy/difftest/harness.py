@@ -37,7 +37,7 @@ SAFE_ENV = {
     if hasattr(_builtins, name)
 }
 
-# -- type descriptors ('int' | 'bool' | 'str' | ('list', inner) | ('tuple', ...)) --------------
+# -- type descriptors ('int' | 'bool' | 'str' | ('list', inner) | ('tuple', ...) | ('opt', inner)) --------------
 
 
 def type_descriptor(ann: ast.expr | None):
@@ -49,6 +49,12 @@ def type_descriptor(ann: ast.expr | None):
         case ast.Subscript(value=ast.Name(id=("tuple" | "Tuple")), slice=sl):
             elts = sl.elts if isinstance(sl, ast.Tuple) else [sl]
             return ("tuple", *(type_descriptor(e) for e in elts))
+        case ast.Subscript(value=ast.Name(id="Optional"), slice=inner):
+            return ("opt", type_descriptor(inner))
+        case ast.BinOp(left=left, op=ast.BitOr(), right=ast.Constant(value=None)):
+            return ("opt", type_descriptor(left))
+        case ast.BinOp(left=ast.Constant(value=None), op=ast.BitOr(), right=right):
+            return ("opt", type_descriptor(right))
         case _:
             raise ValueError(f"unsupported annotation: {ast.unparse(ann) if ann else None}")
 
@@ -67,10 +73,12 @@ def strategy_for(tdesc):
             return st.lists(strategy_for(inner), max_size=12)
         case ("tuple", *inners):
             return st.tuples(*(strategy_for(t) for t in inners))
+        case ("opt", inner):
+            return st.one_of(st.none(), strategy_for(inner))
     raise ValueError(f"no strategy for {tdesc!r}")
 
 
-def to_dafny(value, tdesc):
+def to_dafny(value, tdesc, *, opt=None):
     import _dafny
 
     match tdesc:
@@ -79,9 +87,16 @@ def to_dafny(value, tdesc):
         case "str":
             return _dafny.Seq(map(_dafny.CodePoint, value))
         case ("list", inner):
-            return _dafny.Seq(to_dafny(v, inner) for v in value)
+            return _dafny.Seq(to_dafny(v, inner, opt=opt) for v in value)
         case ("tuple", *inners):
-            return tuple(to_dafny(v, t) for v, t in zip(value, inners))
+            return tuple(to_dafny(v, t, opt=opt) for v, t in zip(value, inners))
+        case ("opt", inner):
+            if opt is None:
+                raise ValueError("Optional values need compiled PyOpt constructors")
+            none, some = opt
+            if value is None:
+                return none()
+            return some(to_dafny(value, inner, opt=opt))
     raise ValueError(f"cannot adapt {tdesc!r}")
 
 
@@ -97,6 +112,10 @@ def from_dafny(value, tdesc):
             return [from_dafny(v, inner) for v in value]
         case ("tuple", *inners):
             return tuple(from_dafny(v, t) for v, t in zip(value, inners))
+        case ("opt", inner):
+            if getattr(value, "is_PyNone", False):
+                return None
+            return from_dafny(value.v, inner)
     raise ValueError(f"cannot adapt {tdesc!r}")
 
 
@@ -173,7 +192,11 @@ def diff_functions(
         positional = [v for n, v in zip(param_names, fresh) if n not in kwonly_names]
         keywords = {n: v for n, v in zip(param_names, fresh) if n in kwonly_names}
         expected = original_fn(*positional, **keywords)
-        dafny_args = [to_dafny(a, t) for a, t in zip(args, param_tdescs)]
+        g = getattr(compiled_fn, "__globals__", {})
+        opt = (g["PyOpt_PyNone"], g["PyOpt_PySome"]) if (
+            "PyOpt_PyNone" in g and "PyOpt_PySome" in g
+        ) else None
+        dafny_args = [to_dafny(a, t, opt=opt) for a, t in zip(args, param_tdescs)]
         got = from_dafny(compiled_fn(*dafny_args), ret_tdesc)
         if expected != got:
             captured["m"] = Mismatch(args=args, python_result=expected, dafny_result=got)
