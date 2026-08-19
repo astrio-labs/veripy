@@ -62,7 +62,9 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 - [x] `break` / `continue`
 - [x] Full comprehensions + eager `all` / `any` / `sum` genexp folds
       (single generator; nested `for` still rejected)
-- [ ] `for x in xs` snapshot iteration as first-class (partial today)
+- [x] `for x in xs` snapshot iteration as first-class
+      (`for a, b in pairs` over `list[tuple[…]]`; string iteration still
+      rejected — Python yields `str`, Dafny would yield `char`)
 
 ### Cheap coverage (survey’s admittable peak)
 

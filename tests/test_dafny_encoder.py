@@ -1180,6 +1180,43 @@ def test_foreach_lowering_snapshots_iterable():
     assert "var v := v_it[v_i];" in dfy
 
 
+def test_foreach_unpacks_list_of_tuples():
+    src = (
+        "#@ ensures result >= 0 or result < 0\n"
+        "def f(pairs: list[tuple[int, int]]) -> int:\n"
+        "    s = 0\n"
+        "    for a, b in pairs:\n"
+        "        s = s + a + b\n"
+        "    return s\n"
+    )
+    dfy = _encode(src)
+    assert "var a, b := a_it[a_i].0, a_it[a_i].1;" in dfy
+
+
+def test_foreach_unpack_arity_mismatch_rejected():
+    _expect_encode_error(
+        "#@ ensures result >= 0\n"
+        "def f(pairs: list[tuple[int, int, int]]) -> int:\n"
+        "    s = 0\n"
+        "    for a, b in pairs:\n"
+        "        s = s + a + b\n"
+        "    return s\n",
+        "arity 3",
+    )
+
+
+def test_foreach_unpack_needs_list_of_tuples():
+    _expect_encode_error(
+        "#@ ensures result >= 0\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    s = 0\n"
+        "    for a, b in xs:\n"
+        "        s = s + a\n"
+        "    return s\n",
+        "list of tuples",
+    )
+
+
 def test_foreach_target_read_after_loop_rejected():
     _expect_encode_error(
         "#@ requires len(l) > 0\n#@ ensures result == result\n"

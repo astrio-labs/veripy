@@ -135,7 +135,9 @@ written by the body (admission checks this).
 **for x in xs** iterates a **snapshot**: CPython iterates the list object
 with a hidden index, and the fragment freezes every name in the iterable
 expression for the loop's extent, so no mutation can be observed mid-loop;
-the encoder's snapshot + hidden index is then exact.
+the encoder's snapshot + hidden index is then exact. `for a, b in pairs`
+over `list[tuple[T, U]]` unpacks each element the same way assignment
+does (`snap[i].0`, `snap[i].1`), with an arity check at encode time.
 
 **assert e**: `err(AssertionError)` if false, no-op if true — lowered to a
 Dafny `assert`, so a verified function's asserts are proved never to fire,
@@ -193,7 +195,7 @@ translation of the *same* stub the prover saw).
 | eager `all`/`any` genexp | §3 folds | Dafny `forall`/`exists` (body and spec) | unit |
 | Optionals | §1/§4 assign | `PyOpt` + coercions | corpus (rolling_max) |
 | list build | §4 append | `⧺` under ownership | corpus (incr_list, intersperse) |
-| for-range / for-each | §4 loops | hoisted while / snapshot | corpus-wide |
+| for-range / for-each | §4 loops | hoisted while / snapshot; `for a, b in pairs` projects tuple elements | corpus-wide + unit (unpack) |
 | `break` / `continue` | §4 loops | Dafny `break`/`continue`; for-desugar steps the hidden index before `continue` | unit (while cap, range-for skip) |
 | tuples / unpack / multi-return | §4 assign | Dafny `(T, U)` products; `p.k` / `a, b := p.0, p.1`; arity checked at encode time | unit (pair return, unpack, Hypothesis) |
 | assert | §4 | Dafny `assert` | corpus (rolling_max, below_zero) |

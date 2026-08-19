@@ -830,8 +830,11 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
                       "differ (a constant function needs no loop)",
                       loop.lineno)
     if not isinstance(loop.target, ast.Name):
-        raise _reject("destructuring loop targets are outside this slice",
-                      loop.lineno)
+        raise _reject(
+            "destructuring loop targets are outside the Lean slice — the "
+            "Dafny backend admits `for a, b in pairs` over a list of "
+            "tuples; this slice's fuel recursion binds one index",
+            loop.lineno)
     it = loop.iter
     if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
             and it.func.id == "range" and len(it.args) == 1
@@ -1063,8 +1066,11 @@ def _split_loop(fn: ast.FunctionDef,
                           "name", init_stmt.lineno)
         init_value, acc = init_stmt.value, init_stmt.targets[0].id
     if not isinstance(loop.target, ast.Name):
-        raise _reject("destructuring loop targets are outside this slice",
-                      loop.lineno)
+        raise _reject(
+            "destructuring loop targets are outside the Lean slice — the "
+            "Dafny backend admits `for a, b in pairs` over a list of "
+            "tuples; this slice's fuel recursion binds one index",
+            loop.lineno)
     index = loop.target.id
     it = loop.iter
     if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)

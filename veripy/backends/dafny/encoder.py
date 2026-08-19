@@ -11,7 +11,8 @@ rejection):
   constant, unpacking is arity-checked)
 - statements: assignment (incl. parallel tuple), if/elif/else, while,
   `for i in range(...)` (lowered to while with an auto bounds invariant),
-  `for x in xs` (snapshot + hidden index), break/continue (continue on a
+  `for x in xs` (snapshot + hidden index; `for a, b in pairs` unpacks
+  a `list[tuple[...]]` with an arity check), break/continue (continue on a
   desugared for emits the hidden-index step first — a bare Dafny
   `continue` would skip it and spin), return, assert
 - expressions: arithmetic with PyFloorDiv/PyMod (INT operands only, except
@@ -1401,8 +1402,10 @@ class _MethodEncoder:
                     case ast.While(test=test, body=body):
                         record_expr_loads(test, path)
                         walk(body, path + (idx, "w"))
-                    case ast.For(target=ast.Name(id=name), iter=it, body=body):
-                        loop_indices.add(name)
+                    case ast.For(target=target, iter=it, body=body):
+                        for n in ast.walk(target):
+                            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                                loop_indices.add(n.id)
                         record_expr_loads(it, path)
                         walk(body, path + (idx, "f"))
                     case _:
@@ -1875,41 +1878,68 @@ class _MethodEncoder:
 
     def _for_each(self, stmt: ast.For, indent: str) -> None:
         """`for v in xs` over a list: snapshot the iterable (Python evaluates
-        it once), drive a hidden index, bind the element per iteration."""
+        it once), drive a hidden index, bind the element per iteration.
+        `for a, b in pairs` over `list[tuple[T, U]]` projects `snap[i].0`,
+        `snap[i].1` — the same unpacking Dafny cannot spell as `a, b := p`."""
         if stmt.orelse:
             raise _err(stmt, "for/else is outside the fragment")
-        if not isinstance(stmt.target, ast.Name):
-            raise _err(stmt, "only a simple target variable is supported in for-each")
+        names = self._for_each_names(stmt)
         it_type = self._infer(stmt.iter)
         if not (it_type is not None and it_type.startswith("seq<")):
             raise _err(stmt, "for-each iterables must be list-typed (or use `for i in range(...)`)")
-        var = stmt.target.id
-        if var in self.params:
-            raise _err(stmt, "the loop target may not shadow a parameter (parameters are immutable)")
-        if self._declared(var):
-            raise _err(stmt, "the for-each target may not reuse an existing variable")
+        elem = it_type[4:-1]
+        if len(names) > 1:
+            if not _is_tuple(elem):
+                raise _err(stmt, (
+                    "destructuring `for a, b in xs` needs a list of tuples "
+                    "— iterate a `list[tuple[...]]`, or use a single target"
+                ))
+            elems = _tuple_elems(elem)
+            if len(elems) != len(names):
+                raise _err(stmt, (
+                    f"for-each unpacking expects {len(names)} values, got "
+                    f"a tuple of arity {len(elems)} (Python would raise "
+                    f"ValueError)"
+                ))
+            bind_types = elems
+        else:
+            bind_types = [elem]
+        for var in names:
+            if var in self.params:
+                raise _err(stmt, "the loop target may not shadow a parameter (parameters are immutable)")
+            if self._declared(var):
+                raise _err(stmt, "the for-each target may not reuse an existing variable")
         for n in ast.walk(ast.Module(body=stmt.body, type_ignores=[])):
-            if isinstance(n, ast.Name) and n.id == var and isinstance(n.ctx, ast.Store):
+            if isinstance(n, ast.Name) and n.id in names and isinstance(n.ctx, ast.Store):
                 raise _err(n, "reassigning the loop target is outside the fragment")
         for clause in self._invariants_by_loop.get(id(stmt), []):
             if clause.desugared:
                 tree = ast.parse(clause.desugared, mode="eval")
-                if any(isinstance(n, ast.Name) and n.id == var for n in ast.walk(tree)):
+                hit = next((v for v in names
+                            if any(isinstance(n, ast.Name) and n.id == v
+                                   for n in ast.walk(tree))), None)
+                if hit is not None:
                     raise EncodeError(
-                        f"the invariant references the for-each target {var!r}, which is "
+                        f"the invariant references the for-each target {hit!r}, which is "
                         f"not in scope at the loop head — rewrite the loop over "
                         f"`range(len(...))` to name the iteration state",
                         clause.line,
                     )
-        snap = self._fresh(f"{self._mangle(var)}_it")
-        idx = self._fresh(f"{self._mangle(var)}_i")
+        head = self._mangle(names[0])
+        snap = self._fresh(f"{head}_it")
+        idx = self._fresh(f"{head}_i")
         self.emit(f"{indent}var {snap} := {self.expr(stmt.iter)};", stmt.lineno)
         self.emit(f"{indent}var {idx} := 0;", stmt.lineno)
         self.emit(f"{indent}while {idx} < |{snap}|", stmt.lineno)
         self._loop_clauses(stmt, indent, extra=(f"0 <= {idx} <= |{snap}|",))
         self.emit(f"{indent}{{")
-        mv = self._mangle(var)
-        self.emit(f"{indent}  var {mv} := {snap}[{idx}];", stmt.lineno)
+        if len(names) == 1:
+            mv = self._mangle(names[0])
+            self.emit(f"{indent}  var {mv} := {snap}[{idx}];", stmt.lineno)
+        else:
+            lhs = ", ".join(self._mangle(n) for n in names)
+            rhs = ", ".join(f"{snap}[{idx}].{i}" for i in range(len(names)))
+            self.emit(f"{indent}  var {lhs} := {rhs};", stmt.lineno)
         pre_owned = set(self.owned)
         # Freeze every list-typed name the iterable expression mentions — not
         # just a bare-Name iterable. `for v in (xs if flag else [2])` iterates
@@ -1923,8 +1953,9 @@ class _MethodEncoder:
                     and n.id not in self.frozen:
                 frozen_added.add(n.id)
                 self.frozen.add(n.id)
-        self.scopes.append({var})
-        self.types[var] = it_type[4:-1]
+        self.scopes.append(set(names))
+        for var, t in zip(names, bind_types):
+            self.types[var] = t
         self._loops.append((f"{idx} := {idx} + 1;",))
         try:
             for body_stmt in stmt.body:
@@ -1938,7 +1969,33 @@ class _MethodEncoder:
         self.emit(f"{indent}}}")
         # The target's post-loop value differs between the languages (last
         # element vs out-of-scope); reject later reads.
-        self.retired.add(var)
+        self.retired.update(names)
+
+    def _for_each_names(self, stmt: ast.For) -> list[str]:
+        t = stmt.target
+        if isinstance(t, ast.Name):
+            return [t.id]
+        if isinstance(t, ast.Tuple):
+            if any(isinstance(e, ast.Starred) for e in t.elts):
+                raise _err(stmt, (
+                    "starred for-each unpacking is outside the fragment — "
+                    "name each component"
+                ))
+            if not all(isinstance(e, ast.Name) for e in t.elts):
+                raise _err(stmt, "for-each unpacking targets must be plain names")
+            names = [e.id for e in t.elts]  # type: ignore[union-attr]
+            if len(set(names)) != len(names):
+                raise _err(stmt, "repeated names in for-each unpacking are outside the fragment")
+            if not (2 <= len(names) <= 8):
+                raise _err(stmt, (
+                    "for-each unpacking in the fragment has 2–8 names "
+                    "(matching tuple arity)"
+                ))
+            return names
+        raise _err(stmt, (
+            "only a simple target, or a tuple of names unpacking a "
+            "list of tuples, is supported in for-each"
+        ))
 
     # -- method -----------------------------------------------------------------------------------
 
