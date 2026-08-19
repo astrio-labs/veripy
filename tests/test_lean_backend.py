@@ -1048,21 +1048,164 @@ def test_division_inside_a_loop_verifies(tmp_path):
         _encode(bad.read_text())
 
 
-def test_while_loops_are_refused_with_their_own_message():
-    # A `while` function carries invariants that no supported loop shape
-    # claims. Reporting "this function has no loop" would send the reader
-    # hunting for a missing `for`, so the unsupported construct is named.
-    src = ("#@ requires n >= 0\n"
-           "#@ ensures result >= 0\n"
-           "def isqrt(n: int) -> int:\n"
-           "    r = 0\n"
-           "    while (r + 1) * (r + 1) <= n:\n"
-           "        #@ invariant 0 <= r <= n\n"
-           "        #@ decreases n - r\n"
-           "        r = r + 1\n"
-           "    return r\n")
-    with pytest.raises(EncodeError, match="`while` loops are outside"):
-        _encode(src)
+COUNTUP = ("#@ requires n >= 0\n"
+           "#@ ensures result == n\n"
+           "def countup(n: int) -> int:\n"
+           "    c = 0\n"
+           "    while c < n:\n"
+           "        #@ invariant 0 <= c <= n\n"
+           "        #@ decreases n - c\n"
+           "        c = c + 1\n"
+           "    return c\n")
+
+
+def test_while_loops_emit_measure_machinery():
+    # P2 slice 7: a `while` compiles to fuel recursion whose fuel is the
+    # `#@ decreases` MEASURE rather than a range bound. The condition
+    # becomes a Bool def (giving the `if` its Decidable instance and the
+    # theorem a uniform way to say the condition is false at the end).
+    enc = _encode(COUNTUP)
+    assert "def «countup_cond» («n» : Int) («c» : Int) : Bool" in enc.lean_source
+    assert "def «countup_meas» («n» : Int) («c» : Int) : Int" in enc.lean_source
+    assert "def «countup_inv»" in enc.lean_source
+    assert "def «countup_loop» («n» : Int) : Nat → Int → Int" in enc.lean_source
+    # Concluding `cond = false` is what separates a loop that EXITED
+    # from one that merely ran out of fuel.
+    assert "= false := by" in enc.lean_source
+    # The fuel at entry is the measure at entry.
+    assert "(«countup_meas» «n» 0).toNat 0" in enc.lean_source
+
+
+def test_while_shape_rejections():
+    base = ("#@ requires n >= 0\n#@ ensures result == n\n"
+            "def f(n: int) -> int:\n")
+    cases = [
+        # the measure is the fuel bound, so it is required
+        (base + "    c = 0\n    while c < n:\n"
+                "        #@ invariant 0 <= c <= n\n"
+                "        c = c + 1\n    return c\n", "decreases"),
+        # exactly one measure
+        (base + "    c = 0\n    while c < n:\n"
+                "        #@ invariant 0 <= c <= n\n"
+                "        #@ decreases n - c\n"
+                "        #@ decreases n\n"
+                "        c = c + 1\n    return c\n", "decreases"),
+        # the body is a single accumulator assignment
+        (base + "    c = 0\n    while c < n:\n"
+                "        #@ invariant 0 <= c <= n\n"
+                "        #@ decreases n - c\n"
+                "        c = c + 1\n        n = n\n"
+                "    return c\n", "single assignment"),
+        # acc = init; while ...; return expr
+        (base + "    c = 0\n    d = 1\n    while c < n:\n"
+                "        #@ invariant 0 <= c <= n\n"
+                "        #@ decreases n - c\n"
+                "        c = c + 1\n    return c\n", "must be exactly"),
+        # bool accumulators stay out of the while slice
+        ("#@ ensures result == True\ndef f(n: int) -> bool:\n"
+         "    b = True\n    while b:\n"
+         "        #@ invariant b == True\n"
+         "        #@ decreases 0\n"
+         "        b = b\n    return b\n", "bool accumulator"),
+    ]
+    for src, needle in cases:
+        with pytest.raises(EncodeError, match=needle):
+            _encode(src)
+
+    # `decreases` on a for-range loop is meaningless: its fuel is the
+    # range bound, so the clause would be silently ignored.
+    forloop = ("#@ requires n >= 0\n#@ ensures result == n\n"
+               "def f(n: int) -> int:\n    s = 0\n"
+               "    for i in range(n):\n"
+               "        #@ invariant s == i\n"
+               "        #@ decreases n - i\n"
+               "        s = s + 1\n    return s\n")
+    with pytest.raises(EncodeError, match="only meaningful on a `while`"):
+        _encode(forloop)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_while_loops_verify(tmp_path):
+    from veripy.agentio import verify_structured
+
+    up = tmp_path / "countup.py"
+    up.write_text(COUNTUP)
+    assert verify_structured(up, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # A decreasing measure on a decreasing accumulator.
+    down = tmp_path / "countdown.py"
+    down.write_text("#@ requires n >= 0\n"
+                    "#@ ensures result == 0\n"
+                    "def countdown(n: int) -> int:\n"
+                    "    c = n\n"
+                    "    while c > 0:\n"
+                    "        #@ invariant 0 <= c\n"
+                    "        #@ decreases c\n"
+                    "        c = c - 1\n"
+                    "    return c\n")
+    assert verify_structured(down, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # SOUNDNESS: the measure does not actually decrease, so this loop
+    # never terminates in Python. It must NOT verify — the fuel model
+    # would otherwise certify a value the program never returns.
+    spin = tmp_path / "spin.py"
+    spin.write_text("#@ requires n >= 1\n"
+                    "#@ ensures result == n\n"
+                    "def spin(n: int) -> int:\n"
+                    "    c = 0\n"
+                    "    while c < n:\n"
+                    "        #@ invariant 0 <= c <= n\n"
+                    "        #@ decreases n - c\n"
+                    "        c = c\n"
+                    "    return c\n")
+    assert verify_structured(spin, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
+
+    # A false postcondition still fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(COUNTUP.replace("result == n", "result == n + 1"))
+    assert verify_structured(bad, tmp_path / "o4",
+                             backend="lean")["status"] == "failed"
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_squaring_while_loop_verifies_without_the_maximality_clause(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # The corpus isqrt, minus its maximality clause. omega is LINEAR and
+    # core Lean has no nlinarith, so the squaring obligations ride the
+    # prelude's SqGeSelf (unconditional on Int, hence safe to hand omega
+    # wherever a squared term appears).
+    src = tmp_path / "isqrt.py"
+    src.write_text("#@ requires n >= 0\n"
+                   "#@ ensures result >= 0\n"
+                   "#@ ensures result * result <= n\n"
+                   "#@ ensures n < (result + 1) * (result + 1)\n"
+                   "def isqrt(n: int) -> int:\n"
+                   "    r = 0\n"
+                   "    while (r + 1) * (r + 1) <= n:\n"
+                   "        #@ invariant 0 <= r <= n\n"
+                   "        #@ invariant r * r <= n\n"
+                   "        #@ decreases n - r\n"
+                   "        r = r + 1\n"
+                   "    return r\n")
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The maximality clause is the one that does NOT come free here: it
+    # needs squaring MONOTONICITY under a quantifier, which no fixed
+    # linear script supplies. Dafny gets it from Z3's nonlinear
+    # arithmetic; in Lean it waits for the sidecar channel (P3). Pinned
+    # so the day it starts passing is noticed.
+    full = tmp_path / "isqrt_full.py"
+    full.write_text(src.read_text().replace(
+        "def isqrt(n: int) -> int:",
+        "#@ ensures forall k in range(0, n + 1) :: k * k > n or k <= result\n"
+        "def isqrt(n: int) -> int:"))
+    assert verify_structured(full, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
 
 
 def test_duplicate_defs_are_refused_not_mispaired():
