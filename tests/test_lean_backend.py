@@ -1339,6 +1339,40 @@ def test_proposition_compared_with_an_integer_is_refused():
         _encode(src)
 
 
+def test_shadowed_builtins_do_not_become_propositions():
+    # `bool` is an encoder builtin now, so it falls under the same
+    # shadowing discipline as the rest. A parameter named `bool` means
+    # the spec CALLS that binding; reading it as the builtin wrapper
+    # would emit an ↔ for a source expression that means something else.
+    shadow_param = ("#@ ensures bool(x > 0) == bool(y > 0)\n"
+                    "def f(bool: int, x: int, y: int) -> int:\n"
+                    "    return x\n")
+    with pytest.raises(EncodeError, match="shadowed by a parameter"):
+        _encode(shadow_param)
+
+    # A module-level def of that name is refused like the other builtins.
+    shadow_def = ("#@ ensures result >= 0\n"
+                  "def bool(x: int) -> int:\n"
+                  "    return x\n")
+    with pytest.raises(EncodeError, match="shadows an encoder builtin"):
+        _encode(shadow_def)
+
+    # A shadowed quantifier name reports the SHADOWING, not a spurious
+    # proposition-versus-integer mismatch: the mixed-comparison branch
+    # defers to the integer translator so the real cause surfaces.
+    shadow_all = ("#@ ensures all(i >= 0 for i in range(0, n)) == (n >= 0)\n"
+                  "def f(all: int, n: int) -> int:\n"
+                  "    return n\n")
+    with pytest.raises(EncodeError, match="shadowed by a parameter"):
+        _encode(shadow_all)
+
+    # ...while the unshadowed spelling still yields the iff.
+    ok = ("#@ ensures (x > 0) <==> (y > 0)\n"
+          "def f(x: int, y: int) -> int:\n"
+          "    return x\n")
+    assert "↔" in _encode(ok).lean_source
+
+
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_propositional_equality_verifies(tmp_path):
     from veripy.agentio import verify_structured

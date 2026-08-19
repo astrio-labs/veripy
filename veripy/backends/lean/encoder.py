@@ -407,24 +407,32 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     return f"(∃ {_ident(binder)} : Int, {bound} ∧ {body})"
 
 
-def _prop_operand(e: ast.expr) -> ast.expr | None:
+def _prop_operand(e: ast.expr, names: set[str]) -> ast.expr | None:
     """The proposition an operand denotes, or None if it is an integer.
 
     `A <==> B` reaches the encoder desugared as `bool(A) == bool(B)`, so
     a `bool(...)` wrapper around a proposition is unwrapped here. A
     `bool(...)` around an INTEGER is Python truthiness, which is a
-    different operation and stays outside the slice."""
+    different operation and stays outside the slice.
+
+    A call whose name is SHADOWED by a parameter or local is not the
+    builtin — Python calls that binding — so it is declined here and
+    falls through to the integer translator, which refuses it with the
+    shadowing message. Reading a shadowed `bool(...)` as the builtin
+    wrapper would emit an ↔ for a source expression that means
+    something else entirely."""
     if isinstance(e, (ast.BoolOp, ast.Compare)):
         return e
     if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not):
         return e
     if isinstance(e, ast.Constant) and isinstance(e.value, bool):
         return e
-    if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):
+    if isinstance(e, ast.Call) and isinstance(e.func, ast.Name) \
+            and e.func.id not in names:
         if e.func.id in ("all", "any"):
             return e
         if e.func.id == "bool" and len(e.args) == 1 and not e.keywords:
-            return _prop_operand(e.args[0])
+            return _prop_operand(e.args[0], names)
     return None
 
 
@@ -464,8 +472,8 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
             return q
     if isinstance(e, ast.Compare) and len(e.ops) == 1 \
             and type(e.ops[0]) in (ast.Eq, ast.NotEq):
-        lp = _prop_operand(e.left)
-        rp = _prop_operand(e.comparators[0])
+        lp = _prop_operand(e.left, names)
+        rp = _prop_operand(e.comparators[0], names)
         if lp is not None and rp is not None:
             # Two propositions compared with `==`. Dafny gets this free
             # because its `==` on bool IS iff; in Lean, Prop equality is
@@ -478,6 +486,12 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
             iff = f"({a} ↔ {b})"
             return iff if isinstance(e.ops[0], ast.Eq) else f"(¬{iff})"
         if (lp is None) != (rp is None):
+            # Let the integer translator speak first: when the
+            # non-propositional side is a SHADOWED call, its message
+            # names the real cause. Only a genuine integer operand
+            # earns the mixed-comparison message.
+            other = e.left if lp is None else e.comparators[0]
+            _int_expr(other, names, line, result, rename, lc)
             raise _reject(
                 "comparing a proposition with an integer is outside this "
                 "slice — Python's bool is a subtype of int, so this is "
@@ -1307,7 +1321,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # verify mathematical abs/min/max while Python calls the user's def.
     for shadow in by_name:
         if shadow in ("abs", "min", "max", "old", "all", "any", "range",
-                      "len", "sum", "result"):
+                      "len", "sum", "bool", "result"):
             raise _reject(
                 f"module-level def {shadow!r} shadows an encoder builtin "
                 f"— call sites would verify the builtin while Python "
