@@ -1073,7 +1073,7 @@ def test_while_loops_emit_measure_machinery():
     # from one that merely ran out of fuel.
     assert "= false := by" in enc.lean_source
     # The fuel at entry is the measure at entry.
-    assert "(«countup_meas» «n» 0).toNat 0" in enc.lean_source
+    assert "(«countup_meas» «n» (0)).toNat (0)" in enc.lean_source
 
 
 def test_while_shape_rejections():
@@ -1090,17 +1090,25 @@ def test_while_shape_rejections():
                 "        #@ decreases n - c\n"
                 "        #@ decreases n\n"
                 "        c = c + 1\n    return c\n", "decreases"),
-        # the body is a single accumulator assignment
+        # the body may assign only the accumulators, never a parameter
         (base + "    c = 0\n    while c < n:\n"
                 "        #@ invariant 0 <= c <= n\n"
                 "        #@ decreases n - c\n"
                 "        c = c + 1\n        n = n\n"
-                "    return c\n", "single assignment"),
-        # acc = init; while ...; return expr
-        (base + "    c = 0\n    d = 1\n    while c < n:\n"
+                "    return c\n", "not one of the accumulators"),
+        # only initializers may precede the loop
+        (base + "    c = 0\n    if n < 0:\n        return 0\n"
+                "    while c < n:\n"
                 "        #@ invariant 0 <= c <= n\n"
                 "        #@ decreases n - c\n"
-                "        c = c + 1\n    return c\n", "must be exactly"),
+                "        c = c + 1\n    return c\n",
+         "accumulator initializers only"),
+        # a body statement that is not an assignment at all
+        (base + "    c = 0\n    while c < n:\n"
+                "        #@ invariant 0 <= c <= n\n"
+                "        #@ decreases n - c\n"
+                "        c = c + 1\n        return c\n"
+                "    return c\n", "must be assignments"),
         # bool accumulators stay out of the while slice
         ("#@ ensures result == True\ndef f(n: int) -> bool:\n"
          "    b = True\n    while b:\n"
@@ -1206,6 +1214,412 @@ def test_squaring_while_loop_verifies_without_the_maximality_clause(tmp_path):
         "def isqrt(n: int) -> int:"))
     assert verify_structured(full, tmp_path / "o2",
                              backend="lean")["status"] == "failed"
+
+
+COUNT2 = ("#@ requires n >= 0\n"
+          "#@ ensures result == n\n"
+          "def count2(n: int) -> int:\n"
+          "    total = 0\n"
+          "    i = 0\n"
+          "    while i < n:\n"
+          "        #@ invariant 0 <= i <= n\n"
+          "        #@ invariant total == i\n"
+          "        #@ decreases n - i\n"
+          "        total = total + 1\n"
+          "        i = i + 1\n"
+          "    return total\n")
+
+
+def test_multi_accumulator_loops_carry_state_as_a_tuple():
+    # A while loop over N accumulators keeps its state in a tuple and
+    # reads it back through projections; N == 1 stays a bare Int so the
+    # single-accumulator emission is unchanged.
+    enc = _encode(COUNT2)
+    assert ("def «count2_loop» («n» : Int) : Nat → Int → Int → (Int × Int)"
+            in enc.lean_source)
+    assert "| 0, «total», «i» => («total», «i»)" in enc.lean_source
+    assert "«count2_inv» «n» («count2_loop» «n» f «total» «i»).1" \
+        in enc.lean_source
+    # The invariant and measure see every accumulator.
+    assert "def «count2_meas» («n» : Int) («total» «i» : Int)" \
+        in enc.lean_source
+
+
+def test_loop_body_assignments_are_sequential_not_simultaneous():
+    # CPython runs the body top to bottom, so a later assignment sees
+    # the earlier ones. Encoding them simultaneously would model a
+    # DIFFERENT program: here `b = a` must capture the UPDATED a.
+    src = ("#@ requires n >= 0\n"
+           "#@ ensures result == n\n"
+           "def seqdep(n: int) -> int:\n"
+           "    a = 0\n"
+           "    b = 0\n"
+           "    while a < n:\n"
+           "        #@ invariant 0 <= a <= n\n"
+           "        #@ invariant b == a\n"
+           "        #@ decreases n - a\n"
+           "        a = a + 1\n"
+           "        b = a\n"
+           "    return b\n")
+    enc = _encode(src)
+    # BOTH accumulators step to (a + 1) — b takes a's new value.
+    assert "f ((«a» + 1)) ((«a» + 1))" in enc.lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_multi_accumulator_loops_verify(tmp_path):
+    from veripy.agentio import verify_structured
+
+    two = tmp_path / "count2.py"
+    two.write_text(COUNT2)
+    assert verify_structured(two, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The order-dependent body proves only because the substitution is
+    # sequential: under a simultaneous reading `b` would lag by one and
+    # the invariant `b == a` would be false.
+    seq = tmp_path / "seqdep.py"
+    seq.write_text("#@ requires n >= 0\n"
+                   "#@ ensures result == n\n"
+                   "def seqdep(n: int) -> int:\n"
+                   "    a = 0\n"
+                   "    b = 0\n"
+                   "    while a < n:\n"
+                   "        #@ invariant 0 <= a <= n\n"
+                   "        #@ invariant b == a\n"
+                   "        #@ decreases n - a\n"
+                   "        a = a + 1\n"
+                   "        b = a\n"
+                   "    return b\n")
+    assert verify_structured(seq, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # A false multi-accumulator spec still fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(COUNT2.replace("result == n", "result == n + 1"))
+    assert verify_structured(bad, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
+
+
+def test_propositional_equality_becomes_an_iff():
+    # Dafny gets `P == Q` on booleans free, because its `==` on bool IS
+    # iff. In Lean, Prop equality is a different and much stronger
+    # statement, so the contract has to be an ↔. `A <==> B` reaches the
+    # encoder desugared as `bool(A) == bool(B)`, so both spellings must
+    # land on the same term.
+    src = ("#@ ensures (x > 0) == (y > 0)\n"
+           "#@ ensures (x > 0) <==> (y > 0)\n"
+           "def f(x: int, y: int) -> int:\n"
+           "    return x\n")
+    enc = _encode(src)
+    assert enc.lean_source.count("((«x» > 0) ↔ («y» > 0))") == 2
+
+    # `!=` between propositions is the negated iff.
+    ne = ("#@ ensures (x > 0) != (y > 0)\n"
+          "def g(x: int, y: int) -> int:\n"
+          "    return x\n")
+    assert "(¬((«x» > 0) ↔ («y» > 0)))" in _encode(ne).lean_source
+
+    # Quantifiers count as propositions on either side.
+    q = ("#@ requires n >= 0\n"
+         "#@ ensures (forall i in range(0, n) :: i >= 0) == (n >= 0)\n"
+         "def h(n: int) -> int:\n"
+         "    return n\n")
+    assert "↔" in _encode(q).lean_source
+
+
+def test_proposition_compared_with_an_integer_is_refused():
+    # Python's bool is a subtype of int, so `(x > 0) == 1` is legal
+    # Python that means the 0/1 coercion. The encoder does not model
+    # that, so it must refuse rather than guess which reading was meant.
+    src = ("#@ ensures (x > 0) == 1\n"
+           "def f(x: int) -> int:\n"
+           "    return x\n")
+    with pytest.raises(EncodeError, match="proposition with an integer"):
+        _encode(src)
+
+
+def test_shadowed_builtins_do_not_become_propositions():
+    # `bool` is an encoder builtin now, so it falls under the same
+    # shadowing discipline as the rest. A parameter named `bool` means
+    # the spec CALLS that binding; reading it as the builtin wrapper
+    # would emit an ↔ for a source expression that means something else.
+    shadow_param = ("#@ ensures bool(x > 0) == bool(y > 0)\n"
+                    "def f(bool: int, x: int, y: int) -> int:\n"
+                    "    return x\n")
+    with pytest.raises(EncodeError, match="shadowed by a parameter"):
+        _encode(shadow_param)
+
+    # A module-level def of that name is refused like the other builtins.
+    shadow_def = ("#@ ensures result >= 0\n"
+                  "def bool(x: int) -> int:\n"
+                  "    return x\n")
+    with pytest.raises(EncodeError, match="shadows an encoder builtin"):
+        _encode(shadow_def)
+
+    # A shadowed quantifier name reports the SHADOWING, not a spurious
+    # proposition-versus-integer mismatch: the mixed-comparison branch
+    # defers to the integer translator so the real cause surfaces.
+    shadow_all = ("#@ ensures all(i >= 0 for i in range(0, n)) == (n >= 0)\n"
+                  "def f(all: int, n: int) -> int:\n"
+                  "    return n\n")
+    with pytest.raises(EncodeError, match="shadowed by a parameter"):
+        _encode(shadow_all)
+
+    # A spec clause calling a name the function also binds as a LOCAL is
+    # ambiguous — the builtin at spec scope, that binding inside the
+    # function. Spec clauses are comments, so the body-side
+    # assigned-anywhere scan never saw them; they are scanned now.
+    local_shadow = ("#@ ensures bool(result > 0) == bool(x > 0)\n"
+                    "def f(x: int) -> int:\n"
+                    "    bool = 1\n"
+                    "    return x + bool - 1\n")
+    with pytest.raises(EncodeError, match="also binds as a local"):
+        _encode(local_shadow)
+
+    # The same rule covers every encoder builtin, not just `bool`.
+    local_sum = ("#@ ensures result == sum(xs)\n"
+                 "def f(xs: list[int]) -> int:\n"
+                 "    sum = 0\n"
+                 "    return sum\n")
+    with pytest.raises(EncodeError, match="also binds as a local"):
+        _encode(local_sum)
+
+    # ...but a local merely NAMED after a builtin, never called in the
+    # spec, is ordinary Python and must keep working.
+    benign = ("#@ requires n >= 0\n"
+              "#@ ensures result >= 0\n"
+              "def f(n: int) -> int:\n"
+              "    sum = 0\n"
+              "    for i in range(n):\n"
+              "        #@ invariant sum >= 0\n"
+              "        sum = sum + 1\n"
+              "    return sum\n")
+    _encode(benign)
+
+    # ...while the unshadowed spelling still yields the iff.
+    ok = ("#@ ensures (x > 0) <==> (y > 0)\n"
+          "def f(x: int, y: int) -> int:\n"
+          "    return x\n")
+    assert "↔" in _encode(ok).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_propositional_equality_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    src = tmp_path / "iff.py"
+    src.write_text("#@ ensures (result > 0) == (x > 0)\n"
+                   "def sign_keep(x: int) -> int:\n"
+                   "    return x\n")
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # A false iff still fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ ensures (result > 0) == (x < 0)\n"
+                   "def sign_flip(x: int) -> int:\n"
+                   "    return x\n")
+REALSWAP = ("#@ requires n >= 0\n"
+            "#@ ensures result == n\n"
+            "def realswap(n: int) -> int:\n"
+            "    x, y = n, 0\n"
+            "    i = 0\n"
+            "    while i < 1:\n"
+            "        #@ invariant (i == 0 and x == n and y == 0) or "
+            "(i == 1 and x == 0 and y == n)\n"
+            "        #@ decreases 1 - i\n"
+            "        x, y = y, x\n"
+            "        i = i + 1\n"
+            "    return y\n")
+
+
+def test_tuple_assignment_is_simultaneous_not_sequential():
+    # Python evaluates a tuple assignment's whole right side BEFORE
+    # binding anything, so `x, y = y, x` really swaps. Two consecutive
+    # statements would not (the second would see the first's update), so
+    # encoding a tuple assignment sequentially models a DIFFERENT
+    # program. The emitted step is the discriminator.
+    enc = _encode(REALSWAP)
+    assert "f («y») («x») ((«i» + 1))" in enc.lean_source
+    # Three accumulators ride a right-nested tuple.
+    assert "(Int × Int × Int)" in enc.lean_source
+    assert "| 0, «x», «y», «i» => («x», «y», «i»)" in enc.lean_source
+
+    # A tuple initializer binds several accumulators at once.
+    assert "def «realswap_cond» («n» : Int) («x» «y» «i» : Int)" \
+        in enc.lean_source
+
+
+def test_tuple_assignment_rejections():
+    base = ("#@ requires n >= 0\n#@ ensures result == n\n"
+            "def f(n: int) -> int:\n")
+    cases = [
+        # arity mismatch
+        (base + "    x, y = 0, n\n    while x < n:\n"
+                "        #@ invariant 0 <= x <= n\n"
+                "        #@ decreases n - x\n"
+                "        x, y = y\n    return y\n", "same length"),
+        # a non-name target
+        (base + "    x, y = 0, n\n    while x < n:\n"
+                "        #@ invariant 0 <= x <= n\n"
+                "        #@ decreases n - x\n"
+                "        x, n.y = y, x\n    return y\n",
+         "plain names"),
+        # binding the same name twice in one tuple assignment
+        (base + "    x, y = 0, n\n    while x < n:\n"
+                "        #@ invariant 0 <= x <= n\n"
+                "        #@ decreases n - x\n"
+                "        x, x = y, x\n    return y\n",
+         "same name twice"),
+        # a tuple target assigning something that is not an accumulator
+        (base + "    x, y = 0, n\n    while x < n:\n"
+                "        #@ invariant 0 <= x <= n\n"
+                "        #@ decreases n - x\n"
+                "        x, z = y, x\n    return y\n",
+         "not one of the accumulators"),
+    ]
+    for src, needle in cases:
+        with pytest.raises(EncodeError, match=needle):
+            _encode(src)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_tuple_assignment_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # This spec is TRUE only under simultaneous semantics: read
+    # sequentially, `x, y = y, x` would leave both at the old y and the
+    # postcondition would be false.
+    src = tmp_path / "realswap.py"
+    src.write_text(REALSWAP)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # A tuple-carried accumulator loop with a false spec still fails.
+    bad = tmp_path / "bad.py"
+    bad.write_text(REALSWAP.replace("result == n", "result == n + 1"))
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+def test_divisor_positivity_from_a_quantifier_bound():
+    # A binder over `range(lo, hi)` with a positive literal `lo` is
+    # positive wherever the bound hypothesis guards it, which licenses
+    # `n % d` with no contract clause about d at all.
+    src = ("#@ requires n >= 1\n"
+           "#@ ensures forall d in range(1, n) :: n % d >= 0\n"
+           "def f(n: int) -> int:\n"
+           "    return n\n")
+    assert "VeriPy.PyMod" in _encode(src).lean_source
+
+    # A zero lower bound proves nothing: d may be 0.
+    bad = src.replace("range(1, n)", "range(0, n)")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(bad)
+
+
+def test_divisor_positivity_from_loop_context():
+    # `while y != 0` under an invariant `y >= 0` gives y > 0 in the
+    # body, which is what makes `n % y` well-formed there. After
+    # substitution every step expression is written in terms of the
+    # loop-HEAD values, so head facts apply to it.
+    ok = ("#@ requires n >= 0\n"
+          "#@ ensures result >= 0\n"
+          "def f(n: int) -> int:\n"
+          "    y = n\n"
+          "    r = 0\n"
+          "    while y != 0:\n"
+          "        #@ invariant y >= 0\n"
+          "        #@ invariant r >= 0\n"
+          "        #@ decreases y\n"
+          "        r = r + n % y\n"
+          "        y = y - 1\n"
+          "    return r\n")
+    assert "VeriPy.PyMod" in _encode(ok).lean_source
+
+    # Each half alone is not enough, and a fact under an `or` is not a
+    # guarantee at all.
+    for src, why in (
+        (ok.replace("while y != 0:", "while y > -1:")
+           .replace("#@ decreases y\n", "#@ decreases y + 1\n"),
+         "nonneg alone leaves y == 0 possible"),
+        (ok.replace("        #@ invariant y >= 0\n", ""),
+         "nonzero alone leaves y negative"),
+        (ok.replace("#@ invariant y >= 0", "#@ invariant y >= 0 or n >= 0"),
+         "a disjunct is not a guarantee"),
+    ):
+        with pytest.raises(EncodeError, match="divisor"):
+            _encode(src), why
+
+
+def test_condition_divisors_may_use_the_whole_invariant():
+    # The invariant holds at the loop HEAD, which is exactly where the
+    # condition is evaluated, so all of its facts are available there —
+    # including a positivity that two separate conjuncts establish
+    # together. Taking only the directly-positive names rejected valid
+    # loops.
+    base = ("#@ requires n >= 1\n"
+            "#@ ensures result >= 0\n"
+            "def f(n: int) -> int:\n"
+            "    y = n\n"
+            "    r = 0\n"
+            "    while n % y != 0:\n"
+            "{inv}"
+            "        #@ decreases y\n"
+            "        r = r + 1\n"
+            "        y = y - 1\n"
+            "    return r\n")
+    both = base.format(inv="        #@ invariant y >= 0\n"
+                           "        #@ invariant y != 0\n"
+                           "        #@ invariant r >= 0\n")
+    assert "VeriPy.PyMod" in _encode(both).lean_source
+
+    # Nonneg alone still leaves y == 0 possible.
+    only_nn = base.format(inv="        #@ invariant y >= 0\n"
+                              "        #@ invariant r >= 0\n")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(only_nn)
+
+    # The condition's OWN facts stay out: using a condition to justify
+    # its own well-formedness would be circular. Python's `and` does
+    # short-circuit, so this particular program is safe in CPython;
+    # modeling that is a separate feature, and refusing is the
+    # conservative side of it.
+    circular = ("#@ requires n >= 1\n"
+                "#@ ensures result >= 0\n"
+                "def f(n: int) -> int:\n"
+                "    y = n\n"
+                "    r = 0\n"
+                "    while y != 0 and n % y != 0:\n"
+                "        #@ invariant y >= 0\n"
+                "        #@ invariant r >= 0\n"
+                "        #@ decreases y\n"
+                "        r = r + 1\n"
+                "        y = y - 1\n"
+                "    return r\n")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(circular)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_context_positive_divisor_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    src = tmp_path / "modloop.py"
+    src.write_text("#@ requires n >= 0\n"
+                   "#@ ensures result >= 0\n"
+                   "def modloop(n: int) -> int:\n"
+                   "    y = n\n"
+                   "    r = 0\n"
+                   "    while y != 0:\n"
+                   "        #@ invariant y >= 0\n"
+                   "        #@ invariant r >= 0\n"
+                   "        #@ decreases y\n"
+                   "        r = r + n % y\n"
+                   "        y = y - 1\n"
+                   "    return r\n")
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
 
 
 def test_duplicate_defs_are_refused_not_mispaired():
