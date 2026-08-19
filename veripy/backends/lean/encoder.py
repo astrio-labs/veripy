@@ -407,6 +407,27 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     return f"(∃ {_ident(binder)} : Int, {bound} ∧ {body})"
 
 
+def _prop_operand(e: ast.expr) -> ast.expr | None:
+    """The proposition an operand denotes, or None if it is an integer.
+
+    `A <==> B` reaches the encoder desugared as `bool(A) == bool(B)`, so
+    a `bool(...)` wrapper around a proposition is unwrapped here. A
+    `bool(...)` around an INTEGER is Python truthiness, which is a
+    different operation and stays outside the slice."""
+    if isinstance(e, (ast.BoolOp, ast.Compare)):
+        return e
+    if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not):
+        return e
+    if isinstance(e, ast.Constant) and isinstance(e.value, bool):
+        return e
+    if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):
+        if e.func.id in ("all", "any"):
+            return e
+        if e.func.id == "bool" and len(e.args) == 1 and not e.keywords:
+            return _prop_operand(e.args[0])
+    return None
+
+
 def _prop_expr(e: ast.expr, names: set[str], line: int,
                result: str | None = None,
                rename: dict[str, str] | None = None,
@@ -441,6 +462,27 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
                         avoid, lc)
         if q is not None:
             return q
+    if isinstance(e, ast.Compare) and len(e.ops) == 1 \
+            and type(e.ops[0]) in (ast.Eq, ast.NotEq):
+        lp = _prop_operand(e.left)
+        rp = _prop_operand(e.comparators[0])
+        if lp is not None and rp is not None:
+            # Two propositions compared with `==`. Dafny gets this free
+            # because its `==` on bool IS iff; in Lean, Prop equality is
+            # a different (and much stronger) statement, so the contract
+            # is an ↔.
+            a = _prop_expr(lp, names, line, result, rename,
+                           result_is_bool, avoid, lc)
+            b = _prop_expr(rp, names, line, result, rename,
+                           result_is_bool, avoid, lc)
+            iff = f"({a} ↔ {b})"
+            return iff if isinstance(e.ops[0], ast.Eq) else f"(¬{iff})"
+        if (lp is None) != (rp is None):
+            raise _reject(
+                "comparing a proposition with an integer is outside this "
+                "slice — Python's bool is a subtype of int, so this is "
+                "legal Python whose meaning (0/1 coercion) the encoder "
+                "does not model", line)
     if isinstance(e, ast.Compare):
         parts = []
         left = e.left

@@ -1301,6 +1301,64 @@ def test_end_to_end_multi_accumulator_loops_verify(tmp_path):
                              backend="lean")["status"] == "failed"
 
 
+def test_propositional_equality_becomes_an_iff():
+    # Dafny gets `P == Q` on booleans free, because its `==` on bool IS
+    # iff. In Lean, Prop equality is a different and much stronger
+    # statement, so the contract has to be an ↔. `A <==> B` reaches the
+    # encoder desugared as `bool(A) == bool(B)`, so both spellings must
+    # land on the same term.
+    src = ("#@ ensures (x > 0) == (y > 0)\n"
+           "#@ ensures (x > 0) <==> (y > 0)\n"
+           "def f(x: int, y: int) -> int:\n"
+           "    return x\n")
+    enc = _encode(src)
+    assert enc.lean_source.count("((«x» > 0) ↔ («y» > 0))") == 2
+
+    # `!=` between propositions is the negated iff.
+    ne = ("#@ ensures (x > 0) != (y > 0)\n"
+          "def g(x: int, y: int) -> int:\n"
+          "    return x\n")
+    assert "(¬((«x» > 0) ↔ («y» > 0)))" in _encode(ne).lean_source
+
+    # Quantifiers count as propositions on either side.
+    q = ("#@ requires n >= 0\n"
+         "#@ ensures (forall i in range(0, n) :: i >= 0) == (n >= 0)\n"
+         "def h(n: int) -> int:\n"
+         "    return n\n")
+    assert "↔" in _encode(q).lean_source
+
+
+def test_proposition_compared_with_an_integer_is_refused():
+    # Python's bool is a subtype of int, so `(x > 0) == 1` is legal
+    # Python that means the 0/1 coercion. The encoder does not model
+    # that, so it must refuse rather than guess which reading was meant.
+    src = ("#@ ensures (x > 0) == 1\n"
+           "def f(x: int) -> int:\n"
+           "    return x\n")
+    with pytest.raises(EncodeError, match="proposition with an integer"):
+        _encode(src)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_propositional_equality_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    src = tmp_path / "iff.py"
+    src.write_text("#@ ensures (result > 0) == (x > 0)\n"
+                   "def sign_keep(x: int) -> int:\n"
+                   "    return x\n")
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # A false iff still fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ ensures (result > 0) == (x < 0)\n"
+                   "def sign_flip(x: int) -> int:\n"
+                   "    return x\n")
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against
