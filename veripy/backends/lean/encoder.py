@@ -54,6 +54,7 @@ variable divisor.
 from __future__ import annotations
 
 import ast
+import copy
 from dataclasses import dataclass
 
 from ...frontend.parse import FunctionSpec, ModuleSpecs
@@ -367,6 +368,18 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     hi_arg = it.args[-1]
     lo_is_zero = len(it.args) == 1 \
         or (isinstance(it.args[0], ast.Constant) and it.args[0].value == 0)
+    # A binder over `range(lo, hi)` with a positive literal `lo` is
+    # itself positive wherever the bound hypothesis guards it, which is
+    # exactly the body. That licenses `x % d` under
+    # `forall d in range(1, m)` without a contract clause.
+    body_pos = set(lc.pos_names)
+    if len(it.args) == 2 and isinstance(it.args[0], ast.Constant) \
+            and isinstance(it.args[0].value, int) \
+            and not isinstance(it.args[0].value, bool) \
+            and it.args[0].value >= 1:
+        body_pos.add(v)
+    else:
+        body_pos.discard(v)   # the binder SHADOWS any outer fact
     if lc.scaffold:
         safe[v] = "*"
     elif lo_is_zero and isinstance(hi_arg, ast.Call) \
@@ -378,7 +391,7 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         safe[v] = hi_arg.args[0].id
     body_lc = _ListCtx(lc.lists, safe,
                        None if lc.take_idx == v else lc.take_idx,
-                       lc.scaffold, lc.min_len, lc.pos_names)
+                       lc.scaffold, lc.min_len, frozenset(body_pos))
     # Two capture hazards at the binder, both measured classes:
     # 1. The theorem's rename map (param named after its own function)
     #    must NOT apply under a binder that reuses the renamed name —
@@ -409,6 +422,35 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     if e.func.id == "all":
         return f"(∀ {_ident(binder)} : Int, {bound} → {body})"
     return f"(∃ {_ident(binder)} : Int, {bound} ∧ {body})"
+
+
+def _prop_operand(e: ast.expr, names: set[str]) -> ast.expr | None:
+    """The proposition an operand denotes, or None if it is an integer.
+
+    `A <==> B` reaches the encoder desugared as `bool(A) == bool(B)`, so
+    a `bool(...)` wrapper around a proposition is unwrapped here. A
+    `bool(...)` around an INTEGER is Python truthiness, which is a
+    different operation and stays outside the slice.
+
+    A call whose name is SHADOWED by a parameter or local is not the
+    builtin — Python calls that binding — so it is declined here and
+    falls through to the integer translator, which refuses it with the
+    shadowing message. Reading a shadowed `bool(...)` as the builtin
+    wrapper would emit an ↔ for a source expression that means
+    something else entirely."""
+    if isinstance(e, (ast.BoolOp, ast.Compare)):
+        return e
+    if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not):
+        return e
+    if isinstance(e, ast.Constant) and isinstance(e.value, bool):
+        return e
+    if isinstance(e, ast.Call) and isinstance(e.func, ast.Name) \
+            and e.func.id not in names:
+        if e.func.id in ("all", "any"):
+            return e
+        if e.func.id == "bool" and len(e.args) == 1 and not e.keywords:
+            return _prop_operand(e.args[0], names)
+    return None
 
 
 def _prop_expr(e: ast.expr, names: set[str], line: int,
@@ -445,6 +487,33 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
                         avoid, lc)
         if q is not None:
             return q
+    if isinstance(e, ast.Compare) and len(e.ops) == 1 \
+            and type(e.ops[0]) in (ast.Eq, ast.NotEq):
+        lp = _prop_operand(e.left, names)
+        rp = _prop_operand(e.comparators[0], names)
+        if lp is not None and rp is not None:
+            # Two propositions compared with `==`. Dafny gets this free
+            # because its `==` on bool IS iff; in Lean, Prop equality is
+            # a different (and much stronger) statement, so the contract
+            # is an ↔.
+            a = _prop_expr(lp, names, line, result, rename,
+                           result_is_bool, avoid, lc)
+            b = _prop_expr(rp, names, line, result, rename,
+                           result_is_bool, avoid, lc)
+            iff = f"({a} ↔ {b})"
+            return iff if isinstance(e.ops[0], ast.Eq) else f"(¬{iff})"
+        if (lp is None) != (rp is None):
+            # Let the integer translator speak first: when the
+            # non-propositional side is a SHADOWED call, its message
+            # names the real cause. Only a genuine integer operand
+            # earns the mixed-comparison message.
+            other = e.left if lp is None else e.comparators[0]
+            _int_expr(other, names, line, result, rename, lc)
+            raise _reject(
+                "comparing a proposition with an integer is outside this "
+                "slice — Python's bool is a subtype of int, so this is "
+                "legal Python whose meaning (0/1 coercion) the encoder "
+                "does not model", line)
     if isinstance(e, ast.Compare):
         parts = []
         left = e.left
@@ -499,6 +568,23 @@ def _no_old(e: ast.expr, line: int) -> None:
             raise _reject("`old(...)` is only meaningful in spec clauses "
                           "— in executable Python it is a NameError",
                           line)
+
+
+class _SubstExprs(ast.NodeTransformer):
+    """Replace free names with whole EXPRESSIONS. Used to make a loop
+    body's assignments sequential: each right-hand side is rewritten
+    through the updates before it, so a step reading another
+    accumulator sees its NEW value, exactly as CPython executes it.
+    Substituting simultaneously would model a different program."""
+
+    def __init__(self, mapping: dict[str, ast.expr]) -> None:
+        self.mapping = mapping
+
+    def visit_Name(self, node: ast.Name) -> ast.expr:
+        repl = self.mapping.get(node.id)
+        if repl is None:
+            return node
+        return copy.deepcopy(repl)
 
 
 class _SubstName(ast.NodeTransformer):
@@ -711,6 +797,63 @@ def _requires_min_len(spec_fn: FunctionSpec,
     return bounds
 
 
+def _sign_facts(e: ast.expr) -> tuple[set[str], set[str], set[str]]:
+    """(nonneg, nonzero, positive) names a conjunction of comparisons
+    establishes. Only TOP-LEVEL conjuncts count: under a `not` or an
+    `or` the comparison stops being a guarantee."""
+    nonneg: set[str] = set()
+    nonzero: set[str] = set()
+    positive: set[str] = set()
+
+    def walk(x: ast.expr) -> None:
+        if isinstance(x, ast.BoolOp) and isinstance(x.op, ast.And):
+            for v in x.values:
+                walk(v)
+            return
+        if not isinstance(x, ast.Compare):
+            return
+        # Chained comparisons (`0 <= i <= n`) are conjunctions.
+        left = x.left
+        for op, right in zip(x.ops, x.comparators):
+            for a, o, b in ((left, op, right),):
+                if isinstance(a, ast.Name) and isinstance(b, ast.Constant) \
+                        and isinstance(b.value, int) \
+                        and not isinstance(b.value, bool):
+                    c = b.value
+                    if isinstance(o, ast.GtE) and c >= 0:
+                        nonneg.add(a.id)
+                        if c >= 1:
+                            positive.add(a.id)
+                    elif isinstance(o, ast.Gt) and c >= -1:
+                        nonneg.add(a.id)
+                        if c >= 0:
+                            positive.add(a.id)
+                    elif isinstance(o, ast.NotEq) and c == 0:
+                        nonzero.add(a.id)
+                    elif isinstance(o, ast.Eq) and c >= 1:
+                        positive.add(a.id)
+                if isinstance(b, ast.Name) and isinstance(a, ast.Constant) \
+                        and isinstance(a.value, int) \
+                        and not isinstance(a.value, bool):
+                    c = a.value
+                    if isinstance(o, ast.LtE) and c >= 0:
+                        nonneg.add(b.id)
+                        if c >= 1:
+                            positive.add(b.id)
+                    elif isinstance(o, ast.Lt) and c >= -1:
+                        nonneg.add(b.id)
+                        if c >= 0:
+                            positive.add(b.id)
+                    elif isinstance(o, ast.NotEq) and c == 0:
+                        nonzero.add(b.id)
+                    elif isinstance(o, ast.Eq) and c >= 1:
+                        positive.add(b.id)
+            left = right
+
+    walk(e)
+    return nonneg, nonzero, positive
+
+
 def _requires_positive(spec_fn: FunctionSpec) -> frozenset[str]:
     """Names a TOP-LEVEL `requires` conjunct proves strictly positive
     (`p > c` for c >= 0, `p >= c` for c >= 1, and the mirrored forms).
@@ -909,28 +1052,44 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
 
 @dataclass
 class _WhileShape:
-    """One `while COND:` accumulator loop (P2 slice 7).
+    """One `while COND:` loop over N accumulators (P2 slices 7-8).
 
-    Python shape:  acc = init ; while COND: acc = STEP ; return RET
-    Lean shape:    fuel recursion again, but the fuel comes from the
-    `#@ decreases` MEASURE rather than a range bound. The generated
-    induction theorem concludes both that the invariant survives and
-    that the condition is FALSE at the end — the second half is what
-    distinguishes a loop that really exited from one that merely ran
-    out of fuel, and it follows from the invariant bounding the measure
-    below while the fuel bounds it above.
+    Python shape:  a1 = e1 ; ... ; aN = eN ; while COND: <body> ; return RET
+    Lean shape:    fuel recursion whose fuel is the `#@ decreases`
+    MEASURE. With N > 1 the loop state is a tuple and the theorem reads
+    it back through projections.
+
+    The body's assignments are SEQUENTIAL, so `steps` keeps them in
+    order and each right-hand side is translated through a substitution
+    map: a later statement sees the earlier updates, exactly as CPython
+    executes them. Translating them simultaneously would model a
+    different program whenever one accumulator's update reads another's
+    new value.
     """
 
-    acc: str
-    init: ast.expr
+    accs: list[str]
+    inits: list[ast.expr]
     cond: ast.expr
-    step: ast.expr
+    # Each GROUP is applied simultaneously; groups run in order. A plain
+    # `x = e` is a group of one, while `x, y = y, x` is a single group
+    # of two — Python evaluates a tuple assignment's whole right side
+    # before binding anything, so a swap really swaps. Treating that as
+    # two sequential assignments would model a different program.
+    steps: list[list[tuple[str, ast.expr]]]
     ret: ast.expr
     inv: ast.expr
     inv_line: int
     meas: ast.expr
     meas_line: int
     while_line: int
+
+
+def _proj(k: int, n: int) -> str:
+    """Projection onto accumulator k of an n-tuple. Lean's `×` is
+    right-associative, so `(a, b, c)` is `(a, (b, c))`."""
+    if n == 1:
+        return ""
+    return ".2" * k + (".1" if k < n - 1 else "")
 
 
 def _loop_decreases(spec_fn: FunctionSpec,
@@ -980,9 +1139,9 @@ def _squared_terms(exprs: list[ast.expr]) -> list[ast.expr]:
 
 def _split_while(fn: ast.FunctionDef,
                  spec_fn: FunctionSpec) -> _WhileShape:
-    """Match the P2 slice-7 while shape, or REJECT loudly. Only called
-    once a `while` is known to be present, so returning None would just
-    hand the body compiler a worse message."""
+    """Match the while shape, or REJECT loudly. Only called once a
+    `while` is known to be present, so returning None would just hand
+    the body compiler a worse message."""
     stmts = [st for st in fn.body
              if not (isinstance(st, ast.Expr)
                      and isinstance(st.value, ast.Constant))]
@@ -992,56 +1151,117 @@ def _split_while(fn: ast.FunctionDef,
                                for n in ast.walk(st)):
         raise _reject("one `while` loop per function in this slice",
                       whiles[0].lineno if whiles else fn.lineno)
-    if len(stmts) != 3 or not isinstance(stmts[0], (ast.Assign,
-                                                    ast.AnnAssign)) \
-            or not isinstance(stmts[1], ast.While) \
-            or not isinstance(stmts[2], ast.Return):
-        raise _reject("a `while` function must be exactly `acc = init; "
-                      "while ...: ...; return expr` in this slice",
-                      whiles[0].lineno)
-    init_stmt, loop, ret_stmt = stmts
-    if isinstance(init_stmt, ast.AnnAssign):
-        if not (isinstance(init_stmt.target, ast.Name)
-                and isinstance(init_stmt.annotation, ast.Name)
-                and init_stmt.annotation.id == "int"
-                and init_stmt.value is not None):
-            raise _reject("an annotated accumulator initializer must be "
-                          "`name: int = <expr>`", init_stmt.lineno)
-        init_value, acc = init_stmt.value, init_stmt.target.id
-    else:
-        if len(init_stmt.targets) != 1 \
-                or not isinstance(init_stmt.targets[0], ast.Name):
-            raise _reject("the accumulator initializer must assign one "
-                          "name", init_stmt.lineno)
-        init_value, acc = init_stmt.value, init_stmt.targets[0].id
-    if isinstance(init_value, ast.Constant) \
-            and isinstance(init_value.value, bool):
-        raise _reject("bool accumulators are outside the `while` slice "
-                      "(integer measures and accumulators only)",
-                      init_stmt.lineno)
+    loop = whiles[0]
+    idx = stmts.index(loop)
+    inits_stmts, rest = stmts[:idx], stmts[idx + 1:]
+    if not inits_stmts or len(rest) != 1 \
+            or not isinstance(rest[0], ast.Return):
+        raise _reject("a `while` function must be `acc = init` (one or "
+                      "more) then `while ...: ...` then `return expr` in "
+                      "this slice", loop.lineno)
+    ret_stmt = rest[0]
+    accs: list[str] = []
+    inits: list[ast.expr] = []
+    for st in inits_stmts:
+        if isinstance(st, ast.AnnAssign):
+            if not (isinstance(st.target, ast.Name)
+                    and isinstance(st.annotation, ast.Name)
+                    and st.annotation.id == "int" and st.value is not None):
+                raise _reject("an annotated accumulator initializer must "
+                              "be `name: int = <expr>`", st.lineno)
+            target, value = st.target.id, st.value
+        elif isinstance(st, ast.Assign) and len(st.targets) == 1 \
+                and isinstance(st.targets[0], ast.Tuple):
+            tgt, val = st.targets[0], st.value
+            if not isinstance(val, ast.Tuple) \
+                    or len(tgt.elts) != len(val.elts):
+                raise _reject("a tuple initializer must bind a tuple of "
+                              "the same length (`x, y = a, b`)",
+                              st.lineno)
+            if not all(isinstance(e, ast.Name) for e in tgt.elts):
+                raise _reject("tuple initializer targets must be plain "
+                              "names", st.lineno)
+            for nm, v in zip(tgt.elts, val.elts):
+                if nm.id in accs:
+                    raise _reject(f"accumulator {nm.id!r} is initialized "
+                                  f"twice", st.lineno)
+                accs.append(nm.id)
+                inits.append(v)
+            continue
+        elif isinstance(st, ast.Assign):
+            if len(st.targets) != 1 \
+                    or not isinstance(st.targets[0], ast.Name):
+                raise _reject("the accumulator initializer must assign "
+                              "one name", st.lineno)
+            target, value = st.targets[0].id, st.value
+        else:
+            raise _reject(f"`{type(st).__name__}` before a `while` is "
+                          f"outside this slice (accumulator "
+                          f"initializers only)", st.lineno)
+        if target in accs:
+            raise _reject(f"accumulator {target!r} is initialized twice",
+                          st.lineno)
+        if isinstance(value, ast.Constant) \
+                and isinstance(value.value, bool):
+            raise _reject("bool accumulators are outside the `while` "
+                          "slice (integer measures and accumulators "
+                          "only)", st.lineno)
+        accs.append(target)
+        inits.append(value)
     if loop.orelse:
         raise _reject("`while ... else` is outside the fragment",
                       loop.lineno)
-    body = list(loop.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Assign) \
-            or len(body[0].targets) != 1 \
-            or not isinstance(body[0].targets[0], ast.Name) \
-            or body[0].targets[0].id != acc:
-        raise _reject(f"the loop body must be a single assignment to the "
-                      f"accumulator {acc!r} in this slice", loop.lineno)
+    steps: list[list[tuple[str, ast.expr]]] = []
+    for st in loop.body:
+        if not isinstance(st, ast.Assign) or len(st.targets) != 1:
+            raise _reject("the loop body must be assignments to the "
+                          "accumulators in this slice",
+                          getattr(st, "lineno", loop.lineno))
+        tgt = st.targets[0]
+        if isinstance(tgt, ast.Tuple):
+            val = st.value
+            if not isinstance(val, ast.Tuple) \
+                    or len(tgt.elts) != len(val.elts):
+                raise _reject("a tuple assignment must assign a tuple of "
+                              "the same length (`x, y = y, x % y`)",
+                              st.lineno)
+            if not all(isinstance(e, ast.Name) for e in tgt.elts):
+                raise _reject("tuple assignment targets must be plain "
+                              "names", st.lineno)
+            group = [(e.id, v) for e, v in zip(tgt.elts, val.elts)]
+            seen_t = {n for n, _ in group}
+            if len(seen_t) != len(group):
+                raise _reject("a tuple assignment must not bind the same "
+                              "name twice", st.lineno)
+        elif isinstance(tgt, ast.Name):
+            group = [(tgt.id, st.value)]
+        else:
+            raise _reject("the loop body must be single-name or tuple "
+                          "assignments to the accumulators in this "
+                          "slice", st.lineno)
+        for name, _ in group:
+            if name not in accs:
+                raise _reject(f"the loop body assigns {name!r}, which is "
+                              f"not one of the accumulators "
+                              f"({', '.join(accs)})", st.lineno)
+        steps.append(group)
+    if not steps:
+        raise _reject("the loop body must assign at least one "
+                      "accumulator", loop.lineno)
     if ret_stmt.value is None:
         raise _reject("bare `return` has no value to encode",
                       ret_stmt.lineno)
     inv_expr, inv_line = _loop_invariants(spec_fn, loop)
     meas_expr, meas_line = _loop_decreases(spec_fn, loop)
-    for expr, ln in ((init_value, fn.lineno), (loop.test, loop.lineno),
-                     (body[0].value, loop.lineno),
-                     (ret_stmt.value, ret_stmt.lineno)):
+    for expr, ln in ([(v, fn.lineno) for v in inits]
+                     + [(loop.test, loop.lineno)]
+                     + [(v, loop.lineno) for g in steps for _, v in g]
+                     + [(ret_stmt.value, ret_stmt.lineno)]):
         _no_old(expr, ln)
-    return _WhileShape(acc=acc, init=init_value, cond=loop.test,
-                       step=body[0].value, ret=ret_stmt.value,
-                       inv=inv_expr, inv_line=inv_line, meas=meas_expr,
-                       meas_line=meas_line, while_line=loop.lineno)
+    return _WhileShape(accs=accs, inits=inits, cond=loop.test, steps=steps,
+                       ret=ret_stmt.value, inv=inv_expr, inv_line=inv_line,
+                       meas=meas_expr, meas_line=meas_line,
+                       while_line=loop.lineno)
 
 
 def _split_loop(fn: ast.FunctionDef,
@@ -1251,7 +1471,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # verify mathematical abs/min/max while Python calls the user's def.
     for shadow in by_name:
         if shadow in ("abs", "min", "max", "old", "all", "any", "range",
-                      "len", "sum", "result"):
+                      "len", "sum", "bool", "result"):
             raise _reject(
                 f"module-level def {shadow!r} shadows an encoder builtin "
                 f"— call sites would verify the builtin while Python "
@@ -1394,6 +1614,30 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "tuple literals are outside the Lean slice — the "
                     "Dafny backend admits them; this slice has no "
                     "product types", node.lineno)
+        # The same question in SPEC clauses, which are comments and so
+        # are invisible to the walk above. A clause calling a name the
+        # function also binds as a local is ambiguous — the builtin at
+        # spec scope, that binding inside the function — and the
+        # encoder refuses ambiguity rather than picking a reading.
+        for kind in ("requires", "ensures", "invariant", "decreases"):
+            for clause in spec_fn.by_kind(kind):
+                text = clause.desugared if clause.desugared is not None \
+                    else clause.raw
+                try:
+                    tree = ast.parse(text, mode="eval").body
+                except SyntaxError:
+                    continue        # reported precisely elsewhere
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Call) \
+                            and isinstance(node.func, ast.Name) \
+                            and node.func.id in assigned_anywhere:
+                        raise _reject(
+                            f"the {kind} clause calls {node.func.id!r}, "
+                            f"which this function also binds as a local "
+                            f"— the call is ambiguous (the builtin at "
+                            f"spec scope, that binding inside the "
+                            f"function), so it is refused rather than "
+                            f"guessed", clause.line)
 
         binders = " ".join(f"({_ident(p)} : {ptypes[p]})" for p in params)
         loop = _split_loop(fn, spec_fn)
@@ -1427,9 +1671,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 "return `bool`, integer accumulators return `int`",
                 fn.lineno)
         if wloop is not None:
-            if wloop.acc in params:
-                raise _reject(f"accumulator {wloop.acc!r} shadows a "
-                              f"parameter — outside this slice",
+            for nm in wloop.accs:
+                if nm in params:
+                    raise _reject(f"accumulator {nm!r} shadows a "
+                                  f"parameter — outside this slice",
+                                  wloop.while_line)
+            if len(set(wloop.accs)) != len(wloop.accs):
+                raise _reject("duplicate accumulator names",
                               wloop.while_line)
             fname = spec_fn.name
             gen_cond, gen_meas = f"{fname}_cond", f"{fname}_meas"
@@ -1441,68 +1689,150 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 taken.add(g)
             args = " ".join(_ident(pn) for pn in params)
             argsp = (args + " ") if args else ""
-            av = _ident(wloop.acc)
-            body_names = names | {wloop.acc}
-            # The generated fuel and induction binders are plain
-            # identifiers, so they must dodge every user name the
-            # emitted terms can mention («m» IS m).
-            used_plain = set(params) | {wloop.acc}
+            nacc = len(wloop.accs)
+            avs = [_ident(a) for a in wloop.accs]
+            avlist = " ".join(avs)
+            body_names = names | set(wloop.accs)
+            used_plain = set(params) | set(wloop.accs)
             fuel = "f"
             while fuel in used_plain:
                 fuel += "'"
             kvar = "k"
             while kvar in used_plain or kvar == fuel:
                 kvar += "'"
+            pvar = "p"
+            while pvar in used_plain or pvar in (fuel, kvar):
+                pvar += "'"
+            # Divisor positivity from LOOP CONTEXT. After substitution
+            # every step expression is written in terms of the loop-HEAD
+            # accumulator values, so facts holding at the head apply to
+            # it. The invariant holds at the head; the condition holds
+            # additionally wherever the body runs. A `while y != 0` body
+            # under an invariant `y >= 0` therefore has y > 0, which is
+            # what makes `x % y` well-formed there.
+            inv_nn, inv_nz, inv_pos = _sign_facts(wloop.inv)
+            cnd_nn, cnd_nz, cnd_pos = _sign_facts(wloop.cond)
+            nn = inv_nn | cnd_nn
+            nz = inv_nz | cnd_nz
+            body_pos = frozenset(lc0.pos_names | inv_pos | cnd_pos
+                                 | (nn & nz))
+            # The condition is evaluated BEFORE it is known to hold, so
+            # only the INVARIANT's facts are available to it — but all of
+            # them, including a positivity that two separate conjuncts
+            # establish together (`y >= 0` and `y != 0`). Taking only the
+            # directly-positive names here rejected valid loops. The
+            # condition's own facts stay out, since using the condition
+            # to justify its own well-formedness would be circular. The
+            # invariant gets neither (same reason); quantifier bounds
+            # still apply there.
+            cond_pos = frozenset(lc0.pos_names | inv_pos
+                                 | (inv_nn & inv_nz))
+            body_lc = _ListCtx(lc0.lists, {}, None, min_len=lc0.min_len,
+                               pos_names=body_pos)
+            cond_lc = _ListCtx(lc0.lists, {}, None, min_len=lc0.min_len,
+                               pos_names=cond_pos)
             inv_lc = _ListCtx(lc0.lists, {}, None, scaffold=True,
                               min_len=lc0.min_len,
                               pos_names=lc0.pos_names)
-            init_t = _int_expr(wloop.init, names, fn.lineno, lc=lc0)
+            init_ts = [_int_expr(e, names, fn.lineno, lc=lc0)
+                       for e in wloop.inits]
             _reject_undecidable_quantifier(wloop.cond, body_names,
                                            wloop.while_line, lc0)
             cond_t = _prop_expr(wloop.cond, body_names, wloop.while_line,
-                                lc=lc0)
-            step_t = _int_expr(wloop.step, body_names, wloop.while_line,
-                               lc=lc0)
+                                lc=cond_lc)
             meas_t = _int_expr(wloop.meas, body_names, wloop.meas_line,
-                               lc=lc0)
+                               lc=body_lc)
             inv_t = _prop_expr(wloop.inv, body_names, wloop.inv_line,
                                lc=inv_lc)
-            ret_t = _int_expr(wloop.ret, body_names, fn.lineno, lc=lc0)
+            # Sequential substitution: each body assignment is rewritten
+            # through the updates before it, so a step that reads another
+            # accumulator sees its NEW value exactly as CPython does.
+            subst: dict[str, ast.expr] = {}
+            for group in wloop.steps:
+                # Every right-hand side in a group is rewritten against
+                # the state BEFORE the group, then all of the group's
+                # targets are rebound at once — Python's tuple-assignment
+                # semantics, and what makes `x, y = y, x` a real swap.
+                current = dict(subst)
+                updated = {nm: _SubstExprs(current).visit(
+                    copy.deepcopy(rhs)) for nm, rhs in group}
+                subst.update(updated)
+            step_ts = [
+                _int_expr(subst[a], body_names, wloop.while_line,
+                          lc=body_lc)
+                if a in subst else _ident(a)
+                for a in wloop.accs]
+            acc_ty = "Int" if nacc == 1 else \
+                "(" + " × ".join("Int" for _ in avs) + ")"
+            tup = avs[0] if nacc == 1 else "(" + ", ".join(avs) + ")"
+            step_tup = step_ts[0] if nacc == 1 \
+                else "(" + ", ".join(step_ts) + ")"
+            arrows = " ".join("Int →" for _ in avs)
             emit("", None)
-            # The condition is a Bool def: it gives the `if` its
-            # Decidable instance and gives the theorem a uniform way to
-            # say "the condition is FALSE at the end".
-            emit(f"def {_ident(gen_cond)} {binders} ({av} : Int) : Bool :="
-                 f" decide {cond_t}", wloop.while_line)
-            emit(f"def {_ident(gen_meas)} {binders} ({av} : Int) : Int :="
-                 f" {meas_t}", wloop.meas_line)
-            emit(f"def {_ident(gen_inv)} {binders} ({av} : Int) : Prop :="
-                 f" {inv_t}", wloop.inv_line)
+            emit(f"def {_ident(gen_cond)} {binders} ({avlist} : Int) : "
+                 f"Bool := decide {cond_t}", wloop.while_line)
+            emit(f"def {_ident(gen_meas)} {binders} ({avlist} : Int) : "
+                 f"Int := {meas_t}", wloop.meas_line)
+            emit(f"def {_ident(gen_inv)} {binders} ({avlist} : Int) : "
+                 f"Prop := {inv_t}", wloop.inv_line)
             emit("", None)
-            emit(f"def {_ident(gen_loop)} {binders} : Nat → Int → Int",
-                 wloop.while_line)
-            emit(f"  | 0, {av} => {av}", wloop.while_line)
-            emit(f"  | ({fuel} + 1), {av} => "
-                 f"if {_ident(gen_cond)} {argsp}{av} then "
-                 f"{_ident(gen_loop)} {argsp}{fuel} {step_t} else {av}",
-                 wloop.while_line)
+            emit(f"def {_ident(gen_loop)} {binders} : Nat → {arrows} "
+                 f"{acc_ty}", wloop.while_line)
+            # Match ARMS are comma-separated, unlike binder lists and
+            # `intro`, which are space-separated.
+            avpat = ", ".join(avs)
+            emit(f"  | 0, {avpat} => {tup}", wloop.while_line)
+            emit(f"  | ({fuel} + 1), {avpat} => "
+                 f"if {_ident(gen_cond)} {argsp}{avlist} then "
+                 f"{_ident(gen_loop)} {argsp}{fuel} "
+                 + " ".join(f"({t})" for t in step_ts)
+                 + f" else {tup}", wloop.while_line)
             emit("", None)
-            # Concluding `cond = false` as well as the invariant is what
-            # separates a loop that EXITED from one that ran out of
-            # fuel: the invariant bounds the measure below, the fuel
-            # bounds it above, so at zero fuel a still-true condition
-            # would force the next measure negative.
+            # The loop application, read back through projections when
+            # the state is a tuple.
+            app = f"({_ident(gen_loop)} {argsp}{fuel} {avlist})"
+            projs = " ".join(f"{app}{_proj(k, nacc)}"
+                             for k in range(nacc))
             emit(f"theorem {_ident(gen_thm)} {binders} : "
-                 f"∀ ({fuel} : Nat) ({av} : Int),", wloop.inv_line)
-            emit(f"    {_ident(gen_inv)} {argsp}{av} → "
-                 f"{_ident(gen_meas)} {argsp}{av} ≤ ({fuel} : Int) →",
+                 f"∀ ({fuel} : Nat) ({avlist} : Int),", wloop.inv_line)
+            emit(f"    {_ident(gen_inv)} {argsp}{avlist} → "
+                 f"{_ident(gen_meas)} {argsp}{avlist} ≤ ({fuel} : Int) →",
                  wloop.inv_line)
-            emit(f"    {_ident(gen_inv)} {argsp}"
-                 f"({_ident(gen_loop)} {argsp}{fuel} {av}) ∧",
+            emit(f"    {_ident(gen_inv)} {argsp}{projs} ∧",
                  wloop.inv_line)
-            emit(f"      {_ident(gen_cond)} {argsp}"
-                 f"({_ident(gen_loop)} {argsp}{fuel} {av}) = false := by",
+            emit(f"      {_ident(gen_cond)} {argsp}{projs} = false := by",
                  wloop.inv_line)
+            # Variable-divisor mod bounds, now supplyable inside the
+            # induction: the invariant and the condition are unfolded
+            # into the context by the simp above, so `0 < y` is provable
+            # there even though the theorem carries no `requires`. Each
+            # `have` is guarded, so a divisor whose positivity is not
+            # provable in a given branch simply contributes nothing
+            # rather than breaking the proof.
+            wdiv_facts: list[str] = []
+            wsites: list[tuple[ast.expr, ast.expr]] = []
+            for expr in ([wloop.cond, wloop.meas]
+                         + [v for g in wloop.steps for _, v in g]):
+                for node in ast.walk(expr):
+                    if isinstance(node, ast.BinOp) \
+                            and isinstance(node.op, ast.Mod):
+                        wsites.append((node.left, node.right))
+            for wi, (wn, wd) in enumerate(wsites):
+                if isinstance(wd, ast.Constant):
+                    continue          # already handled by the bridge
+                try:
+                    wnt = _int_expr(wn, body_names, wloop.while_line,
+                                    lc=body_lc)
+                    wdt = _int_expr(wd, body_names, wloop.while_line,
+                                    lc=body_lc)
+                except EncodeError:
+                    continue
+                wdiv_facts.append(
+                    f"      all_goals (try (have hwlo{wi} := "
+                    f"VeriPy.PyMod_nonneg {wnt} {wdt} (by omega)))")
+                wdiv_facts.append(
+                    f"      all_goals (try (have hwhi{wi} := "
+                    f"VeriPy.PyMod_lt {wnt} {wdt} (by omega)))")
             sq_facts: list[str] = []
             for qi, qe in enumerate(_squared_terms([wloop.cond,
                                                     wloop.inv])):
@@ -1510,16 +1840,17 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     qt = _int_expr(qe, body_names, wloop.while_line,
                                    lc=lc0)
                 except EncodeError:
-                    continue  # reads a quantifier binder; not in scope
+                    continue
                 sq_facts.append(f"have hsq{qi} := VeriPy.SqGeSelf {qt}")
-            wladder = [*(f"      {f}" for f in sq_facts),
+            wladder = [*wdiv_facts,
+                       *(f"      {f}" for f in sq_facts),
                        "      all_goals (try omega)",
                        "      all_goals (try simp_all)",
                        "      all_goals (first | omega | trivial)"]
             emit(f"  intro {fuel}", wloop.inv_line)
             emit(f"  induction {fuel} with", wloop.inv_line)
             emit("  | zero =>", wloop.inv_line)
-            emit(f"      intro {av} h hm", wloop.inv_line)
+            emit(f"      intro {avlist} h hm", wloop.inv_line)
             emit(f"      simp only [{_ident(gen_loop)}]", wloop.inv_line)
             emit(f"      simp only [{_ident(gen_inv)}, "
                  f"{_ident(gen_meas)}, {_ident(gen_cond)}, "
@@ -1527,15 +1858,14 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             for tl in wladder:
                 emit(tl, wloop.inv_line)
             emit(f"  | succ {kvar} ih =>", wloop.inv_line)
-            emit(f"      intro {av} h hm", wloop.inv_line)
+            emit(f"      intro {avlist} h hm", wloop.inv_line)
             emit(f"      simp only [{_ident(gen_loop)}]", wloop.inv_line)
-            emit(f"      by_cases hc : {_ident(gen_cond)} {argsp}{av} "
-                 f"= true", wloop.inv_line)
+            emit(f"      by_cases hc : {_ident(gen_cond)} "
+                 f"{argsp}{avlist} = true", wloop.inv_line)
             emit("      · rw [if_pos hc]", wloop.inv_line)
-            emit(f"        refine ih {step_t} ?_ ?_", wloop.inv_line)
-            # Invariant preservation, then the measure's decrease — the
-            # two obligations a `decreases` clause owes, both linear
-            # whenever the measure and the invariant are.
+            emit("        refine ih "
+                 + " ".join(f"({t})" for t in step_ts) + " ?_ ?_",
+                 wloop.inv_line)
             emit(f"        · simp only [{_ident(gen_inv)}, "
                  f"{_ident(gen_cond)}, decide_eq_true_eq] at *",
                  wloop.inv_line)
@@ -1553,9 +1883,25 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("", None)
             emit(f"def {_ident(spec_fn.name)} {binders} : Int :=",
                  fn.lineno)
-            emit(f"  let {av} := {_ident(gen_loop)} {argsp}"
-                 f"({_ident(gen_meas)} {argsp}{init_t}).toNat {init_t}; "
-                 f"{ret_t}", fn.lineno)
+            init_call = (f"{_ident(gen_loop)} {argsp}"
+                         f"({_ident(gen_meas)} {argsp}"
+                         + " ".join(f"({t})" for t in init_ts)
+                         + ").toNat "
+                         + " ".join(f"({t})" for t in init_ts))
+            if nacc == 1:
+                ret_t = _int_expr(wloop.ret, body_names, fn.lineno,
+                                  lc=lc0)
+                emit(f"  let {avs[0]} := {init_call}; {ret_t}",
+                     fn.lineno)
+            else:
+                emit(f"  let {pvar} := {init_call}", fn.lineno)
+                for k, a in enumerate(avs):
+                    emit(f"  let {a} := {pvar}{_proj(k, nacc)}",
+                         fn.lineno)
+                ret_t = _int_expr(wloop.ret, body_names, fn.lineno,
+                                  lc=lc0)
+                emit(f"  {ret_t}", fn.lineno)
+
         elif loop is not None:
             for nm, what in ((loop.index, "loop index"),
                              (loop.acc, "accumulator")):
@@ -1951,12 +2297,14 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         if wloop is not None:
             targs = " ".join(_ident(_tname(pn)) for pn in params)
             targsp = (targs + " ") if targs else ""
-            w_init = _int_expr(wloop.init, names, fn.lineno,
-                               rename=rename, lc=lc0)
+            w_inits = " ".join(
+                "(" + _int_expr(e, names, fn.lineno, rename=rename,
+                                lc=lc0) + ")"
+                for e in wloop.inits)
             gi, gm = f"{spec_fn.name}_inv", f"{spec_fn.name}_meas"
             gc, gt = f"{spec_fn.name}_cond", f"{spec_fn.name}_loop_inv"
             emit("  try dsimp only", first_ensures_line)
-            emit(f"  have hi0 : {_ident(gi)} {targsp}{w_init} := by "
+            emit(f"  have hi0 : {_ident(gi)} {targsp}{w_inits} := by "
                  f"simp only [{_ident(gi)}]; all_goals (try push_cast); "
                  f"all_goals (try omega); all_goals (try simp_all); "
                  f"all_goals (try intros); "
@@ -1965,7 +2313,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # The fuel is the measure at entry, so the fuel-bound
             # obligation is exactly "the measure starts non-negative".
             emit(f"  have hfin := {_ident(gt)} {targsp}"
-                 f"({_ident(gm)} {targsp}{w_init}).toNat {w_init} hi0 "
+                 f"({_ident(gm)} {targsp}{w_inits}).toNat {w_inits} hi0 "
                  f"(by simp only [{_ident(gm)}]; omega)",
                  first_ensures_line)
             emit("  obtain ⟨hinv, hcond⟩ := hfin", first_ensures_line)
