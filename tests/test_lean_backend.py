@@ -1502,6 +1502,76 @@ def test_end_to_end_tuple_assignment_verifies(tmp_path):
     assert verify_structured(bad, tmp_path / "o2",
                              backend="lean")["status"] == "failed"
 
+def test_divisor_positivity_from_a_quantifier_bound():
+    # A binder over `range(lo, hi)` with a positive literal `lo` is
+    # positive wherever the bound hypothesis guards it, which licenses
+    # `n % d` with no contract clause about d at all.
+    src = ("#@ requires n >= 1\n"
+           "#@ ensures forall d in range(1, n) :: n % d >= 0\n"
+           "def f(n: int) -> int:\n"
+           "    return n\n")
+    assert "VeriPy.PyMod" in _encode(src).lean_source
+
+    # A zero lower bound proves nothing: d may be 0.
+    bad = src.replace("range(1, n)", "range(0, n)")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(bad)
+
+
+def test_divisor_positivity_from_loop_context():
+    # `while y != 0` under an invariant `y >= 0` gives y > 0 in the
+    # body, which is what makes `n % y` well-formed there. After
+    # substitution every step expression is written in terms of the
+    # loop-HEAD values, so head facts apply to it.
+    ok = ("#@ requires n >= 0\n"
+          "#@ ensures result >= 0\n"
+          "def f(n: int) -> int:\n"
+          "    y = n\n"
+          "    r = 0\n"
+          "    while y != 0:\n"
+          "        #@ invariant y >= 0\n"
+          "        #@ invariant r >= 0\n"
+          "        #@ decreases y\n"
+          "        r = r + n % y\n"
+          "        y = y - 1\n"
+          "    return r\n")
+    assert "VeriPy.PyMod" in _encode(ok).lean_source
+
+    # Each half alone is not enough, and a fact under an `or` is not a
+    # guarantee at all.
+    for src, why in (
+        (ok.replace("while y != 0:", "while y > -1:")
+           .replace("#@ decreases y\n", "#@ decreases y + 1\n"),
+         "nonneg alone leaves y == 0 possible"),
+        (ok.replace("        #@ invariant y >= 0\n", ""),
+         "nonzero alone leaves y negative"),
+        (ok.replace("#@ invariant y >= 0", "#@ invariant y >= 0 or n >= 0"),
+         "a disjunct is not a guarantee"),
+    ):
+        with pytest.raises(EncodeError, match="divisor"):
+            _encode(src), why
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_context_positive_divisor_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    src = tmp_path / "modloop.py"
+    src.write_text("#@ requires n >= 0\n"
+                   "#@ ensures result >= 0\n"
+                   "def modloop(n: int) -> int:\n"
+                   "    y = n\n"
+                   "    r = 0\n"
+                   "    while y != 0:\n"
+                   "        #@ invariant y >= 0\n"
+                   "        #@ invariant r >= 0\n"
+                   "        #@ decreases y\n"
+                   "        r = r + n % y\n"
+                   "        y = y - 1\n"
+                   "    return r\n")
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
 
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
