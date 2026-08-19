@@ -1108,7 +1108,7 @@ def test_while_shape_rejections():
                 "        #@ invariant 0 <= c <= n\n"
                 "        #@ decreases n - c\n"
                 "        c = c + 1\n        return c\n"
-                "    return c\n", "single-name assignments"),
+                "    return c\n", "must be assignments"),
         # bool accumulators stay out of the while slice
         ("#@ ensures result == True\ndef f(n: int) -> bool:\n"
          "    b = True\n    while b:\n"
@@ -1420,6 +1420,85 @@ def test_end_to_end_propositional_equality_verifies(tmp_path):
     bad.write_text("#@ ensures (result > 0) == (x < 0)\n"
                    "def sign_flip(x: int) -> int:\n"
                    "    return x\n")
+REALSWAP = ("#@ requires n >= 0\n"
+            "#@ ensures result == n\n"
+            "def realswap(n: int) -> int:\n"
+            "    x, y = n, 0\n"
+            "    i = 0\n"
+            "    while i < 1:\n"
+            "        #@ invariant (i == 0 and x == n and y == 0) or "
+            "(i == 1 and x == 0 and y == n)\n"
+            "        #@ decreases 1 - i\n"
+            "        x, y = y, x\n"
+            "        i = i + 1\n"
+            "    return y\n")
+
+
+def test_tuple_assignment_is_simultaneous_not_sequential():
+    # Python evaluates a tuple assignment's whole right side BEFORE
+    # binding anything, so `x, y = y, x` really swaps. Two consecutive
+    # statements would not (the second would see the first's update), so
+    # encoding a tuple assignment sequentially models a DIFFERENT
+    # program. The emitted step is the discriminator.
+    enc = _encode(REALSWAP)
+    assert "f («y») («x») ((«i» + 1))" in enc.lean_source
+    # Three accumulators ride a right-nested tuple.
+    assert "(Int × Int × Int)" in enc.lean_source
+    assert "| 0, «x», «y», «i» => («x», «y», «i»)" in enc.lean_source
+
+    # A tuple initializer binds several accumulators at once.
+    assert "def «realswap_cond» («n» : Int) («x» «y» «i» : Int)" \
+        in enc.lean_source
+
+
+def test_tuple_assignment_rejections():
+    base = ("#@ requires n >= 0\n#@ ensures result == n\n"
+            "def f(n: int) -> int:\n")
+    cases = [
+        # arity mismatch
+        (base + "    x, y = 0, n\n    while x < n:\n"
+                "        #@ invariant 0 <= x <= n\n"
+                "        #@ decreases n - x\n"
+                "        x, y = y\n    return y\n", "same length"),
+        # a non-name target
+        (base + "    x, y = 0, n\n    while x < n:\n"
+                "        #@ invariant 0 <= x <= n\n"
+                "        #@ decreases n - x\n"
+                "        x, n.y = y, x\n    return y\n",
+         "plain names"),
+        # binding the same name twice in one tuple assignment
+        (base + "    x, y = 0, n\n    while x < n:\n"
+                "        #@ invariant 0 <= x <= n\n"
+                "        #@ decreases n - x\n"
+                "        x, x = y, x\n    return y\n",
+         "same name twice"),
+        # a tuple target assigning something that is not an accumulator
+        (base + "    x, y = 0, n\n    while x < n:\n"
+                "        #@ invariant 0 <= x <= n\n"
+                "        #@ decreases n - x\n"
+                "        x, z = y, x\n    return y\n",
+         "not one of the accumulators"),
+    ]
+    for src, needle in cases:
+        with pytest.raises(EncodeError, match=needle):
+            _encode(src)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_tuple_assignment_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # This spec is TRUE only under simultaneous semantics: read
+    # sequentially, `x, y = y, x` would leave both at the old y and the
+    # postcondition would be false.
+    src = tmp_path / "realswap.py"
+    src.write_text(REALSWAP)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # A tuple-carried accumulator loop with a false spec still fails.
+    bad = tmp_path / "bad.py"
+    bad.write_text(REALSWAP.replace("result == n", "result == n + 1"))
     assert verify_structured(bad, tmp_path / "o2",
                              backend="lean")["status"] == "failed"
 

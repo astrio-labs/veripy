@@ -967,7 +967,12 @@ class _WhileShape:
     accs: list[str]
     inits: list[ast.expr]
     cond: ast.expr
-    steps: list[tuple[str, ast.expr]]
+    # Each GROUP is applied simultaneously; groups run in order. A plain
+    # `x = e` is a group of one, while `x, y = y, x` is a single group
+    # of two — Python evaluates a tuple assignment's whole right side
+    # before binding anything, so a swap really swaps. Treating that as
+    # two sequential assignments would model a different program.
+    steps: list[list[tuple[str, ast.expr]]]
     ret: ast.expr
     inv: ast.expr
     inv_line: int
@@ -1062,6 +1067,24 @@ def _split_while(fn: ast.FunctionDef,
                 raise _reject("an annotated accumulator initializer must "
                               "be `name: int = <expr>`", st.lineno)
             target, value = st.target.id, st.value
+        elif isinstance(st, ast.Assign) and len(st.targets) == 1 \
+                and isinstance(st.targets[0], ast.Tuple):
+            tgt, val = st.targets[0], st.value
+            if not isinstance(val, ast.Tuple) \
+                    or len(tgt.elts) != len(val.elts):
+                raise _reject("a tuple initializer must bind a tuple of "
+                              "the same length (`x, y = a, b`)",
+                              st.lineno)
+            if not all(isinstance(e, ast.Name) for e in tgt.elts):
+                raise _reject("tuple initializer targets must be plain "
+                              "names", st.lineno)
+            for nm, v in zip(tgt.elts, val.elts):
+                if nm.id in accs:
+                    raise _reject(f"accumulator {nm.id!r} is initialized "
+                                  f"twice", st.lineno)
+                accs.append(nm.id)
+                inits.append(v)
+            continue
         elif isinstance(st, ast.Assign):
             if len(st.targets) != 1 \
                     or not isinstance(st.targets[0], ast.Name):
@@ -1085,19 +1108,40 @@ def _split_while(fn: ast.FunctionDef,
     if loop.orelse:
         raise _reject("`while ... else` is outside the fragment",
                       loop.lineno)
-    steps: list[tuple[str, ast.expr]] = []
+    steps: list[list[tuple[str, ast.expr]]] = []
     for st in loop.body:
-        if not isinstance(st, ast.Assign) or len(st.targets) != 1 \
-                or not isinstance(st.targets[0], ast.Name):
-            raise _reject("the loop body must be single-name assignments "
-                          "to the accumulators in this slice",
+        if not isinstance(st, ast.Assign) or len(st.targets) != 1:
+            raise _reject("the loop body must be assignments to the "
+                          "accumulators in this slice",
                           getattr(st, "lineno", loop.lineno))
-        name = st.targets[0].id
-        if name not in accs:
-            raise _reject(f"the loop body assigns {name!r}, which is not "
-                          f"one of the accumulators "
-                          f"({', '.join(accs)})", st.lineno)
-        steps.append((name, st.value))
+        tgt = st.targets[0]
+        if isinstance(tgt, ast.Tuple):
+            val = st.value
+            if not isinstance(val, ast.Tuple) \
+                    or len(tgt.elts) != len(val.elts):
+                raise _reject("a tuple assignment must assign a tuple of "
+                              "the same length (`x, y = y, x % y`)",
+                              st.lineno)
+            if not all(isinstance(e, ast.Name) for e in tgt.elts):
+                raise _reject("tuple assignment targets must be plain "
+                              "names", st.lineno)
+            group = [(e.id, v) for e, v in zip(tgt.elts, val.elts)]
+            seen_t = {n for n, _ in group}
+            if len(seen_t) != len(group):
+                raise _reject("a tuple assignment must not bind the same "
+                              "name twice", st.lineno)
+        elif isinstance(tgt, ast.Name):
+            group = [(tgt.id, st.value)]
+        else:
+            raise _reject("the loop body must be single-name or tuple "
+                          "assignments to the accumulators in this "
+                          "slice", st.lineno)
+        for name, _ in group:
+            if name not in accs:
+                raise _reject(f"the loop body assigns {name!r}, which is "
+                              f"not one of the accumulators "
+                              f"({', '.join(accs)})", st.lineno)
+        steps.append(group)
     if not steps:
         raise _reject("the loop body must assign at least one "
                       "accumulator", loop.lineno)
@@ -1108,7 +1152,7 @@ def _split_while(fn: ast.FunctionDef,
     meas_expr, meas_line = _loop_decreases(spec_fn, loop)
     for expr, ln in ([(v, fn.lineno) for v in inits]
                      + [(loop.test, loop.lineno)]
-                     + [(v, loop.lineno) for _, v in steps]
+                     + [(v, loop.lineno) for g in steps for _, v in g]
                      + [(ret_stmt.value, ret_stmt.lineno)]):
         _no_old(expr, ln)
     return _WhileShape(accs=accs, inits=inits, cond=loop.test, steps=steps,
@@ -1542,9 +1586,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # through the updates before it, so a step that reads another
             # accumulator sees its NEW value exactly as CPython does.
             subst: dict[str, ast.expr] = {}
-            for nm, rhs in wloop.steps:
-                subst[nm] = _SubstExprs(dict(subst)).visit(
-                    copy.deepcopy(rhs))
+            for group in wloop.steps:
+                # Every right-hand side in a group is rewritten against
+                # the state BEFORE the group, then all of the group's
+                # targets are rebound at once — Python's tuple-assignment
+                # semantics, and what makes `x, y = y, x` a real swap.
+                current = dict(subst)
+                updated = {nm: _SubstExprs(current).visit(
+                    copy.deepcopy(rhs)) for nm, rhs in group}
+                subst.update(updated)
             step_ts = [
                 _int_expr(subst[a], body_names, wloop.while_line, lc=lc0)
                 if a in subst else _ident(a)
