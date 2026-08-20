@@ -2772,7 +2772,9 @@ def _collect_math_imports(
     Only unconditional top-level imports bind — a nested `if`/`for`/`try`
     import is not guaranteed to run, and a later module-level Store, Del,
     attribute mutation (`math.gcd = …` / `del math.gcd`), or wildcard
-    import may replace the math meaning. Recording those would lower
+    import, or an assignment that aliases the module (`m = math`) then
+    mutates through the copy (`m.gcd = …`) may replace the math meaning.
+    Recording those would lower
     `PyGcd`/`PyFact`/`PyIsqrt` for CPython behavior the source does not have.
     Function bodies are out of scope — only module-level imports resolve.
     """
@@ -2789,6 +2791,29 @@ def _collect_math_imports(
         math_names.clear()
         aliases.clear()
         math_other.clear()
+
+    def drop_aliases() -> None:
+        # Attribute mutation through any alias is visible on every name
+        # bound to the same math module object (`m = math`; `m.gcd = …`
+        # replaces `math.gcd`). Drop the whole alias set; `from math
+        # import gcd` snapshots the function and stays in math_names.
+        aliases.clear()
+
+    def alias_copy_targets(stmt: ast.stmt) -> list[str]:
+        """Names this statement binds to an existing math-module alias."""
+        value: ast.expr | None = None
+        targets: list[ast.expr] = []
+        if isinstance(stmt, ast.Assign):
+            value, targets = stmt.value, list(stmt.targets)
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            value, targets = stmt.value, [stmt.target]
+        if not (isinstance(value, ast.Name) and value.id in aliases):
+            return []
+        names: list[str] = []
+        for t in targets:
+            if isinstance(t, ast.Name):
+                names.append(t.id)
+        return names
 
     def take(stmt: ast.stmt) -> None:
         match stmt:
@@ -2812,6 +2837,7 @@ def _collect_math_imports(
                             math_other[local] = a.name
 
     def drop_module_binds(stmt: ast.stmt) -> None:
+        copies = alias_copy_targets(stmt)
         for n in _walk_skip_def_bodies(stmt):
             if isinstance(n, _NESTED_SCOPE):
                 unbind(n.name)
@@ -2825,13 +2851,18 @@ def _collect_math_imports(
                 unbind(n.id)
             elif isinstance(n, ast.Attribute) and isinstance(n.ctx, (ast.Store, ast.Del)):
                 if isinstance(n.value, ast.Name):
-                    unbind(n.value.id)
+                    if n.value.id in aliases:
+                        drop_aliases()
+                    else:
+                        unbind(n.value.id)
             elif isinstance(n, ast.ExceptHandler) and n.name:
                 unbind(n.name)
             elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
                 unbind(n.name)
             elif isinstance(n, ast.MatchMapping) and n.rest:
                 unbind(n.rest)
+        for name in copies:
+            aliases.add(name)
 
     for stmt in module.body:
         if isinstance(stmt, (ast.Import, ast.ImportFrom)):

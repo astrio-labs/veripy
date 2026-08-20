@@ -2104,6 +2104,64 @@ def test_math_attribute_deletion_does_not_lower():
     _expect_encode_error(src, "method calls are outside")
 
 
+def test_math_name_copy_still_lowers():
+    src = (
+        "import math\n"
+        "m = math\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return m.gcd(a, b) + math.gcd(a, b)\n"
+    )
+    dfy = _encode(src)
+    method = dfy.split("method f(")[1]
+    assert method.count("PyGcd(a, b)") == 2
+
+
+def test_math_alias_copy_attribute_assignment_does_not_lower():
+    # `m = math; m.gcd = …` mutates the shared module object, so
+    # `math.gcd` is the replacement too.
+    src = (
+        "import math\n"
+        "m = math\n"
+        "m.gcd = abs\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "method calls are outside")
+
+
+def test_second_import_alias_attribute_assignment_does_not_lower():
+    src = (
+        "import math\n"
+        "import math as M\n"
+        "M.gcd = abs\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "method calls are outside")
+
+
+def test_from_import_survives_alias_module_mutation():
+    # `from math import gcd` snapshots the function; mutating the module
+    # through an alias does not rebind the local.
+    src = (
+        "from math import gcd\n"
+        "import math\n"
+        "m = math\n"
+        "m.gcd = abs\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    assert "PyGcd(a, b)" in _encode(src)
+
+
 def test_wildcard_import_does_not_keep_math_binding():
     # `from other import *` may rebind gcd; keeping the math table entry
     # would lower CPython's replacement to PyGcd.
