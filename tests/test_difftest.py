@@ -311,3 +311,25 @@ def test_foreach_tuple_unpack_translation_faithful(tmp_path):
     assert result.functions and all(f.ok for f in result.functions), [
         (f.name, f.mismatch, f.error) for f in result.functions
     ]
+
+
+def test_fstring_translation_faithful(tmp_path):
+    src = tmp_path / "greet.py"
+    src.write_text(
+        "#@ ensures result == \"hi \" + s\n"
+        "def greet(s: str) -> str:\n"
+        "    return f\"hi {s}\"\n"
+        "\n"
+        "#@ ensures result == s\n"
+        "def ident(s: str) -> str:\n"
+        "    return f\"{s}\"\n"
+        "\n"
+        "#@ ensures result == a + b\n"
+        "def glue(a: str, b: str) -> str:\n"
+        "    return f\"{a}{b}\"\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]

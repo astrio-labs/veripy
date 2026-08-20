@@ -64,7 +64,7 @@ _RULES = [
     Rule("T-IS", "`is` against something other than None/True/False", "§3.1 semantic traps"),
     Rule("T-MUT-DEFAULT", "mutable default argument", "§3.1 semantic traps"),
     Rule("T-GLOBAL", "write access to module-level state", "§3.1 semantic traps"),
-    Rule("T-FSTRING", "f-string / string interpolation", "§7 curated-str candidate"),
+    Rule("T-FSTRING", "f-string with format spec, conversion, or non-str literal", "§7 curated-str; bare `{s}` concat is admitted"),
     Rule("X-TRY", "try/except/finally", "§7.4"),
     Rule("X-RAISE", "raise", "§7.4"),
     Rule("X-WITH", "with statement", "§7 excluded"),
@@ -231,6 +231,23 @@ def _ignore_comment_lines(source: str) -> set[int]:
     except tokenize.TokenError:
         pass
     return lines
+
+
+def _fstring_still_outside(node: ast.JoinedStr) -> bool:
+    """True for f-strings the encoder still rejects (no types here).
+
+    Bare `{name}` interpolations are admitted as str concatenation when
+    the name is str-typed; the survey is untyped, so those do not fire.
+    Format specs, `!s`/`!r`/`!a`, and non-str literals still do."""
+    for v in node.values:
+        if not isinstance(v, ast.FormattedValue):
+            continue
+        if v.conversion != -1 or v.format_spec is not None:
+            return True
+        if isinstance(v.value, ast.Constant) \
+                and not isinstance(v.value.value, str):
+            return True
+    return False
 
 
 def _is_mutable_literal(node: ast.expr) -> bool:
@@ -442,7 +459,8 @@ class _FunctionScanner:
                     elif not isinstance(c.value, _OK_CONST_TYPES):
                         self.fire("U-CONST", node, detail=type(c.value).__name__)
                 case ast.JoinedStr():
-                    self.fire("T-FSTRING", node)
+                    if _fstring_still_outside(node):
+                        self.fire("T-FSTRING", node)
                 case ast.Yield() | ast.YieldFrom():
                     self.fire("X-YIELD", node)
                 case ast.NamedExpr():

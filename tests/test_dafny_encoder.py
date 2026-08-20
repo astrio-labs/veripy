@@ -1713,3 +1713,91 @@ def test_nested_list_comprehension_still_rejected():
         "    return [x + y for x in l for y in l]\n",
         "single-generator",
     )
+
+
+def test_fstring_lowers_to_concatenation():
+    dfy = _encode(
+        "#@ ensures result == \"hi \" + s\n"
+        "def greet(s: str) -> str:\n"
+        "    return f\"hi {s}\"\n"
+    )
+    assert '("hi " + s)' in dfy
+    # A lone interpolation is identity on the str.
+    ident = _encode(
+        "#@ ensures result == s\n"
+        "def ident(s: str) -> str:\n"
+        "    return f\"{s}\"\n"
+    )
+    assert "result := s;" in ident
+
+
+def test_fstring_literal_only_is_just_the_string():
+    dfy = _encode(
+        "#@ ensures result == \"hi\"\n"
+        "def greet() -> str:\n"
+        "    return f\"hi\"\n"
+    )
+    assert 'result := "hi";' in dfy
+
+
+def test_fstring_empty_is_empty_string():
+    dfy = _encode(
+        "#@ ensures result == \"\"\n"
+        "def empty() -> str:\n"
+        "    return f\"\"\n"
+    )
+    assert 'result := "";' in dfy
+
+
+def test_fstring_in_spec_matches_concatenation():
+    dfy = _encode(
+        "#@ ensures result == f\"hi {s}\"\n"
+        "def greet(s: str) -> str:\n"
+        "    return \"hi \" + s\n"
+    )
+    assert '("hi " + s)' in dfy
+
+
+def test_fstring_int_interpolation_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(n: int) -> str:\n"
+        "    return f\"{n}\"\n",
+        "interpolating int",
+    )
+
+
+def test_fstring_bool_interpolation_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(b: bool) -> str:\n"
+        "    return f\"{b}\"\n",
+        "interpolating bool",
+    )
+
+
+def test_fstring_char_interpolation_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> str:\n"
+        "    return f\"{s[0]}\"\n",
+        "interpolating a character",
+    )
+
+
+def test_fstring_conversion_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> str:\n"
+        "    return f\"{s!r}\"\n",
+        "f-string conversions",
+    )
+
+
+def test_fstring_format_spec_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> str:\n"
+        "    return f\"{s:>10}\"\n",
+        "f-string format specs",
+    )
