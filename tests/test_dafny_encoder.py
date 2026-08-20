@@ -2096,3 +2096,17 @@ def test_math_attribute_deletion_does_not_lower():
         "    return math.gcd(a, b)\n"
     )
     _expect_encode_error(src, "method calls are outside")
+
+
+def test_wildcard_import_does_not_keep_math_binding():
+    # `from other import *` may rebind gcd; keeping the math table entry
+    # would lower CPython's replacement to PyGcd.
+    src = (
+        "from math import gcd\n"
+        "from other import *\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "outside the slice")
