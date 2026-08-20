@@ -2070,3 +2070,29 @@ def test_deleted_math_import_does_not_lower():
         "    return gcd(a, b)\n"
     )
     _expect_encode_error(src, "outside the slice")
+
+
+def test_math_attribute_assignment_does_not_lower():
+    # `math.gcd = …` replaces the function on the module; lowering the
+    # later call to PyGcd would verify CPython's replacement instead.
+    src = (
+        "import math\n"
+        "math.gcd = abs\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "method calls are outside")
+
+
+def test_math_attribute_deletion_does_not_lower():
+    src = (
+        "import math\n"
+        "del math.gcd\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "method calls are outside")
