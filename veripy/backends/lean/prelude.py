@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.5"
+PRELUDE_VERSION = "lean-0.6"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -81,6 +81,21 @@ theorem PyMod_lt (a b : Int) (h : 0 < b) : PyMod a b < b := by
 -- hypothesis-free, it can be handed to omega unconditionally wherever a
 -- squared term appears, with no side goal to discharge and no risk of
 -- breaking a proof that did not need it.
+-- Python's `**` on ints, for a NON-NEGATIVE exponent. A negative
+-- exponent makes CPython return a FLOAT, which is outside the int
+-- fragment, so the encoder discharges e >= 0 as a well-formedness
+-- obligation exactly as it does for a divisor. Checked against CPython
+-- on both signs of the base: 2**5 = 32, (-2)**3 = -8, (-2)**4 = 16.
+def PyPow (a : Int) (e : Int) : Int := a ^ e.toNat
+
+theorem PyPow_zero (a : Int) : PyPow a 0 = 1 := by
+  unfold PyPow; simp
+
+theorem PyPow_succ (a : Int) (e : Int) (h : 0 ≤ e) :
+    PyPow a (e + 1) = PyPow a e * a := by
+  unfold PyPow
+  rw [show (e + 1).toNat = e.toNat + 1 from by omega, Int.pow_succ]
+
 theorem SqGeSelf (a : Int) : a ≤ a * a := by
   rcases Int.lt_or_le a 1 with h | h
   · have hn : 0 ≤ (-a) * (-a) := Int.mul_nonneg (by omega) (by omega)
