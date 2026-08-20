@@ -2283,3 +2283,37 @@ def test_lean_rejects_fstring_in_spec_loudly():
     )
     with pytest.raises(EncodeError, match="f-strings are outside the Lean slice"):
         _encode(src)
+
+
+def test_lean_still_rejects_module_level_math_import():
+    src = (
+        "import math\n"
+        "#@ ensures result == x\n"
+        "def f(x: int) -> int:\n"
+        "    return x\n"
+    )
+    with pytest.raises(EncodeError, match="module-level"):
+        _encode(src)
+
+
+def test_lean_rejects_bare_gcd_loudly():
+    # No import (Lean refuses module-level import); the name is still the
+    # math function Dafny would admit, so the slice names Dafny.
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    with pytest.raises(EncodeError, match="math.gcd/factorial/isqrt are outside the Lean slice"):
+        _encode(src)
+
+
+def test_lean_rejects_math_isqrt_attribute_loudly():
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def f(math: int, n: int) -> int:\n"
+        "    return math.isqrt(n)\n"
+    )
+    with pytest.raises(EncodeError, match="math.gcd/factorial/isqrt are outside the Lean slice"):
+        _encode(src)

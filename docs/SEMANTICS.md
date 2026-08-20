@@ -212,6 +212,7 @@ translation of the *same* stub the prover saw).
 | walrus `:=` | §4 assign | assignment then the bound name; while-test re-emitted at continue / loop-end | unit (return/if/while, Hypothesis) |
 | assert | §4 | Dafny `assert` | corpus (rolling_max, below_zero) + unit |
 | truthiness §7.3 | §3 | `\|xs\| != 0` | unit |
+| `math.gcd` / `factorial` / `isqrt` | §3 math | `PyGcd`/`PyFact`/`PyIsqrt` (imported; two-int gcd; `n >= 0` VCs) | unit (Hypothesis; factorial ≤ 12, isqrt ≤ 10⁶) |
 
 Constructs outside this table are outside the fragment — the conformance
 checker rejects them by construction, which is what keeps this note short.

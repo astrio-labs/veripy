@@ -353,3 +353,42 @@ def test_fstring_greet_verifies(tmp_path, capsys):
     )
     assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_math_gcd_nonnegative_verifies(tmp_path, capsys):
+    src = tmp_path / "mgcd.py"
+    src.write_text(
+        "import math\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def g(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_math_factorial_five_verifies(tmp_path, capsys):
+    src = tmp_path / "fact.py"
+    src.write_text(
+        "from math import factorial\n"
+        "\n"
+        "#@ ensures result == 120\n"
+        "def f() -> int:\n"
+        "    return factorial(5)\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_math_isqrt_eight_verifies(tmp_path, capsys):
+    src = tmp_path / "isq.py"
+    src.write_text(
+        "import math\n"
+        "\n"
+        "#@ ensures result == 2\n"
+        "def f() -> int:\n"
+        "    return math.isqrt(8)\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out

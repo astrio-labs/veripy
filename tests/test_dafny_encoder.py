@@ -540,6 +540,7 @@ def test_preamble_names_are_exactly_the_globally_visible_declarations():
     assert PREAMBLE_NAMES == {
         "PyMod", "PyFloorDiv", "PyMin", "PyMax", "PyAbs", "PyIndex",
         "PySlice", "PySeqMax", "PySeqMin", "PySum", "PyFlatten", "PyPow",
+        "PyGcd", "PyFact", "PyIsqrt",
         "PyOpt", "PyNone", "PySome",
         "PyExn", "ValueError", "IndexError", "ZeroDivisionError",
         "TypeError", "KeyError",
@@ -1925,3 +1926,105 @@ def test_fstring_format_spec_rejected():
         "    return f\"{s:>10}\"\n",
         "f-string format specs",
     )
+
+
+# --- small math subset (gcd / factorial / isqrt) --------------------------------
+
+
+def test_math_gcd_lowers_to_pygcd():
+    src = (
+        "import math\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def g(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    dfy = _encode(src)
+    assert "PyGcd(a, b)" in dfy
+    assert "import math" not in dfy  # recorded, not emitted
+
+
+def test_from_math_import_factorial_lowers():
+    src = (
+        "from math import factorial\n"
+        "\n"
+        "#@ requires 0 <= n <= 12\n"
+        "#@ ensures result >= 1\n"
+        "def f(n: int) -> int:\n"
+        "    return factorial(n)\n"
+    )
+    dfy = _encode(src)
+    assert "PyFact(n)" in dfy
+
+
+def test_math_aliases_resolve():
+    src = (
+        "import math as M\n"
+        "from math import gcd as g, isqrt as root\n"
+        "\n"
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int, n: int) -> int:\n"
+        "    return M.gcd(a, b) + g(a, b) + root(n)\n"
+    )
+    dfy = _encode(src)
+    assert "PyGcd(a, b)" in dfy
+    assert "PyIsqrt(n)" in dfy
+    method = dfy.split("method f(")[1]
+    assert method.count("PyGcd(a, b)") == 2
+
+
+def test_math_sqrt_rejected_as_ieee_float():
+    src = (
+        "import math\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(x: int) -> int:\n"
+        "    return math.sqrt(x)\n"
+    )
+    _expect_encode_error(src, "IEEE float is outside the fragment")
+
+
+def test_from_math_import_sqrt_rejected_as_ieee_float():
+    src = (
+        "from math import sqrt\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(x: int) -> int:\n"
+        "    return sqrt(x)\n"
+    )
+    _expect_encode_error(src, "IEEE float is outside the fragment")
+
+
+def test_math_gcd_three_args_rejected():
+    src = (
+        "import math\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int, c: int) -> int:\n"
+        "    return math.gcd(a, b, c)\n"
+    )
+    _expect_encode_error(src, "exactly two ints")
+
+
+def test_unimported_gcd_is_outside():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "outside the slice")
+
+
+def test_from_math_import_gcd_does_not_shadow_as_builtin():
+    # gcd must NOT be in _ENCODED_BUILTINS: that set rejects `from math
+    # import prod as sum`. Importing gcd has to resolve, not bounce.
+    src = (
+        "from math import gcd\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    dfy = _encode(src)
+    assert "PyGcd(a, b)" in dfy

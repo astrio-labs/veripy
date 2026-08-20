@@ -382,3 +382,30 @@ def test_fstring_translation_faithful(tmp_path):
     assert result.functions and all(f.ok for f in result.functions), [
         (f.name, f.mismatch, f.error) for f in result.functions
     ]
+
+
+def test_math_subset_translation_faithful(tmp_path):
+    src = tmp_path / "mathsub.py"
+    src.write_text(
+        "import math\n"
+        "from math import factorial, isqrt\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def g(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+        "\n"
+        "#@ requires 0 <= n <= 12\n"
+        "#@ ensures result >= 1\n"
+        "def fact(n: int) -> int:\n"
+        "    return factorial(n)\n"
+        "\n"
+        "#@ requires 0 <= n <= 1000000\n"
+        "#@ ensures result >= 0\n"
+        "def root(n: int) -> int:\n"
+        "    return isqrt(n)\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]

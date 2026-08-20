@@ -740,3 +740,45 @@ def test_walrus_in_first_compare_operand_does_not_fire():
 def test_walrus_in_comprehension_still_fires():
     src = "def f(l: list[int]) -> list[int]:\n    return [y := x for x in l]\n"
     assert "X-WALRUS" in _fires(src)
+
+
+def test_math_gcd_does_not_fire_u_method():
+    src = (
+        "import math\n"
+        "\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    assert "U-METHOD" not in _fires(src, "f")
+    assert "T-FLOAT" not in _fires(src, "f")
+
+
+def test_math_sqrt_fires_t_float():
+    src = (
+        "import math\n"
+        "\n"
+        "def f(x: int):\n"
+        "    return math.sqrt(x)\n"
+    )
+    assert "T-FLOAT" in _fires(src, "f")
+    assert "U-METHOD" not in _fires(src, "f")
+
+
+def test_from_math_import_sqrt_fires_t_float():
+    src = (
+        "from math import sqrt\n"
+        "\n"
+        "def f(x: int):\n"
+        "    return sqrt(x)\n"
+    )
+    assert "T-FLOAT" in _fires(src, "f")
+
+
+def test_from_math_import_gcd_three_args_fires_u_call():
+    src = (
+        "from math import gcd\n"
+        "\n"
+        "def f(a: int, b: int, c: int) -> int:\n"
+        "    return gcd(a, b, c)\n"
+    )
+    assert "U-CALL" in _fires(src, "f")

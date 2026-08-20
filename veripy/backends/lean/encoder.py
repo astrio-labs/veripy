@@ -65,6 +65,13 @@ from .prelude import PRELUDE, PRELUDE_VERSION  # noqa: F401  (version re-exporte
 
 _SLICE_RULE = "lean-slice-1"
 
+_MATH_FNS = frozenset({"gcd", "factorial", "isqrt"})
+_MATH_LEAN = (
+    "math.gcd/factorial/isqrt are outside the Lean slice — the Dafny "
+    "backend admits them as PyGcd/PyFact/PyIsqrt; this slice has no "
+    "math prelude"
+)
+
 # Every user-derived identifier (function, parameter, local, generated
 # theorem) is emitted in Lean's escaped-identifier syntax «name». A
 # keyword BLOCKLIST is inherently incomplete — `forall` escaped the
@@ -301,6 +308,8 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             f"requires-clause length bound", line)
     if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):
         args = e.args
+        if e.func.id in _MATH_FNS:
+            raise _reject(_MATH_LEAN, line)
         if e.func.id in names:
             # The name is a parameter or local here: Python calls THAT
             # binding, not the builtin. Translating to the builtin would
@@ -368,6 +377,9 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             return _int_expr(args[0], names, line, result, rename, lc)
         raise _reject(f"call to {e.func.id!r} is outside slice 1 "
                       f"(min/max/abs/len/sum/old only)", line)
+    if isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute) \
+            and e.func.attr in _MATH_FNS:
+        raise _reject(_MATH_LEAN, line)
     raise _reject(f"expression {ast.dump(e)[:60]}... is outside slice 1",
                   line)
 
@@ -1849,6 +1861,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             tgt.id for node in ast.walk(fn) if isinstance(node, ast.Assign)
             for tgt in node.targets if isinstance(tgt, ast.Name)}
         for node in ast.walk(fn):
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id in _MATH_FNS:
+                    raise _reject(_MATH_LEAN, node.lineno)
+                if isinstance(func, ast.Attribute) and func.attr in _MATH_FNS:
+                    raise _reject(_MATH_LEAN, node.lineno)
             if isinstance(node, ast.Call) \
                     and isinstance(node.func, ast.Name) \
                     and node.func.id in assigned_anywhere:
@@ -1905,6 +1923,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                             "Dafny backend admits them as concatenation "
                             "of str pieces; this slice has no strings",
                             clause.line)
+                    if isinstance(node, ast.Call):
+                        func = node.func
+                        if isinstance(func, ast.Name) and func.id in _MATH_FNS:
+                            raise _reject(_MATH_LEAN, clause.line)
+                        if isinstance(func, ast.Attribute) \
+                                and func.attr in _MATH_FNS:
+                            raise _reject(_MATH_LEAN, clause.line)
                     if isinstance(node, ast.Call) \
                             and isinstance(node.func, ast.Name) \
                             and node.func.id in assigned_anywhere:

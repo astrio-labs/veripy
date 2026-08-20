@@ -87,7 +87,10 @@ count is visible. Classes, `async`, and IEEE float stay refused.
       axiom-flagged in the report
 - [ ] `sorted` (permutation + order; stability only on demand)
 - [ ] `str(int)` / `int(str)` with parse VCs
-- [ ] A small `math` subset
+- [x] A small `math` subset
+  ```
+  (`math.gcd` / `factorial` / `isqrt` on ints; IEEE `float` still vetoed)
+  ```
 
 ### Data a product actually uses
 
