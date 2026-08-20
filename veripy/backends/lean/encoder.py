@@ -1670,10 +1670,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     if specs.errors:
         first = specs.errors[0]
         raise EncodeError(f"spec error: {first.error}", first.line)
-    if proof_lemmas:
-        raise _reject("proof sidecars land in the Lean track's P3; this "
-                      "slice proves with its fixed tactic script only",
-                      None)
+    # Proof sidecars are live (P3). `proof_lemmas` is the set of names
+    # the pack declares, already whitelist-validated by the loader.
     module = ast.parse(source)
     # Module level admits ONLY function definitions and a docstring.
     # Anything else — an assignment (`abs = ...`), an import binding
@@ -1745,9 +1743,24 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             taken.add(f"{spec_fn.name}_spec")
 
     for spec_fn in specs.functions:
-        if spec_fn.by_kind("proof"):
-            raise _reject("`#@ proof` clauses need the sidecar channel "
-                          "(Lean track P3)", spec_fn.by_kind("proof")[0].line)
+        for clause in spec_fn.by_kind("proof"):
+            text = clause.desugared if clause.desugared is not None \
+                else clause.raw
+            try:
+                call = ast.parse(text, mode="eval").body
+            except SyntaxError as exc:
+                raise _reject(f"cannot parse proof clause: {exc.msg}",
+                              clause.line)
+            if not (isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)):
+                raise _reject("a `#@ proof` clause names a lemma and its "
+                              "arguments, as `Lemma(a, b)`", clause.line)
+            if call.func.id not in proof_lemmas:
+                raise _reject(
+                    f"unknown lemma {call.func.id!r} — a `#@ proof` "
+                    f"target must be declared in the sidecar "
+                    f"(<stem>.proofs.lean); this one declares "
+                    f"{sorted(proof_lemmas) or 'nothing'}", clause.line)
         fn = by_name.get(spec_fn.name)
         if fn is None:
             raise _reject(f"spec for unknown function {spec_fn.name!r}",
@@ -2099,6 +2112,26 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # `have` is guarded, so a divisor whose positivity is not
             # provable in a given branch simply contributes nothing
             # rather than breaking the proof.
+            # A `#@ proof` clause inside the loop body names a lemma
+            # the PRESERVATION step needs, not the main theorem, so the
+            # instantiation is emitted here as well. Guarded: an
+            # argument this slice cannot translate simply contributes
+            # nothing.
+            wproof_facts: list[str] = []
+            for wpi, wclause in enumerate(spec_fn.by_kind("proof")):
+                wtext = wclause.desugared if wclause.desugared is not None \
+                    else wclause.raw
+                try:
+                    wcall = ast.parse(wtext, mode="eval").body
+                    wargs = " ".join(
+                        "(" + _int_expr(arg, body_names, wclause.line,
+                                        lc=body_lc) + ")"
+                        for arg in wcall.args)
+                except (SyntaxError, EncodeError):
+                    continue
+                wproof_facts.append(
+                    f"      have hwp{wpi} := {wcall.func.id} "
+                    f"{wargs}".rstrip())
             wdiv_facts: list[str] = []
             wsites: list[tuple[ast.expr, ast.expr]] = []
             for expr in ([wloop.cond, wloop.meas]
@@ -2132,7 +2165,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 except EncodeError:
                     continue
                 sq_facts.append(f"have hsq{qi} := VeriPy.SqGeSelf {qt}")
-            wladder = [*wdiv_facts,
+            wladder = [*wproof_facts, *wdiv_facts,
                        *(f"      {f}" for f in sq_facts),
                        "      all_goals (try omega)",
                        "      all_goals (try simp_all)",
@@ -2785,6 +2818,28 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 bridge = "PyMod_pos" if is_mod else "PyFloorDiv_pos"
                 emit(f"  all_goals (try rw [VeriPy.{bridge} {num_t} "
                      f"{den_t} {hname}])", first_ensures_line)
+        # A `#@ proof` clause instantiates a pack lemma at the
+        # arguments the author chose. Emitting it as a `have` puts the
+        # fact in context for the same fixed script that proves
+        # everything else, rather than inventing a bespoke tactic per
+        # task.
+        for pi, clause in enumerate(spec_fn.by_kind("proof")):
+            text = clause.desugared if clause.desugared is not None \
+                else clause.raw
+            call = ast.parse(text, mode="eval").body
+            try:
+                pargs = " ".join(
+                    "(" + _int_expr(arg, names, clause.line, result=app,
+                                    rename=rename, lc=lc0) + ")"
+                    for arg in call.args)
+            except EncodeError:
+                # An argument this slice cannot translate (a list, a
+                # comprehension) is not a reason to fail the whole
+                # module: the lemma simply goes uninstantiated and the
+                # proof stands or falls without it.
+                continue
+            emit(f"  have hproof{pi} := {call.func.id} {pargs}".rstrip(),
+                 clause.line)
         # Prelude definitions are opaque to omega — a goal containing
         # VeriPy.PyAbs is unprovable until it unfolds to its
         # if-then-else (measured: every abs()-using module failed as
@@ -2833,6 +2888,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("  all_goals (try (rw [List.getElem?_eq_getElem "
                  "(by omega : _ < _)]))", first_ensures_line)
         emit("  all_goals (try simp_all)", first_ensures_line)
+        # Products of equal factors: a goal like `(i - 1) * i = n * (n +
+        # 1)` under `i = n + 1` is opaque to omega, which sees two
+        # unrelated atoms, but splitting the product first leaves two
+        # linear equations. The loop ladder already carries this bridge;
+        # the main theorem needs it wherever a lemma pack lands a
+        # product in the goal.
+        emit("  all_goals (try (congr 1 <;> omega))", first_ensures_line)
         emit("  all_goals (first | omega | trivial)", first_ensures_line)
 
     return LeanEncoded(lean_source="\n".join(lines) + "\n",
