@@ -243,18 +243,45 @@ def _simple_ann(ann: ast.expr | None) -> str | None:
     return None
 
 
+_INT_BINOPS = (ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod, ast.Pow)
+_INT_CALLS = frozenset({"len", "abs", "min", "max", "sum"})
+_SEQISH_ANN = frozenset({"str", "list"})
+
+
+def _looks_int(test: ast.expr, anns: dict[str, str]) -> bool:
+    """Syntactic stand-in for 'this encodes as int' — enough to match
+    Dafny's bool-context rejection of `n + 1`, `-n`, `len(xs)`."""
+    if isinstance(test, ast.Constant) and type(test.value) is int:
+        return True
+    if isinstance(test, ast.Name):
+        return anns.get(test.id) == "int"
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, (ast.USub, ast.UAdd)):
+        return True
+    if isinstance(test, ast.BinOp):
+        if isinstance(test.op, _INT_BINOPS):
+            return True
+        if isinstance(test.op, ast.Add):
+            return _looks_int(test.left, anns) or _looks_int(test.right, anns)
+        return False
+    if isinstance(test, ast.Call) and isinstance(test.func, ast.Name) \
+            and test.func.id in _INT_CALLS:
+        return True
+    return False
+
+
 def _assert_test_still_outside(test: ast.expr, anns: dict[str, str]) -> bool:
     """True when Dafny's bool-context check will reject this test.
 
-    The survey has no inferencer; it uses syntactic annotations and
-    non-bool literals. `assert n >= 0` does not fire; `assert n` for
-    `n: int` does; `assert flag` for `flag: bool` does not."""
-    if isinstance(test, ast.Constant) and not isinstance(test.value, bool):
-        return True
+    The survey has no inferencer. Comparisons / `not` / bool names stay
+    admitted; int names, int arithmetic, and `len`/`abs`/`min`/`max`/`sum`
+    fire. `str`/`list` names do not — the encoder admits those as
+    emptiness checks."""
+    if isinstance(test, ast.Constant):
+        return type(test.value) not in (bool, str)
     if isinstance(test, ast.Name):
         t = anns.get(test.id)
-        return t is not None and t != "bool"
-    return False
+        return t is not None and t != "bool" and t not in _SEQISH_ANN
+    return _looks_int(test, anns)
 
 
 def _is_mutable_literal(node: ast.expr) -> bool:

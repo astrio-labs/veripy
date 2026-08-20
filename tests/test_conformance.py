@@ -467,3 +467,40 @@ def test_assert_bool_name_does_not_fire():
         "    return flag\n"
     )
     assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_int_binop_still_fires():
+    src = (
+        "def f(n: int) -> int:\n"
+        "    assert n + 1\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_negated_int_still_fires():
+    src = (
+        "def f(n: int) -> int:\n"
+        "    assert -n\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_len_still_fires():
+    src = (
+        "def f(xs: list[int]) -> int:\n"
+        "    assert len(xs)\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_list_name_does_not_fire():
+    # Encoder admits list/str truthiness as `|xs| != 0`.
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    assert xs\n"
+        "    return xs\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
