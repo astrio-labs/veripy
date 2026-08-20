@@ -1764,21 +1764,122 @@ def test_list_returns_and_comprehensions():
         _encode(loopy)
 
 
+GAUSS = ("#@ requires n >= 0\n"
+         "#@ ensures 2 * result == n * (n + 1)\n"
+         "def sum_to_n(n: int) -> int:\n"
+         "    total = 0\n"
+         "    i = 1\n"
+         "    while i <= n:\n"
+         "        #@ invariant 1 <= i <= n + 1\n"
+         "        #@ invariant 2 * total == (i - 1) * i\n"
+         "        #@ decreases n - i + 1\n"
+         "        #@ proof GaussStep(i)\n"
+         "        total = total + i\n"
+         "        i = i + 1\n"
+         "    return total\n")
+
+# Core Lean has no `ring`, so a pack proves polynomial identities by
+# rewriting into normal form and letting omega treat `i * i` as an atom.
+GAUSS_PACK = ("theorem GaussStep (i : Int) : "
+              "(i - 1) * i + 2 * i = i * (i + 1) := by\n"
+              "  rw [Int.sub_mul, Int.mul_add]\n"
+              "  omega\n")
+
+
+def test_sidecar_whitelist_admits_only_proved_declarations():
+    from veripy.backends.lean.sidecar import validate_sidecar_text
+
+    assert sorted(validate_sidecar_text(GAUSS_PACK, "p.lean")) == ["GaussStep"]
+
+    # Each of these would let a pack ASSERT rather than prove. `sorry`
+    # and `native_decide` are the Lean-specific ones: both produce a
+    # "proof" the kernel never checks.
+    for bad in ("axiom Foo : False",
+                "theorem F (a : Int) : a = a := by sorry",
+                "theorem F : (2:Int) = 2 := by native_decide",
+                "unsafe def F : Int := 0",
+                "set_option maxHeartbeats 0\ntheorem F : True := trivial"):
+        with pytest.raises(EncodeError, match="not allowed"):
+            validate_sidecar_text(bad, "p.lean")
+
+    # An empty pack is more likely a mistake than an intention.
+    with pytest.raises(EncodeError, match="no `theorem`"):
+        validate_sidecar_text("-- nothing here\n", "p.lean")
+
+    # A banned word inside a COMMENT is not a use of it.
+    assert sorted(validate_sidecar_text(
+        "-- no sorry in here\ntheorem F : (1:Int) = 1 := by rfl",
+        "p.lean")) == ["F"]
+
+
+def test_axiom_footprint_is_the_real_guarantee():
+    # A blocklist has to enumerate the ways a proof might cheat, and it
+    # missed `admit` — `sorry` wearing a tactic's clothes. The footprint
+    # reports what a proof actually USED, so it needs no enumeration.
+    from veripy.backends.lean.driver import (ALLOWED_AXIOMS,
+                                             axiom_violations)
+
+    assert ALLOWED_AXIOMS == {"propext", "Quot.sound", "Classical.choice"}
+
+    clean = ["'f_spec' does not depend on any axioms",
+             "'g_spec' depends on axioms: [propext, Classical.choice]"]
+    assert axiom_violations(clean) == []
+
+    dirty = ["'f_spec' depends on axioms: [sorryAx]"]
+    assert axiom_violations(dirty) == [("f_spec", ["sorryAx"])]
+
+    # The classifier names it, so a host can branch on the outcome
+    # rather than parsing prose.
+    assert classify_lean_message(
+        "theorem 'f' depends on disallowed axioms ['sorryAx']"
+    ) == "axiom-footprint"
+
+
+def test_encoder_asks_for_every_theorem_footprint():
+    enc = _encode(BUMP)
+    assert "#print axioms «bump_spec»" in enc.lean_source
+
+
+def test_sidecar_bans_admit_alongside_sorry():
+    from veripy.backends.lean.sidecar import validate_sidecar_text
+
+    # `admit` closes any goal exactly as `sorry` does, and its absence
+    # from the list was a real hole rather than a stylistic gap.
+    for tactic in ("sorry", "admit"):
+        with pytest.raises(EncodeError, match="not allowed"):
+            validate_sidecar_text(
+                f"theorem F (a : Int) : a = a + 1 := by {tactic}", "p.lean")
+
+
+def test_proof_clause_must_name_a_declared_lemma():
+    with pytest.raises(EncodeError, match="unknown lemma"):
+        _encode(GAUSS)
+
+
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_list_return_verifies(tmp_path):
+def test_end_to_end_sidecar_is_load_bearing(tmp_path):
     from veripy.agentio import verify_structured
 
-    # The frozen-corpus incr_list (HumanEval/42) shape verbatim.
-    src = tmp_path / "incr_list.py"
-    src.write_text(INCR_LIST)
-    assert verify_structured(src, tmp_path / "o1",
-                             backend="lean")["status"] == "ok"
+    src = tmp_path / "sum_to_n.py"
+    src.write_text(GAUSS)
+    pack = tmp_path / "sum_to_n.proofs.lean"
 
-    # A wrong element relation still fails honestly.
-    bad = tmp_path / "bad.py"
-    bad.write_text(INCR_LIST.replace("l[i] + 1", "l[i] + 2"))
-    assert verify_structured(bad, tmp_path / "o2",
-                             backend="lean")["status"] == "failed"
+    # Without the pack the `#@ proof` target does not exist.
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "encode-error"
+
+    # With it, the task verifies — and the pack is what makes the
+    # difference, which is the property that keeps the exam honest.
+    pack.write_text(GAUSS_PACK)
+    payload = verify_structured(src, tmp_path / "o2", backend="lean")
+    assert payload["status"] == "ok"
+    assert payload["sidecar"]["lemmas"] == ["GaussStep"]
+
+    # An unsound pack never reaches Lean at all.
+    pack.write_text("theorem GaussStep (i : Int) : "
+                    "(i - 1) * i + 2 * i = i * (i + 1) := by sorry\n")
+    assert verify_structured(src, tmp_path / "o3",
+                             backend="lean")["status"] == "encode-error"
 
 
 def test_power_carries_a_non_negative_exponent_obligation():
@@ -2007,19 +2108,6 @@ def test_classifier_maps_live_lean_messages():
     assert classify_lean_message(
         "(deterministic) timeout at `whnf`, maxHeartbeats") == "timeout"
     assert classify_lean_message("something novel") == "unknown"
-
-
-def test_lean_sidecars_are_refused_not_ignored(tmp_path):
-    # A user who wrote lemmas must never believe they were used.
-    src = tmp_path / "t.py"
-    src.write_text(BUMP)
-    (tmp_path / "t.proofs.lean").write_text("theorem helper : True := trivial\n")
-    be = get_backend("lean")
-    with pytest.raises(EncodeError, match="P3"):
-        be.load_sidecar(src)
-    with pytest.raises(EncodeError, match="P3"):
-        be.validate_sidecar("lemma L : True := trivial")
-    be.validate_sidecar("")  # the empty sidecar every slice-1 run stages
 
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
