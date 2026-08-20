@@ -2373,6 +2373,16 @@ def test_lean_rejects_fstring_in_spec_loudly():
         _encode(src)
 
 
+def test_lean_rejects_sorted_loudly():
+    src = (
+        "#@ ensures result == sorted(xs)\n"
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs)\n"
+    )
+    with pytest.raises(EncodeError, match="sorted is outside the Lean slice"):
+        _encode(src)
+
+
 def test_lean_rejects_str_methods_loudly():
     src = (
         "#@ ensures result == 0\n"

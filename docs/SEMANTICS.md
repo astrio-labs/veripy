@@ -96,7 +96,12 @@ CPython's and omitted elements leave no hole. `sum(e for x in xs if P)`
 maps skipped elements to `0` (the identity of `+` on `int`). Eager
 `all`/`any` genexps, in specs **and** bodies, lower to `forall`/`exists`
 (pure generators, so short-circuit vs full evaluation is unobservable);
-a filter becomes a conjunct on the domain.
+a filter becomes a conjunct on the domain. `sorted(xs)` on `list[int]`
+is a new list (a pure seq) whose values are a nondecreasing permutation
+of `xs`; `PySorted` is insertion sort, which matches CPython on this
+domain (equal ints are indistinguishable, so stability is free). `key=`,
+`reverse=`, and `list[str]` stay rejected — Dafny seq `<` is prefix
+order, Python str `<` is lexicographic.
 
 **Quantifiers in specs.** `forall x in range(a, b) :: P` is bounded
 conjunction (empty domain ⇒ true), evaluated in the *enclosing* σ — binder
@@ -201,6 +206,7 @@ translation of the *same* stub the prover saw).
 | slices | §3 slice | `PySlice` | corpus (rolling_max, below_zero) |
 | 1-arg min/max | §3 builtins | `PySeqMax/Min` (requires) | corpus (max_element, rolling_max) |
 | `sum`, genexp folds | §3 builtins | `PySum` (+ `seq` map; filter → `else 0`) | corpus (below_zero, sum_squares) + unit |
+| `sorted` on `list[int]` | §3 builtins | `PySorted` (insertion sort; permutation + order) | unit (Hypothesis) |
 | filtered list comps | §3 comps | `PyFlatten` of 0/1-element seqs | unit |
 | eager `all`/`any` genexp | §3 folds | Dafny `forall`/`exists` (body and spec) | unit |
 | Optionals | §1/§4 assign | `PyOpt` + coercions | corpus (rolling_max) |

@@ -85,7 +85,9 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 
 - [x] `str` methods (`split` / `join` / `find` / `strip` / …), ASCII or
       exact-match `PyStr*` models; Unicode-table methods rejected
-- [ ] `sorted` (permutation + order; stability only on demand)
+- [x] `sorted` (permutation + order; stability only on demand)
+      (`sorted(xs)` on `list[int]` as `PySorted`; no `key=` / `reverse=` /
+      `list[str]` — Dafny seq `<` is prefix order, Python str `<` is lex)
 - [ ] `str(int)` / `int(str)` with parse VCs
 - [ ] A small `math` subset
 
