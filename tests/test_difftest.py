@@ -311,3 +311,19 @@ def test_foreach_tuple_unpack_translation_faithful(tmp_path):
     assert result.functions and all(f.ok for f in result.functions), [
         (f.name, f.mismatch, f.error) for f in result.functions
     ]
+
+
+def test_assert_translation_faithful(tmp_path):
+    src = tmp_path / "asrt.py"
+    src.write_text(
+        "#@ requires n >= 0\n"
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    assert n >= 0\n"
+        "    return n\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]

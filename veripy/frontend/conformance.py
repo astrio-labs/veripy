@@ -78,7 +78,7 @@ _RULES = [
     Rule("X-VARARG", "*args/**kwargs in signature (one fire each)", "fragment signature rules"),
     Rule("X-STARCALL", "*/** unpacking at a call site", "§7 excluded"),
     Rule("X-DELETE", "del statement", "§7 excluded"),
-    Rule("X-ASSERT", "assert statement", "candidate (maps to VC)"),
+    Rule("X-ASSERT", "assert with a non-literal message", "maps to VC; no message or a literal is admitted"),
     Rule("X-ATTR-STORE", "attribute assignment (any binding construct)", "§3.1 attributes"),
     Rule("X-LOOP-ELSE", "for/while else clause", "§7 excluded"),
     Rule("X-WALRUS", "walrus assignment expression", "candidate"),
@@ -387,8 +387,9 @@ class _FunctionScanner:
                 self.fire("X-WITH", stmt)
             case ast.Delete():
                 self.fire("X-DELETE", stmt)
-            case ast.Assert():
-                self.fire("X-ASSERT", stmt)
+            case ast.Assert(msg=msg):
+                if msg is not None and not isinstance(msg, ast.Constant):
+                    self.fire("X-ASSERT", stmt)
             case ast.Global() | ast.Nonlocal():
                 self.fire("T-GLOBAL", stmt)
             case ast.For(orelse=orelse) | ast.While(orelse=orelse) if orelse:

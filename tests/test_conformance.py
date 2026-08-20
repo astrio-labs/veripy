@@ -431,3 +431,21 @@ def test_overlapping_paths_counted_once(tmp_path):
     stats = aggregate(reports)
     assert stats["files"] == 1
     assert stats["functions"] == 1
+
+
+def test_admitted_assert_does_not_fire():
+    src = (
+        "def f(n: int) -> int:\n"
+        "    assert n >= 0\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_nonliteral_message_still_fires():
+    src = (
+        "def f(n: int) -> int:\n"
+        "    assert n >= 0, str(n)\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)

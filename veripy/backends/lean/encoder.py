@@ -1641,6 +1641,11 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "tuple literals are outside the Lean slice — the "
                     "Dafny backend admits them; this slice has no "
                     "product types", node.lineno)
+            if isinstance(node, ast.Assert):
+                raise _reject(
+                    "assert is outside the Lean slice — the Dafny "
+                    "backend admits it as a VC; this slice has no "
+                    "proof-hint statements", node.lineno)
         # The same question in SPEC clauses, which are comments and so
         # are invisible to the walk above. A clause calling a name the
         # function also binds as a local is ambiguous — the builtin at

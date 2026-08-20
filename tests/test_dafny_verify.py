@@ -302,3 +302,16 @@ def test_foreach_tuple_unpack_verifies(tmp_path, capsys):
     )
     assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_assert_as_vc_verifies(tmp_path, capsys):
+    src = tmp_path / "asrt.py"
+    src.write_text(
+        "#@ requires n >= 0\n"
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    assert n >= 0\n"
+        "    return n\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out

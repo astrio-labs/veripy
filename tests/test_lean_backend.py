@@ -2022,3 +2022,15 @@ def test_lean_rejects_foreach_unpack_loudly():
     )
     with pytest.raises(EncodeError, match="destructuring loop targets are outside the Lean slice"):
         _encode(src)
+
+
+def test_lean_rejects_assert_loudly():
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    assert n >= 0\n"
+        "    return n\n"
+    )
+    with pytest.raises(EncodeError, match="assert is outside the Lean slice"):
+        _encode(src)
