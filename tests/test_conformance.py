@@ -268,6 +268,18 @@ def test_sorted_list_int_slice_does_not_fire():
     assert "U-CALL" not in _fires(src)
 
 
+def test_sorted_sliced_list_int_index_still_fires():
+    # Slice keeps seq<int>, then index peels to int — encoder rejects.
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs[1:][0])\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
+
+
 def test_aggregate_counts():
     src = (
         "def good(x: int) -> int:\n"

@@ -496,13 +496,38 @@ def _fstring_still_outside(node: ast.JoinedStr,
     return False
 
 
-def _sorted_name_is_list_int(name: str, anns: dict[str, str],
-                             inners: dict[str, str]) -> bool | None:
-    """True if annotated list[int], False if annotated otherwise, None if unknown."""
-    t = anns.get(name)
-    if t is None:
-        return None
-    return t == "list" and inners.get(name) == "int"
+def _sorted_seq_chain(arg: ast.expr, anns: dict[str, str],
+                      inners: dict[str, str],
+                      inner_chains: dict[str, tuple[str, ...]],
+                      ) -> tuple[str, ...] | None:
+    """Inner chain if `arg` encodes as a seq; `()` if it statically does
+    not; `None` if the survey cannot tell.
+
+    `list[int]` → `('int',)`; `list[list[int]]` → `('list', 'int')`.
+    A slice keeps the chain; an index peels one layer (so `xs[0]` on
+    `list[int]` is not a seq)."""
+    if isinstance(arg, ast.Name):
+        t = anns.get(arg.id)
+        if t is None:
+            return None
+        if t != "list":
+            return ()
+        chain = inner_chains.get(arg.id)
+        if chain:
+            return chain
+        inner = inners.get(arg.id)
+        return (inner,) if inner else ()
+    if isinstance(arg, ast.Subscript):
+        base = _sorted_seq_chain(arg.value, anns, inners, inner_chains)
+        if base is None:
+            return None
+        if isinstance(arg.slice, ast.Slice):
+            return base
+        if not base:
+            return ()
+        head, *rest = base
+        return tuple(rest) if head == "list" else ()
+    return None
 
 
 def _sorted_still_outside(node: ast.Call, anns: dict[str, str],
@@ -515,29 +540,15 @@ def _sorted_still_outside(node: ast.Call, anns: dict[str, str],
     `list[int]`, a slice of that, or a list literal of ints.
     Unannotated `sorted(xs)` stays silent (untyped survey optimism).
     Keywords, extra args, `str` literals, `list[str]` / `list[bool]`
-    names and literals, and `xs[0]` on `list[int]` (element is int,
-    not seq<int>) fire `U-CALL`."""
+    names and literals, and indexes that peel `list[int]` down to
+    `int` (including `xs[1:][0]`) fire `U-CALL`."""
     inner_chains = inner_chains or {}
     if node.keywords or len(node.args) != 1:
         return True
     arg = node.args[0]
-    if isinstance(arg, ast.Name):
-        ok = _sorted_name_is_list_int(arg.id, anns, inners)
-        return False if ok is None else not ok
-    info = _subscript_name_depth(arg)
-    if info is not None:
-        name, depth = info
-        t = anns.get(name)
-        if t is None:
-            return False
-        chain = inner_chains.get(name) or ()
-        # After `depth` indexes, remaining is seq<int> iff the annotation
-        # was list[list[…][int]] with exactly `depth` list peels left.
-        return chain != ("list",) * depth + ("int",)
-    if isinstance(arg, ast.Subscript) and isinstance(arg.slice, ast.Slice) \
-            and isinstance(arg.value, ast.Name):
-        ok = _sorted_name_is_list_int(arg.value.id, anns, inners)
-        return False if ok is None else not ok
+    chain = _sorted_seq_chain(arg, anns, inners, inner_chains)
+    if chain is not None:
+        return chain != ("int",)
     if isinstance(arg, ast.List):
         if not arg.elts:
             return True  # encoder infers None for []
