@@ -351,6 +351,34 @@ _INT_CALLS = frozenset({"len", "abs", "min", "max", "sum"})
 _SEQISH_ANN = frozenset({"str", "list"})
 
 
+def _list_literal_inner(node: ast.expr, anns: dict[str, str],
+                         inners: dict[str, str]) -> str | None:
+    """Homogeneous list-literal element spelling, or None.
+
+    Enough for Dafny's `xs = [1, 2, 3]` → `seq<int>` so `assert xs[0]`
+    fires. Empty / mixed / nested literals stay unknown."""
+    if not isinstance(node, ast.List) or not node.elts:
+        return None
+    kinds: list[str] = []
+    for e in node.elts:
+        if isinstance(e, ast.Constant) and type(e.value) is bool:
+            kinds.append("bool")
+        elif isinstance(e, ast.Constant) and type(e.value) is str:
+            kinds.append("str")
+        elif _looks_int(e, anns, inners):
+            kinds.append("int")
+        elif isinstance(e, ast.Name):
+            t = anns.get(e.id)
+            if t in ("str", "bool", "list"):
+                kinds.append(t)
+            else:
+                return None
+        else:
+            return None
+    uniq = set(kinds)
+    return uniq.pop() if len(uniq) == 1 else None
+
+
 def _looks_int(test: ast.expr, anns: dict[str, str],
                inners: dict[str, str]) -> bool:
     """Syntactic stand-in for 'this encodes as int' — enough to match
@@ -561,7 +589,8 @@ class _FunctionScanner:
                                        dict[str, tuple[str, ...]],
                                        dict[str, tuple[str, ...]]]:
         """Syntactic annotations on this function's params and AnnAssigns,
-        plus int inferred from `n = 1` / `n = len(xs)` style assigns.
+        plus int inferred from `n = 1` / `n = len(xs)` style assigns and
+        list inners from homogeneous `xs = [1, 2, 3]` literals.
         Nested defs are skipped (same boundary as `_local_names`).
         The second map is the inner spelling of `list[T]` / `Optional[T]`;
         the third is `tuple[T, U, ...]` element spellings; the fourth is
@@ -601,6 +630,12 @@ class _FunctionScanner:
                 name = node.targets[0].id
                 if name not in out and _looks_int(node.value, out, inners):
                     out[name] = "int"
+                elif name not in out:
+                    elem = _list_literal_inner(node.value, out, inners)
+                    if elem is not None:
+                        out[name] = "list"
+                        inners[name] = elem
+                        inner_chains[name] = (elem,)
             for child in ast.iter_child_nodes(node):
                 walk(child)
 
