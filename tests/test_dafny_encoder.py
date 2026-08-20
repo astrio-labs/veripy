@@ -333,6 +333,17 @@ def test_assert_lowers_to_dafny_assert():
     assert "assert (n >= 0);" in _encode(src)
 
 
+def test_assert_nonliteral_message_rejected():
+    _expect_encode_error(
+        "#@ requires n >= 0\n"
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    assert n >= 0, str(n)\n"
+        "    return n\n",
+        "assert messages must be literals",
+    )
+
+
 # --- sum() folds (slice 6) ------------------------------------------------------
 
 

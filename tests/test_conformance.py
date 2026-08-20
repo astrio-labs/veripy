@@ -451,6 +451,272 @@ def test_overlapping_paths_counted_once(tmp_path):
     assert stats["functions"] == 1
 
 
+def test_admitted_assert_does_not_fire():
+    src = (
+        "def f(n: int) -> int:\n"
+        "    assert n >= 0\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_nonliteral_message_still_fires():
+    src = (
+        "def f(n: int) -> int:\n"
+        "    assert n >= 0, str(n)\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_int_name_still_fires():
+    src = (
+        "def f(n: int) -> int:\n"
+        "    assert n\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_annotated_local_still_fires():
+    src = (
+        "def f() -> int:\n"
+        "    n: int = 1\n"
+        "    assert n\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_inferred_int_local_still_fires():
+    src = (
+        "def f() -> int:\n"
+        "    n = 1\n"
+        "    assert n\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_bool_name_does_not_fire():
+    src = (
+        "def f(flag: bool) -> bool:\n"
+        "    assert flag\n"
+        "    return flag\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_int_binop_still_fires():
+    src = (
+        "def f(n: int) -> int:\n"
+        "    assert n + 1\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_negated_int_still_fires():
+    src = (
+        "def f(n: int) -> int:\n"
+        "    assert -n\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_len_still_fires():
+    src = (
+        "def f(xs: list[int]) -> int:\n"
+        "    assert len(xs)\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_list_name_does_not_fire():
+    # Encoder admits list/str truthiness as `|xs| != 0`.
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    assert xs\n"
+        "    return xs\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_list_int_index_still_fires():
+    src = (
+        "def f(xs: list[int]) -> int:\n"
+        "    assert xs[0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_ifexp_int_still_fires():
+    src = (
+        "def f(n: int, m: int, flag: bool) -> int:\n"
+        "    assert n if flag else m\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_list_str_index_does_not_fire():
+    # Element is str; encoder admits str truthiness as emptiness.
+    src = (
+        "def f(xs: list[str]) -> str:\n"
+        "    assert xs[0]\n"
+        "    return xs[0]\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_nested_list_int_index_still_fires():
+    src = (
+        "def f(xs: list[list[int]]) -> int:\n"
+        "    assert xs[0][0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_nested_list_str_index_does_not_fire():
+    # Element is str; encoder admits str truthiness as emptiness.
+    src = (
+        "def f(xs: list[list[str]]) -> str:\n"
+        "    assert xs[0][0]\n"
+        "    return xs[0][0]\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_list_of_list_index_does_not_fire():
+    # xs[0] is list; encoder admits list truthiness as emptiness.
+    src = (
+        "def f(xs: list[list[int]]) -> int:\n"
+        "    assert xs[0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_list_tuple_index_still_fires():
+    src = (
+        "def f(xs: list[tuple[int, int]]) -> int:\n"
+        "    assert xs[0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_tuple_int_index_still_fires():
+    src = (
+        "def f(p: tuple[int, int]) -> int:\n"
+        "    assert p[0]\n"
+        "    return p[0]\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_tuple_str_index_does_not_fire():
+    src = (
+        "def f(p: tuple[str, str]) -> str:\n"
+        "    assert p[0]\n"
+        "    return p[0]\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_tuple_literal_still_fires():
+    src = (
+        "def f() -> int:\n"
+        "    assert (1, 2)\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_inferred_list_int_index_still_fires():
+    src = (
+        "def f() -> int:\n"
+        "    xs = [1, 2, 3]\n"
+        "    assert xs[0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_inferred_list_str_index_does_not_fire():
+    src = (
+        "def f() -> str:\n"
+        "    xs = [\"a\", \"b\"]\n"
+        "    assert xs[0]\n"
+        "    return xs[0]\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_inferred_list_name_does_not_fire():
+    # Encoder admits list truthiness as `|xs| != 0`.
+    src = (
+        "def f() -> int:\n"
+        "    xs = [1, 2, 3]\n"
+        "    assert xs\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_inferred_nested_list_int_index_still_fires():
+    src = (
+        "def f() -> int:\n"
+        "    xs = [[1, 2], [3, 4]]\n"
+        "    assert xs[0][0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_inferred_nested_list_index_does_not_fire():
+    # xs[0] is list; encoder admits list truthiness as emptiness.
+    src = (
+        "def f() -> int:\n"
+        "    xs = [[1, 2], [3, 4]]\n"
+        "    assert xs[0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_inferred_nested_list_str_index_does_not_fire():
+    src = (
+        "def f() -> str:\n"
+        "    xs = [[\"a\", \"b\"], [\"c\"]]\n"
+        "    assert xs[0][0]\n"
+        "    return xs[0][0]\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_int_walrus_still_fires():
+    src = (
+        "def f(n: int) -> int:\n"
+        "    assert (x := n)\n"
+        "    return x\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_bool_walrus_does_not_fire():
+    src = (
+        "def f(flag: bool) -> bool:\n"
+        "    assert (x := flag)\n"
+        "    return x\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
 def test_admitted_walrus_does_not_fire():
     src = "def f(n: int) -> int:\n    return (x := n)\n"
     assert "X-WALRUS" not in _fires(src)

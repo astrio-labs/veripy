@@ -76,8 +76,10 @@ count is visible. Classes, `async`, and IEEE float stay refused.
       comparison operands, if-expr branches, comprehensions, and specs
       still rejected — Dafny cannot assign in an expression, and
       hoisting those would ignore short-circuit)
-- [ ] `assert` as a VC, uniformly, if any path still treats it as
-      outside the encoder
+- [x] `assert` as a VC, uniformly
+      (Dafny already lowered it; survey no longer counts a bare `assert`
+      as a miss, Lean rejects it loudly naming Dafny. Non-literal
+      messages still rejected — they have side effects.)
 
 ### Tier 2 preamble (the real volume — `U-METHOD`)
 

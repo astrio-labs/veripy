@@ -78,7 +78,7 @@ _RULES = [
     Rule("X-VARARG", "*args/**kwargs in signature (one fire each)", "fragment signature rules"),
     Rule("X-STARCALL", "*/** unpacking at a call site", "§7 excluded"),
     Rule("X-DELETE", "del statement", "§7 excluded"),
-    Rule("X-ASSERT", "assert statement", "candidate (maps to VC)"),
+    Rule("X-ASSERT", "assert with a non-literal message or a non-bool test", "maps to VC; bool tests with literal/no message are admitted"),
     Rule("X-ATTR-STORE", "attribute assignment (any binding construct)", "§3.1 attributes"),
     Rule("X-LOOP-ELSE", "for/while else clause", "§7 excluded"),
     Rule("X-WALRUS", "walrus under and/or, chained comparison, if-expr branch, or a comprehension", "candidate; always-evaluated `:=` is admitted"),
@@ -272,6 +272,205 @@ def _simple_ann(ann: ast.expr | None) -> str | None:
     return None
 
 
+def _tuple_elem_anns(ann: ast.expr | None) -> tuple[str, ...] | None:
+    """Element spellings of `tuple[T, U, ...]` (Name or parameterized head)."""
+    if not (isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name)
+            and ann.value.id == "tuple"):
+        return None
+    sl = ann.slice
+    if isinstance(sl, ast.Tuple):
+        elts = list(sl.elts)
+    elif sl is not None:
+        elts = [sl]
+    else:
+        return None
+    out: list[str] = []
+    for e in elts:
+        if isinstance(e, ast.Name):
+            out.append(e.id)
+        elif isinstance(e, ast.Subscript) and isinstance(e.value, ast.Name):
+            out.append(e.value.id)
+        else:
+            return None
+    return tuple(out) if out else None
+
+
+def _const_int_expr(node: ast.expr) -> int | None:
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) \
+            and isinstance(node.operand, ast.Constant) \
+            and type(node.operand.value) is int:
+        return -node.operand.value
+    return None
+
+
+def _ann_inner_chain(ann: ast.expr | None) -> tuple[str, ...]:
+    """Successive element heads: `list[list[int]]` → `('list', 'int')`.
+
+    One peel per `list[T]` / `Optional[T]` layer. Parameterized `T`
+    contributes its head (`tuple[int, int]` → `tuple`) and stops."""
+    chain: list[str] = []
+    cur = ann
+    while isinstance(cur, ast.Subscript) and isinstance(cur.value, ast.Name):
+        sl = cur.slice
+        if isinstance(sl, ast.Name):
+            chain.append(sl.id)
+            break
+        if isinstance(sl, ast.Subscript) and isinstance(sl.value, ast.Name):
+            chain.append(sl.value.id)
+            cur = sl
+            continue
+        break
+    return tuple(chain)
+
+
+def _ann_inner(ann: ast.expr | None) -> str | None:
+    """Element/payload spelling of `list[T]` / `Optional[T]`.
+
+    `T` may itself be parameterized (`tuple[int, int]` → `tuple`) so
+    `assert xs[0]` on `list[tuple[int, int]]` is still a miss."""
+    chain = _ann_inner_chain(ann)
+    return chain[0] if chain else None
+
+
+def _subscript_name_depth(test: ast.expr) -> tuple[str, int] | None:
+    """`(name, depth)` for `xs[i][j]...`; None if the base is not a name."""
+    depth = 0
+    cur = test
+    while isinstance(cur, ast.Subscript) and not isinstance(cur.slice, ast.Slice):
+        depth += 1
+        cur = cur.value
+    if depth == 0 or not isinstance(cur, ast.Name):
+        return None
+    return cur.id, depth
+
+
+_INT_BINOPS = (ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod, ast.Pow)
+_INT_CALLS = frozenset({"len", "abs", "min", "max", "sum"})
+_SEQISH_ANN = frozenset({"str", "list"})
+
+
+def _list_literal_chain(node: ast.expr, anns: dict[str, str],
+                         inners: dict[str, str]) -> tuple[str, ...] | None:
+    """Homogeneous list-literal inner chain, or None.
+
+    `[1, 2, 3]` → `('int',)` so `assert xs[0]` fires. `[[1, 2], [3, 4]]`
+    → `('list', 'int')` so `assert xs[0][0]` fires while `assert xs[0]`
+    stays admitted (list emptiness). Empty / mixed stay unknown."""
+    if not isinstance(node, ast.List) or not node.elts:
+        return None
+    chains: list[tuple[str, ...]] = []
+    for e in node.elts:
+        if isinstance(e, ast.Constant) and type(e.value) is bool:
+            chains.append(("bool",))
+        elif isinstance(e, ast.Constant) and type(e.value) is str:
+            chains.append(("str",))
+        elif _looks_int(e, anns, inners):
+            chains.append(("int",))
+        elif isinstance(e, ast.List):
+            nested = _list_literal_chain(e, anns, inners)
+            if nested is None:
+                return None
+            chains.append(("list",) + nested)
+        elif isinstance(e, ast.Name):
+            t = anns.get(e.id)
+            if t in ("str", "bool", "list"):
+                chains.append((t,))
+            else:
+                return None
+        else:
+            return None
+    uniq = set(chains)
+    return uniq.pop() if len(uniq) == 1 else None
+
+
+def _looks_int(test: ast.expr, anns: dict[str, str],
+               inners: dict[str, str]) -> bool:
+    """Syntactic stand-in for 'this encodes as int' — enough to match
+    Dafny's bool-context rejection of `n + 1`, `-n`, `len(xs)`, `xs[0]`,
+    and `n if flag else m`."""
+    if isinstance(test, ast.Constant) and type(test.value) is int:
+        return True
+    if isinstance(test, ast.Name):
+        return anns.get(test.id) == "int"
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, (ast.USub, ast.UAdd)):
+        return True
+    if isinstance(test, ast.BinOp):
+        if isinstance(test.op, _INT_BINOPS):
+            return True
+        if isinstance(test.op, ast.Add):
+            return (_looks_int(test.left, anns, inners)
+                    or _looks_int(test.right, anns, inners))
+        return False
+    if isinstance(test, ast.Call) and isinstance(test.func, ast.Name) \
+            and test.func.id in _INT_CALLS:
+        return True
+    if isinstance(test, ast.Subscript) and not isinstance(test.slice, ast.Slice):
+        if isinstance(test.value, ast.Name):
+            if anns.get(test.value.id) == "str":
+                return True  # index is char, rejected in bool context
+            return inners.get(test.value.id) == "int"
+        return False
+    if isinstance(test, ast.IfExp):
+        return (_looks_int(test.body, anns, inners)
+                and _looks_int(test.orelse, anns, inners))
+    return False
+
+
+def _assert_test_still_outside(test: ast.expr, anns: dict[str, str],
+                               inners: dict[str, str],
+                               tuple_elems: dict[str, tuple[str, ...]] | None = None,
+                               inner_chains: dict[str, tuple[str, ...]] | None = None) -> bool:
+    """True when Dafny's bool-context check will reject this test.
+
+    The survey has no inferencer. Comparisons / `not` / bool names stay
+    admitted; int names, int arithmetic, indexing into `list[int]`/`str`,
+    nested `list[list[int]]` indexing, tuple literals / tuple-valued
+    indexing, int if-exprs, int walrus, and `len`/`abs`/`min`/`max`/`sum`
+    fire. `str`/`list` names (and `list[str]` / `list[bool]` elements)
+    do not — the encoder admits those as emptiness / bool."""
+    tuple_elems = tuple_elems or {}
+    inner_chains = inner_chains or {}
+    if isinstance(test, ast.Constant):
+        return type(test.value) not in (bool, str)
+    if isinstance(test, ast.Tuple):
+        return True  # never bool; Dafny infers (T, U, ...) and rejects
+    if isinstance(test, ast.NamedExpr):
+        return _assert_test_still_outside(
+            test.value, anns, inners, tuple_elems, inner_chains)
+    if isinstance(test, ast.Name):
+        t = anns.get(test.id)
+        return t is not None and t != "bool" and t not in _SEQISH_ANN
+    if isinstance(test, ast.Subscript) and not isinstance(test.slice, ast.Slice):
+        if isinstance(test.value, ast.Name):
+            if anns.get(test.value.id) == "str":
+                return True  # index is char
+            if anns.get(test.value.id) == "tuple":
+                elems = tuple_elems.get(test.value.id, ())
+                k = _const_int_expr(test.slice)
+                if not elems or k is None:
+                    return True
+                if k < 0:
+                    k += len(elems)
+                if 0 <= k < len(elems):
+                    el = elems[k]
+                    return el != "bool" and el not in _SEQISH_ANN
+                return True
+            inner = inners.get(test.value.id)
+            if inner is None:
+                return False
+            return inner != "bool" and inner not in _SEQISH_ANN
+        info = _subscript_name_depth(test)
+        if info is not None:
+            name, depth = info
+            chain = inner_chains.get(name) or ()
+            if 1 <= depth <= len(chain):
+                inner = chain[depth - 1]
+                return inner != "bool" and inner not in _SEQISH_ANN
+    return _looks_int(test, anns, inners)
+
+
 def _fstring_still_outside(node: ast.JoinedStr,
                            anns: dict[str, str] | None = None) -> bool:
     """True for f-strings the encoder still rejects.
@@ -349,7 +548,8 @@ class _FunctionScanner:
         self.scope = scope
         self.class_flags = class_flags
         self.local_names = self._local_names()
-        self.ann_types = self._annotated_names()
+        (self.ann_types, self.ann_inners, self.ann_tuple_elems,
+         self.ann_inner_chains) = self._annotated_names()
 
     def fire(self, rule: str, node: ast.AST, detail: str = "") -> None:
         self.report.fires.append(
@@ -391,31 +591,63 @@ class _FunctionScanner:
                 names.add(stmt.id)
         return names
 
-    def _annotated_names(self) -> dict[str, str]:
-        """Syntactic annotations on this function's params and AnnAssigns.
-        Nested defs are skipped (same boundary as `_local_names`)."""
+    def _annotated_names(self) -> tuple[dict[str, str], dict[str, str],
+                                       dict[str, tuple[str, ...]],
+                                       dict[str, tuple[str, ...]]]:
+        """Syntactic annotations on this function's params and AnnAssigns,
+        plus int inferred from `n = 1` / `n = len(xs)` style assigns and
+        list inners from homogeneous `xs = [1, 2, 3]` literals.
+        Nested defs are skipped (same boundary as `_local_names`).
+        The second map is the inner spelling of `list[T]` / `Optional[T]`;
+        the third is `tuple[T, U, ...]` element spellings; the fourth is
+        successive inners (`list[list[int]]` → `('list', 'int')`)."""
         out: dict[str, str] = {}
+        inners: dict[str, str] = {}
+        tuple_elems: dict[str, tuple[str, ...]] = {}
+        inner_chains: dict[str, tuple[str, ...]] = {}
+
+        def record(name: str, ann: ast.expr | None) -> None:
+            t = _simple_ann(ann)
+            if t is not None:
+                out[name] = t
+            chain = _ann_inner_chain(ann)
+            if chain:
+                inners[name] = chain[0]
+                inner_chains[name] = chain
+            elems = _tuple_elem_anns(ann)
+            if elems is not None:
+                tuple_elems[name] = elems
+
         a = self.node.args
         for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg):
             if arg is None or arg.annotation is None:
                 continue
-            t = _simple_ann(arg.annotation)
-            if t is not None:
-                out[arg.arg] = t
+            record(arg.arg, arg.annotation)
 
         def walk(node: ast.AST) -> None:
+            # Inspect `node` itself: a top-level `n: int = 1` is the
+            # statement, so a children-only walk would miss it.
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                return
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                record(node.target.id, node.annotation)
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                    and isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+                if name not in out and _looks_int(node.value, out, inners):
+                    out[name] = "int"
+                elif name not in out:
+                    chain = _list_literal_chain(node.value, out, inners)
+                    if chain is not None:
+                        out[name] = "list"
+                        inners[name] = chain[0]
+                        inner_chains[name] = chain
             for child in ast.iter_child_nodes(node):
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-                    continue
-                if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
-                    t = _simple_ann(child.annotation)
-                    if t is not None:
-                        out[child.target.id] = t
                 walk(child)
 
         for stmt in self.node.body:
             walk(stmt)
-        return out
+        return out, inners, tuple_elems, inner_chains
 
     def _is_module_level(self, name: str, locals_: frozenset[str]) -> bool:
         return (
@@ -478,8 +710,14 @@ class _FunctionScanner:
                 self.fire("X-WITH", stmt)
             case ast.Delete():
                 self.fire("X-DELETE", stmt)
-            case ast.Assert():
-                self.fire("X-ASSERT", stmt)
+            case ast.Assert(test=test, msg=msg):
+                if msg is not None and not isinstance(msg, ast.Constant):
+                    self.fire("X-ASSERT", stmt)
+                elif _assert_test_still_outside(
+                    test, self.ann_types, self.ann_inners, self.ann_tuple_elems,
+                    self.ann_inner_chains,
+                ):
+                    self.fire("X-ASSERT", stmt)
             case ast.Global() | ast.Nonlocal():
                 self.fire("T-GLOBAL", stmt)
             case ast.For(orelse=orelse) | ast.While(orelse=orelse) if orelse:
