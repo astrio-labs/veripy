@@ -930,11 +930,20 @@ def _positive_bound(e: ast.expr, lc: "_ListCtx") -> bool:
 
 
 def _nonneg_bound(e: ast.expr, lc: "_ListCtx") -> bool:
-    """Is this expression provably >= 0? Positive implies non-negative;
-    a literal speaks for itself."""
+    """Is this expression provably >= 0? A literal speaks for itself, a
+    name the contract proves non-negative counts, and positive implies
+    non-negative. The middle case was missing, so `range(lo, n)` under
+    `requires lo >= 0` did not mark its binder non-negative and a valid
+    `2 ** j` in the body was refused."""
     if isinstance(e, ast.Constant) and isinstance(e.value, int) \
             and not isinstance(e.value, bool):
         return e.value >= 0
+    if isinstance(e, ast.Name) and e.id in lc.nonneg_names:
+        return True
+    if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
+        # `lo + k` is non-negative when both parts are.
+        return (_nonneg_bound(e.left, lc)
+                and _nonneg_bound(e.right, lc))
     return _positive_bound(e, lc)
 
 

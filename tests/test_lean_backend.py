@@ -1857,6 +1857,34 @@ def test_range_binders_are_non_negative_exponents():
     with pytest.raises(EncodeError, match="exponent"):
         _encode(neg)
 
+    # A NAMED lower bound counts too when the contract proves it
+    # non-negative, with or without a constant offset.
+    for lo in ("lo", "lo + 2"):
+        named = (f"#@ requires lo >= 0\n"
+                 f"#@ requires n >= 0\n"
+                 f"#@ ensures all(2 ** j > 0 for j in range({lo}, n))\n"
+                 f"def f(lo: int, n: int) -> int:\n"
+                 f"    return n\n")
+        assert "VeriPy.PyPow" in _encode(named).lean_source
+
+    # ...but an unbounded name proves nothing.
+    unbounded = ("#@ requires n >= 0\n"
+                 "#@ ensures all(2 ** j > 0 for j in range(lo, n))\n"
+                 "def f(lo: int, n: int) -> int:\n"
+                 "    return n\n")
+    with pytest.raises(EncodeError, match="exponent"):
+        _encode(unbounded)
+
+    # The non-negative/positive distinction has to survive this: a
+    # binder that is only >= 0 is a fine EXPONENT and a bad DIVISOR.
+    divisor = ("#@ requires lo >= 0\n"
+               "#@ requires n >= 0\n"
+               "#@ ensures all(n % j >= 0 for j in range(lo, n))\n"
+               "def f(lo: int, n: int) -> int:\n"
+               "    return n\n")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(divisor)
+
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_inferred_measure_still_refuses_non_termination(tmp_path):
