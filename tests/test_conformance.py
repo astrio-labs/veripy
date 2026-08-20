@@ -443,6 +443,16 @@ def test_walrus_under_and_still_fires():
     assert "X-WALRUS" in _fires(src)
 
 
+def test_walrus_in_chained_comparison_still_fires():
+    src = "def f(a: int, b: int, c: int) -> bool:\n    return a < b < (x := c)\n"
+    assert "X-WALRUS" in _fires(src)
+
+
+def test_walrus_in_first_compare_operand_does_not_fire():
+    src = "def f(a: int, b: int) -> bool:\n    return a < (x := b)\n"
+    assert "X-WALRUS" not in _fires(src)
+
+
 def test_walrus_in_comprehension_still_fires():
     src = "def f(l: list[int]) -> list[int]:\n    return [y := x for x in l]\n"
     assert "X-WALRUS" in _fires(src)

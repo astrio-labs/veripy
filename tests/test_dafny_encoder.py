@@ -1782,6 +1782,25 @@ def test_walrus_in_ifexp_branch_rejected():
     )
 
 
+def test_walrus_in_later_chained_comparison_rejected():
+    _expect_encode_error(
+        "#@ ensures result == True or result == False\n"
+        "def f(a: int, b: int, c: int) -> bool:\n"
+        "    return a < b < (x := c)\n",
+        "chained comparison",
+    )
+
+
+def test_walrus_in_first_chained_operand_is_admitted():
+    dfy = _encode(
+        "#@ ensures result == True or result == False\n"
+        "def f(a: int, b: int) -> bool:\n"
+        "    return a < (x := b)\n"
+    )
+    assert "var x := b;" in dfy
+    assert "a < x" in dfy
+
+
 def test_walrus_in_comprehension_rejected():
     _expect_encode_error(
         "#@ ensures len(result) >= 0\n"

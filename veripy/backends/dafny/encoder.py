@@ -55,9 +55,10 @@ Soundness rules enforced here (each closes a reviewed miscompilation class):
 - `#@ invariant`/`#@ decreases` must sit at the top of the loop body,
   before its first statement (the documented convention, now enforced —
   trailing comment lines would otherwise attach to the wrong loop).
-- Walrus `:=` under `and`/`or`, a conditional-expression branch, or a
-  comprehension is rejected: Dafny has no expression-level assignment,
-  and hoisting those would ignore short-circuit / skip the bind.
+- Walrus `:=` under `and`/`or`, a later chained-comparison operand, a
+  conditional-expression branch, or a comprehension is rejected: Dafny
+  has no expression-level assignment, and hoisting those would ignore
+  short-circuit / skip the bind.
 
 Semantics note baked in here: `#@ invariant` has Dafny loop-head semantics
 (holds on entry and at every head check, including the final one where the
@@ -923,7 +924,8 @@ class _MethodEncoder:
                     "walrus `:=` in this position is outside this slice — "
                     "it is admitted in if/while tests, return, assignment, "
                     "assert, and always-evaluated call arguments; under "
-                    "`and`/`or` or a comprehension write an `if` or a loop"
+                    "`and`/`or`, a chained comparison, or a comprehension "
+                    "write an `if` or a loop"
                 ))
             case _:
                 raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder "
@@ -1683,9 +1685,10 @@ class _MethodEncoder:
                     ))
                 if self.lazy:
                     raise _err(node, (
-                        "walrus under `and`/`or` or a conditional expression "
-                        "is outside this slice — short-circuit would skip "
-                        "the assignment; write an `if`"
+                        "walrus under `and`/`or`, a chained comparison, or "
+                        "a conditional expression is outside this slice — "
+                        "short-circuit would skip the assignment; write an "
+                        "`if`"
                     ))
                 if not isinstance(node.target, ast.Name):
                     raise _err(node, "walrus target must be a plain name")
@@ -1702,6 +1705,17 @@ class _MethodEncoder:
                 self.visit(node.body)
                 self.visit(node.orelse)
                 self.lazy -= 1
+
+            def visit_Compare(self, node: ast.Compare) -> None:
+                # `a < b < c` evaluates `c` only if `a < b` is true.
+                # `left` and the first comparator always run.
+                self.visit(node.left)
+                if node.comparators:
+                    self.visit(node.comparators[0])
+                    self.lazy += 1
+                    for later in node.comparators[1:]:
+                        self.visit(later)
+                    self.lazy -= 1
 
             def visit_ListComp(self, node: ast.ListComp) -> None:
                 self.nested += 1

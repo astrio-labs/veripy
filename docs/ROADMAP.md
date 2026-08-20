@@ -70,9 +70,10 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 
 - [ ] f-strings (`T-FSTRING`)
 - [x] Walrus `:=`
-      (always-evaluated positions only; `and`/`or`, if-expr branches,
-      comprehensions, and specs still rejected — Dafny cannot assign
-      in an expression, and hoisting those would ignore short-circuit)
+      (always-evaluated positions only; `and`/`or`, later chained-
+      comparison operands, if-expr branches, comprehensions, and specs
+      still rejected — Dafny cannot assign in an expression, and
+      hoisting those would ignore short-circuit)
 - [ ] `assert` as a VC, uniformly, if any path still treats it as
       outside the encoder
 

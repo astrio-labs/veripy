@@ -149,8 +149,9 @@ runs (if/while tests, return, assignment RHS, assert, call arguments).
 The encoder emits the assignment then the bound name. A while-test
 walrus is re-emitted at `continue` and at loop-end so each head check
 sees the new binding (Dafny's `while` condition cannot assign). Under
-`and`/`or`, a skipped if-expression branch, a comprehension, or a spec
-clause it is rejected: hoisting would ignore short-circuit.
+`and`/`or`, a later chained-comparison operand, a skipped if-expression
+branch, a comprehension, or a spec clause it is rejected: hoisting
+would ignore short-circuit.
 
 **while / if / return** are standard; loop `#@ invariant` clauses are
 proof annotations with no runtime content (loop-head, exit-inclusive).
