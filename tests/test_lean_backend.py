@@ -1729,6 +1729,39 @@ def test_list_returns_and_comprehensions():
     with pytest.raises(EncodeError, match="FILTERED"):
         _encode(filtered)
 
+    # List OPERATIONS on `result` need a function that actually returns
+    # a list. Emitting `.length` on an Int made Lean fail to elaborate,
+    # which is a tool error where the encoder owed a refusal.
+    for src in (
+        "#@ ensures len(result) == 3\ndef f(x: int) -> int:\n"
+        "    return x\n",
+        "#@ ensures len(result) == len(xs)\n"
+        "#@ ensures forall i in range(len(xs)) :: result[i] == xs[i]\n"
+        "def f(xs: list[int]) -> int:\n    return 0\n",
+    ):
+        with pytest.raises(EncodeError, match="RETURNS a list"):
+            _encode(src)
+
+    # List mode survives statements BEFORE the return; losing it made a
+    # valid function fail with a message about the comprehension.
+    with_local = ("#@ ensures len(result) == len(l)\n"
+                  "def f(l: list[int]) -> list[int]:\n"
+                  "    y = 1\n"
+                  "    return [(e + y) for e in l]\n")
+    assert "List Int" in _encode(with_local).lean_source
+
+    # A list-returning LOOP is refused by naming what is missing, not by
+    # complaining that a list appeared in an integer position.
+    loopy = ("#@ requires n >= 0\n#@ ensures len(result) >= 0\n"
+             "def f(l: list[int], n: int) -> list[int]:\n"
+             "    s = 0\n"
+             "    for i in range(n):\n"
+             "        #@ invariant s >= 0\n"
+             "        s = s + 1\n"
+             "    return l\n")
+    with pytest.raises(EncodeError, match="list-building fragment"):
+        _encode(loopy)
+
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_list_return_verifies(tmp_path):

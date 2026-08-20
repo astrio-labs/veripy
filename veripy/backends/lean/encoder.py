@@ -160,6 +160,11 @@ class _ListCtx:
     # `result[i]` in bounds when `i` ranges over that list, and it rides
     # the same clause-ordering rule as divisor positivity.
     result_list: str | None = None
+    # Does the function actually RETURN a list? Without this, a spec
+    # writing `len(result)` on an int-returning function emitted
+    # `.length` on an Int and Lean failed to elaborate — a tool error
+    # where the encoder owed a refusal.
+    result_is_list: bool = False
 
     def positive(self, e: "ast.expr") -> bool:
         if isinstance(e, ast.Constant) and isinstance(e.value, int) \
@@ -231,6 +236,10 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
     if isinstance(e, ast.Subscript) and isinstance(e.value, ast.Name) \
             and e.value.id == "result" and result is not None:
         idx = e.slice
+        if not lc.result_is_list:
+            raise _reject(
+                "`result[...]` needs a function that RETURNS a list — "
+                "this one does not, so there is nothing to index", line)
         if lc.result_list is None:
             raise _reject(
                 "`result[...]` needs an earlier `ensures` proving "
@@ -298,6 +307,11 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
         if e.func.id == "len" and len(args) == 1:
             if isinstance(args[0], ast.Name) \
                     and args[0].id == "result" and result is not None:
+                if not lc.result_is_list:
+                    raise _reject(
+                        "`len(result)` needs a function that RETURNS a "
+                        "list — this one does not, so it has no length",
+                        line)
                 return f"(({result}.length : Int))"
             if isinstance(args[0], ast.Name) and args[0].id in lc.lists:
                 # Python len == List.length exactly (both count elements,
@@ -417,7 +431,7 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     body_lc = _ListCtx(lc.lists, safe,
                        None if lc.take_idx == v else lc.take_idx,
                        lc.scaffold, lc.min_len, frozenset(body_pos),
-                       lc.result_list)
+                       lc.result_list, lc.result_is_list)
     # Two capture hazards at the binder, both measured classes:
     # 1. The theorem's rename map (param named after its own function)
     #    must NOT apply under a binder that reuses the renamed name —
@@ -741,23 +755,27 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
         _no_old(head.value, head.lineno)
         value = _int_expr(head.value, names, head.lineno, lc=lc)
         return (f"let {_ident(target)} := {value}; "
-                + _body_expr(rest, names | {target}, params, is_bool, lc))
+                + _body_expr(rest, names | {target}, params, is_bool, lc,
+                             is_list))
     if isinstance(head, ast.If):
         _no_old(head.test, head.lineno)
         _reject_undecidable_quantifier(head.test, names, head.lineno, lc)
         cond = _prop_expr(head.test, names, head.lineno, lc=lc)
-        then = _body_expr(head.body, names, params, is_bool, lc)
+        then = _body_expr(head.body, names, params, is_bool, lc,
+                          is_list)
         if head.orelse:
             if rest:
                 raise _reject("unreachable code after an if/else in which "
                               "both branches return", rest[0].lineno)
-            other = _body_expr(head.orelse, names, params, is_bool, lc)
+            other = _body_expr(head.orelse, names, params, is_bool, lc,
+                               is_list)
         else:
             if not _always_returns(head.body):
                 raise _reject("an `if` without `else` must return in its "
                               "body (slice 1 compiles it to a conditional "
                               "expression)", head.lineno)
-            other = _body_expr(rest, names, params, is_bool, lc)
+            other = _body_expr(rest, names, params, is_bool, lc,
+                               is_list)
         return f"(if {cond} then {then} else {other})"
     raise _reject(f"`{type(head).__name__}` is outside the lean backend's "
                   f"slice-1 fragment (loop-free integer functions; loops "
@@ -1698,6 +1716,10 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             raise _reject("return type must be `int`, `bool`, or "
                           "`list[int]` in this slice", fn.lineno)
         is_bool = (not is_list_ret) and ret.id == "bool"
+        if is_list_ret:
+            lc0 = _ListCtx(lc0.lists, lc0.safe_idx, lc0.take_idx,
+                           lc0.scaffold, lc0.min_len, lc0.pos_names,
+                           lc0.result_list, True)
         params = tuple(arg.arg for arg in a.args)
         names = set(params)
 
@@ -1782,6 +1804,11 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                           "loop in this slice — a for-range loop's fuel "
                           "is its range bound", 
                           spec_fn.by_kind("decreases")[0].line)
+        if loop is not None and is_list_ret:
+            raise _reject("loop functions return `int` or `bool` in this "
+                          "slice — a list-returning loop needs the "
+                          "list-building fragment (append), which is "
+                          "not in it yet", fn.lineno)
         if loop is not None and is_bool != loop.acc_bool:
             raise _reject(
                 "a loop function's accumulator must match its return "
@@ -2412,12 +2439,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                      rename=rename,
                                      result_is_bool=is_bool,
                                      avoid=avoid, lc=post_lc), line))
-            lmatch = _result_length_match(expr, lc0.lists)
+            lmatch = (_result_length_match(expr, lc0.lists)
+                      if is_list_ret else None)
             if lmatch is not None and post_lc.result_list is None:
                 post_lc = _ListCtx(post_lc.lists, post_lc.safe_idx,
                                    post_lc.take_idx, post_lc.scaffold,
                                    post_lc.min_len, post_lc.pos_names,
-                                   lmatch)
+                                   lmatch, post_lc.result_is_list)
             _, _, e_pos = _sign_facts(expr)
             if e_pos:
                 # Remember the TRANSLATED clause: if a later divisor
@@ -2429,7 +2457,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                    post_lc.take_idx, post_lc.scaffold,
                                    post_lc.min_len,
                                    frozenset(post_lc.pos_names | e_pos),
-                                   post_lc.result_list)
+                                   post_lc.result_list,
+                                   post_lc.result_is_list)
         goal = " ∧ ".join(p for p, _ in posts)
         sig = " ".join(x for x in [thm_binders, *hyps] if x)
         first_ensures_line = posts[0][1]
