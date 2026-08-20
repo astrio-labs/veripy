@@ -1922,6 +1922,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "pieces; this slice has no strings", node.lineno)
             if isinstance(node, ast.Call) \
                     and isinstance(node.func, ast.Name) \
+                    and node.func.id in ("str", "int"):
+                raise _reject(
+                    "str(int)/int(str) are outside the Lean slice — the "
+                    "Dafny backend admits them with parse VCs; this "
+                    "slice has no strings", node.lineno)
+            if isinstance(node, ast.Call) \
+                    and isinstance(node.func, ast.Name) \
                     and node.func.id == "sorted":
                 raise _reject(
                     "sorted is outside the Lean slice — the Dafny "
@@ -1971,6 +1978,14 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                             "the Dafny backend admits join/split/find/"
                             "startswith/endswith/replace/strip; this "
                             "slice has no strings", clause.line)
+                    if isinstance(node, ast.Call) \
+                            and isinstance(node.func, ast.Name) \
+                            and node.func.id in ("str", "int"):
+                        raise _reject(
+                            "str(int)/int(str) are outside the Lean "
+                            "slice — the Dafny backend admits them with "
+                            "parse VCs; this slice has no strings",
+                            clause.line)
                     if isinstance(node, ast.Call) \
                             and isinstance(node.func, ast.Name) \
                             and node.func.id == "sorted":

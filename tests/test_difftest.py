@@ -463,3 +463,29 @@ def test_sorted_translation_faithful(tmp_path):
     assert result.functions and all(f.ok for f in result.functions), [
         (f.name, f.mismatch, f.error) for f in result.functions
     ]
+
+
+def test_str_int_roundtrip_translation_faithful(tmp_path):
+    src = tmp_path / "parse.py"
+    src.write_text(
+        "#@ ensures result == str(n)\n"
+        "def show(n: int) -> str:\n"
+        "    return str(n)\n"
+        "\n"
+        "#@ ensures result == n\n"
+        "def roundtrip(n: int) -> int:\n"
+        "    return int(str(n))\n"
+        "\n"
+        "#@ ensures result == 8\n"
+        "def parse_eight() -> int:\n"
+        "    return int(\"08\")\n"
+        "\n"
+        "#@ ensures result == 0\n"
+        "def parse_neg_zero() -> int:\n"
+        "    return int(\"-0\")\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]

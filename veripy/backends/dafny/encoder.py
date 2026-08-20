@@ -29,13 +29,16 @@ rejection):
   while-test `:=` is re-emitted at continue / loop-end — a bare Dafny
   `while` condition cannot assign), f-strings as concatenation of
   str pieces (no format spec, no `!s`/`!r`/`!a`, no int/bool/char
-  interpolation — `str(int)` is a later row), str methods on a str
-  receiver: `sep.join(xs)`, `s.split(sep)` (nonempty sep, unlimited),
-  `s.find(sub)`, `s.startswith`/`endswith` (one str, not a tuple),
-  `s.replace(old, new)` (nonempty old, no count), `s.strip(chars)` /
-  `lstrip` / `rstrip` (chars required). Unicode-table methods
-  (`lower`/`upper`/`isdigit`/…) and no-arg `strip`/`split` are
-  rejected — ASCII-only would be a silent approximation.
+  interpolation — write `str(n)` for int-to-str), `str(n)` via
+  PyIntToStr (int operand only; bool is a disjoint sort), `int(s)`
+  via PyStrToInt (str operand; requires PyIsIntStr is the parse VC),
+  str methods on a str receiver: `sep.join(xs)`, `s.split(sep)`
+  (nonempty sep, unlimited), `s.find(sub)`, `s.startswith`/`endswith`
+  (one str, not a tuple), `s.replace(old, new)` (nonempty old, no
+  count), `s.strip(chars)` / `lstrip` / `rstrip` (chars required).
+  Unicode-table methods (`lower`/`upper`/`isdigit`/…) and no-arg
+  `strip`/`split` are rejected — ASCII-only would be a silent
+  approximation.
 - specs: requires/ensures/invariant/decreases; forall/exists over range or
   membership domains; `result`; `old(param)` lowers to the parameter (our
   fragment's parameters are immutable — guards copy in, ownership forbids
@@ -549,6 +552,7 @@ class _Scope:
 
 _ENCODED_BUILTINS = frozenset({
     "len", "min", "max", "abs", "sum", "sorted", "range", "bool", "all", "any", "old",
+    "str", "int",
 })
 
 # Imported math names the encoder resolves. NOT in _ENCODED_BUILTINS: that
@@ -574,6 +578,12 @@ _MATH_REWRITE = (
     "use int isqrt/gcd/factorial, or keep this call behind a later "
     "`#@ extern`"
 )
+
+
+def _is_admitted_int_str(value: str) -> bool:
+    """Optional ASCII minus, then a nonempty string of ASCII digits 0-9."""
+    body = value[1:] if value.startswith("-") else value
+    return bool(body) and all("0" <= c <= "9" for c in body)
 
 
 def _preamble_clash(name: str) -> str | None:
@@ -776,6 +786,10 @@ class _MethodEncoder:
                 return None
             case ast.Call(func=ast.Name(id="len")):
                 return "int"
+            case ast.Call(func=ast.Name(id="str"), args=[arg], keywords=[]):
+                return "string" if self._infer(arg) == "int" else None
+            case ast.Call(func=ast.Name(id="int"), args=[arg], keywords=[]):
+                return "int" if self._infer(arg) == "string" else None
             case ast.Call(func=ast.Name(id=("min" | "max" | "abs" | "sum"))):
                 return "int"
             case ast.Call(func=ast.Name(id="bool")):
@@ -1200,8 +1214,8 @@ class _MethodEncoder:
         if t == "int":
             return (
                 "interpolating int in an f-string is outside this slice "
-                "— `str(int)` is a later catalog row; concatenate str "
-                "values, or write the digits as a literal"
+                "— write `str(n)` and concatenate, or write the digits "
+                "as a literal"
             )
         if t == "bool":
             return (
@@ -1559,6 +1573,50 @@ class _MethodEncoder:
         if name in ("all", "any") and len(args) == 1 \
                 and isinstance(args[0], ast.GeneratorExp):
             return self._quantifier(name, args[0])
+        if name == "str":
+            if len(args) != 1:
+                raise _err(node, (
+                    "str() in this slice takes one int — not zero args, "
+                    "not a sequence; this slice admits str(int) only"
+                ))
+            t = self._infer(args[0])
+            if t == "int":
+                return f"PyIntToStr({self.expr(args[0])})"
+            if t == "bool":
+                raise _err(node, (
+                    "str() of bool is outside this slice — bool is a "
+                    "disjoint sort — write `'True'`/`'False'` literals "
+                    "or compare explicitly"
+                ))
+            raise _err(node, (
+                f"str() of {_py_type_name(t)} is outside this slice — "
+                "this slice admits str(int) only"
+            ))
+        if name == "int":
+            if len(args) != 1:
+                raise _err(node, (
+                    "int() in this slice parses a digit string — one "
+                    "positional str, no base, no keywords"
+                ))
+            t = self._infer(args[0])
+            if t == "string":
+                arg = args[0]
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) \
+                        and not _is_admitted_int_str(arg.value):
+                    raise _err(node, (
+                        "int() of a non-digit string is outside this "
+                        "slice — strip whitespace / drop `_`/`+`"
+                    ))
+                return f"PyStrToInt({self.expr(arg)})"
+            if t == "int":
+                raise _err(node, (
+                    "int() of an int is outside this slice — int() in "
+                    "this slice parses a digit string"
+                ))
+            raise _err(node, (
+                f"int() of {_py_type_name(t)} is outside this slice — "
+                "int() in this slice parses a digit string"
+            ))
         raise _err(node, f"call to {name!r} is outside the slice-1 encoder")
 
     def _require_str_arg(self, node: ast.Call, method: str, arg: ast.expr,

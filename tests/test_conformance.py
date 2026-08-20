@@ -910,3 +910,32 @@ def test_sorted_sliced_list_int_index_still_fires():
     (fn,) = report.functions
     assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
     assert not fn.accepted
+
+
+def test_str_int_does_not_fire():
+    src = "def f(n: int) -> str:\n    return str(n)\n"
+    assert "U-CALL" not in _fires(src)
+
+def test_int_str_does_not_fire():
+    src = "def f(s: str) -> int:\n    return int(s)\n"
+    assert "U-CALL" not in _fires(src)
+
+def test_str_bool_still_fires():
+    src = "def f(flag: bool) -> str:\n    return str(flag)\n"
+    assert "U-CALL" in _fires(src)
+
+def test_int_of_int_still_fires():
+    src = "def f(n: int) -> int:\n    return int(n)\n"
+    assert "U-CALL" in _fires(src)
+
+def test_str_keywords_still_fire():
+    src = "def f(n: int) -> str:\n    return str(object=n)\n"
+    assert "U-CALL" in _fires(src)
+
+def test_int_base_still_fires():
+    src = "def f(s: str) -> int:\n    return int(s, 10)\n"
+    assert "U-CALL" in _fires(src)
+
+def test_unannotated_str_stays_silent():
+    src = "def f(n):\n    return str(n)\n"
+    assert "U-CALL" not in _fires(src)

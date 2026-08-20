@@ -88,7 +88,9 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 - [x] `sorted` (permutation + order; stability only on demand)
       (`sorted(xs)` on `list[int]` as `PySorted`; no `key=` / `reverse=` /
       `list[str]` — Dafny seq `<` is prefix order, Python str `<` is lex)
-- [ ] `str(int)` / `int(str)` with parse VCs
+- [x] `str(int)` / `int(str)` with parse VCs
+      (one positional arg; bool is a disjoint sort; f-string int
+      interpolation stays rejected — Lean has no strings)
 - [x] A small `math` subset
   ```
   (`math.gcd` / `factorial` / `isqrt` on ints; IEEE `float` still vetoed)
