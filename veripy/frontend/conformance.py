@@ -78,7 +78,7 @@ _RULES = [
     Rule("X-VARARG", "*args/**kwargs in signature (one fire each)", "fragment signature rules"),
     Rule("X-STARCALL", "*/** unpacking at a call site", "§7 excluded"),
     Rule("X-DELETE", "del statement", "§7 excluded"),
-    Rule("X-ASSERT", "assert with a non-literal message", "maps to VC; no message or a literal is admitted"),
+    Rule("X-ASSERT", "assert with a non-literal message or a non-bool test", "maps to VC; bool tests with literal/no message are admitted"),
     Rule("X-ATTR-STORE", "attribute assignment (any binding construct)", "§3.1 attributes"),
     Rule("X-LOOP-ELSE", "for/while else clause", "§7 excluded"),
     Rule("X-WALRUS", "walrus assignment expression", "candidate"),
@@ -233,6 +233,30 @@ def _ignore_comment_lines(source: str) -> set[int]:
     return lines
 
 
+def _simple_ann(ann: ast.expr | None) -> str | None:
+    """Best-effort annotation spelling for the untyped survey (Name or
+    `list[...]` / `tuple[...]` head)."""
+    if isinstance(ann, ast.Name):
+        return ann.id
+    if isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name):
+        return ann.value.id
+    return None
+
+
+def _assert_test_still_outside(test: ast.expr, anns: dict[str, str]) -> bool:
+    """True when Dafny's bool-context check will reject this test.
+
+    The survey has no inferencer; it uses syntactic annotations and
+    non-bool literals. `assert n >= 0` does not fire; `assert n` for
+    `n: int` does; `assert flag` for `flag: bool` does not."""
+    if isinstance(test, ast.Constant) and not isinstance(test.value, bool):
+        return True
+    if isinstance(test, ast.Name):
+        t = anns.get(test.id)
+        return t is not None and t != "bool"
+    return False
+
+
 def _is_mutable_literal(node: ast.expr) -> bool:
     return isinstance(node, (ast.List, ast.Dict, ast.Set, ast.ListComp,
                              ast.DictComp, ast.SetComp)) or (
@@ -285,6 +309,7 @@ class _FunctionScanner:
         self.scope = scope
         self.class_flags = class_flags
         self.local_names = self._local_names()
+        self.ann_types = self._annotated_names()
 
     def fire(self, rule: str, node: ast.AST, detail: str = "") -> None:
         self.report.fires.append(
@@ -325,6 +350,32 @@ class _FunctionScanner:
             if isinstance(stmt, ast.Name) and isinstance(stmt.ctx, ast.Store):
                 names.add(stmt.id)
         return names
+
+    def _annotated_names(self) -> dict[str, str]:
+        """Syntactic annotations on this function's params and AnnAssigns.
+        Nested defs are skipped (same boundary as `_local_names`)."""
+        out: dict[str, str] = {}
+        a = self.node.args
+        for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg):
+            if arg is None or arg.annotation is None:
+                continue
+            t = _simple_ann(arg.annotation)
+            if t is not None:
+                out[arg.arg] = t
+
+        def walk(node: ast.AST) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                    continue
+                if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                    t = _simple_ann(child.annotation)
+                    if t is not None:
+                        out[child.target.id] = t
+                walk(child)
+
+        for stmt in self.node.body:
+            walk(stmt)
+        return out
 
     def _is_module_level(self, name: str, locals_: frozenset[str]) -> bool:
         return (
@@ -387,8 +438,10 @@ class _FunctionScanner:
                 self.fire("X-WITH", stmt)
             case ast.Delete():
                 self.fire("X-DELETE", stmt)
-            case ast.Assert(msg=msg):
+            case ast.Assert(test=test, msg=msg):
                 if msg is not None and not isinstance(msg, ast.Constant):
+                    self.fire("X-ASSERT", stmt)
+                elif _assert_test_still_outside(test, self.ann_types):
                     self.fire("X-ASSERT", stmt)
             case ast.Global() | ast.Nonlocal():
                 self.fire("T-GLOBAL", stmt)
