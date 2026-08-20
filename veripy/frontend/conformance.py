@@ -273,11 +273,16 @@ def _simple_ann(ann: ast.expr | None) -> str | None:
 
 
 def _ann_inner(ann: ast.expr | None) -> str | None:
-    """Element/payload spelling of `list[T]` / `Optional[T]` (Name `T`)."""
+    """Element/payload spelling of `list[T]` / `Optional[T]`.
+
+    `T` may itself be parameterized (`tuple[int, int]` → `tuple`) so
+    `assert xs[0]` on `list[tuple[int, int]]` is still a miss."""
     if isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name):
         sl = ann.slice
         if isinstance(sl, ast.Name):
             return sl.id
+        if isinstance(sl, ast.Subscript) and isinstance(sl.value, ast.Name):
+            return sl.value.id
     return None
 
 
@@ -325,13 +330,22 @@ def _assert_test_still_outside(test: ast.expr, anns: dict[str, str],
 
     The survey has no inferencer. Comparisons / `not` / bool names stay
     admitted; int names, int arithmetic, indexing into `list[int]`/`str`,
-    int if-exprs, and `len`/`abs`/`min`/`max`/`sum` fire. `str`/`list`
-    names do not — the encoder admits those as emptiness checks."""
+    tuple-valued indexing, int if-exprs, and `len`/`abs`/`min`/`max`/`sum`
+    fire. `str`/`list` names (and `list[str]` / `list[bool]` elements) do
+    not — the encoder admits those as emptiness / bool."""
     if isinstance(test, ast.Constant):
         return type(test.value) not in (bool, str)
     if isinstance(test, ast.Name):
         t = anns.get(test.id)
         return t is not None and t != "bool" and t not in _SEQISH_ANN
+    if isinstance(test, ast.Subscript) and not isinstance(test.slice, ast.Slice):
+        if isinstance(test.value, ast.Name):
+            if anns.get(test.value.id) == "str":
+                return True  # index is char
+            inner = inners.get(test.value.id)
+            if inner is None:
+                return False
+            return inner != "bool" and inner not in _SEQISH_ANN
     return _looks_int(test, anns, inners)
 
 

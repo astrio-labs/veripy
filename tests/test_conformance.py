@@ -572,6 +572,24 @@ def test_assert_list_str_index_does_not_fire():
     assert "X-ASSERT" not in _fires(src)
 
 
+def test_assert_list_tuple_index_still_fires():
+    src = (
+        "def f(xs: list[tuple[int, int]]) -> int:\n"
+        "    assert xs[0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_list_tuple_index_still_fires():
+    src = (
+        "def f(xs: list[tuple[int, int]]) -> int:\n"
+        "    assert xs[0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
 def test_admitted_walrus_does_not_fire():
     src = "def f(n: int) -> int:\n    return (x := n)\n"
     assert "X-WALRUS" not in _fires(src)
