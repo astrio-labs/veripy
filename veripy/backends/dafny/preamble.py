@@ -15,7 +15,7 @@ PREAMBLE_VERSION = "0.7"
 PREAMBLE = """\
 // VeriPy Dafny preamble v0.7 -- Python-exact arithmetic, indexing,
 // slicing, Optionals, folds, powers, gcd/factorial/isqrt, outcomes,
-// filtered comprehensions, ASCII-faithful str methods (ARCHITECTURE §7.1, §7 catalog).
+// filtered comprehensions, sorted and ASCII-faithful str methods (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int
   requires b != 0
@@ -126,6 +126,25 @@ function PyIsqrt(n: int): int
     var small := PyIsqrt(n / 4) * 2;
     var large := small + 1;
     if large * large > n then small else large
+}
+
+// sorted(xs) on list[int]: insertion sort. Equal ints are
+// indistinguishable, so stability is free on this domain. No key= /
+// reverse= / list[str] — those stay rejected (Dafny seq < is prefix
+// order, Python str < is lex).
+function PyInsert(x: int, s: seq<int>): seq<int>
+  decreases |s|
+{
+  if s == [] then [x]
+  else if x <= s[0] then [x] + s
+  else [s[0]] + PyInsert(x, s[1..])
+}
+
+function PySorted(s: seq<int>): seq<int>
+  decreases |s|
+{
+  if s == [] then []
+  else PyInsert(s[0], PySorted(s[1..]))
 }
 
 // Exceptions as VALUES (ARCHITECTURE §7.4). A function that can raise

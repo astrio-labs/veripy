@@ -419,3 +419,14 @@ def test_str_methods_verify(tmp_path, capsys):
     )
     assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_sorted_identity_verifies(tmp_path, capsys):
+    src = tmp_path / "sort_ints.py"
+    src.write_text(
+        "#@ ensures result == sorted(xs)\n"
+        "def sort_ints(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs)\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out

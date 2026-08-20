@@ -449,3 +449,17 @@ def test_str_methods_translation_faithful(tmp_path):
     assert result.functions and all(f.ok for f in result.functions), [
         (f.name, f.mismatch, f.error) for f in result.functions
     ]
+
+
+def test_sorted_translation_faithful(tmp_path):
+    src = tmp_path / "sort_ints.py"
+    src.write_text(
+        "#@ ensures result == sorted(xs)\n"
+        "def sort_ints(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs)\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]

@@ -525,6 +525,77 @@ def _fstring_still_outside(node: ast.JoinedStr,
     return False
 
 
+def _sorted_seq_chain(arg: ast.expr, anns: dict[str, str],
+                      inners: dict[str, str],
+                      inner_chains: dict[str, tuple[str, ...]],
+                      ) -> tuple[str, ...] | None:
+    """Inner chain if `arg` encodes as a seq; `()` if it statically does
+    not; `None` if the survey cannot tell.
+
+    `list[int]` → `('int',)`; `list[list[int]]` → `('list', 'int')`.
+    A slice keeps the chain; an index peels one layer (so `xs[0]` on
+    `list[int]` is not a seq)."""
+    if isinstance(arg, ast.Name):
+        t = anns.get(arg.id)
+        if t is None:
+            return None
+        if t != "list":
+            return ()
+        chain = inner_chains.get(arg.id)
+        if chain:
+            return chain
+        inner = inners.get(arg.id)
+        return (inner,) if inner else ()
+    if isinstance(arg, ast.Subscript):
+        base = _sorted_seq_chain(arg.value, anns, inners, inner_chains)
+        if base is None:
+            return None
+        if isinstance(arg.slice, ast.Slice):
+            return base
+        if not base:
+            return ()
+        head, *rest = base
+        return tuple(rest) if head == "list" else ()
+    return None
+
+
+def _sorted_still_outside(node: ast.Call, anns: dict[str, str],
+                          inners: dict[str, str],
+                          inner_chains: dict[str, tuple[str, ...]] | None = None,
+                          ) -> bool:
+    """True when Dafny still rejects this `sorted()` call.
+
+    Admitted: one positional arg, no keywords, operand annotated
+    `list[int]`, a slice of that, or a list literal of ints.
+    Unannotated `sorted(xs)` stays silent (untyped survey optimism).
+    Keywords, extra args, `str` literals, `list[str]` / `list[bool]`
+    names and literals, and indexes that peel `list[int]` down to
+    `int` (including `xs[1:][0]`) fire `U-CALL`."""
+    inner_chains = inner_chains or {}
+    if node.keywords or len(node.args) != 1:
+        return True
+    arg = node.args[0]
+    chain = _sorted_seq_chain(arg, anns, inners, inner_chains)
+    if chain is not None:
+        return chain != ("int",)
+    if isinstance(arg, ast.List):
+        if not arg.elts:
+            return True  # encoder infers None for []
+        for e in arg.elts:
+            if _const_int_expr(e) is not None:
+                continue
+            if isinstance(e, ast.Name):
+                t = anns.get(e.id)
+                if t is None or t == "int":
+                    continue  # untyped optimism, or visible int
+            return True  # statically not list[int]
+        return False
+    if isinstance(arg, (ast.Constant, ast.Tuple, ast.Set, ast.Dict,
+                        ast.JoinedStr)):
+        return True  # never seq<int>
+    return False  # other non-names: no inferencer
+
+
 def _empty_str_const(node: ast.expr) -> bool:
     return isinstance(node, ast.Constant) and node.value == ""
 
@@ -971,6 +1042,10 @@ class _FunctionScanner:
             elif name in self.scope.math_names:
                 if not _admitted_math_arity(self.scope.math_names[name], node):
                     self.fire("U-CALL", node, detail=name)
+            elif name == "sorted" and _sorted_still_outside(
+                    node, self.ann_types, self.ann_inners,
+                    self.ann_inner_chains):
+                self.fire("U-CALL", node, detail="sorted")
             elif name not in SAFE_BUILTINS and name not in self.scope.names:
                 self.fire("U-CALL", node, detail=name)
         elif isinstance(func, ast.Attribute):

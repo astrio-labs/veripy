@@ -834,3 +834,79 @@ def test_str_replace_empty_old_still_fires():
 def test_str_split_empty_sep_still_fires():
     src = "def f(s: str) -> list[str]:\n    return s.split(\"\")\n"
     assert "U-METHOD" in _fires(src)
+
+
+def test_sorted_list_int_does_not_fire():
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs)\n"
+    )
+    assert "U-CALL" not in _fires(src)
+
+def test_sorted_reverse_still_fires():
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs, reverse=True)\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+
+def test_sorted_str_literal_still_fires():
+    # Encoder rejects sorted("abc"); a silent survey would count it accepted.
+    src = (
+        "def f() -> list[str]:\n"
+        "    return sorted('abc')\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
+
+def test_sorted_list_str_literal_still_fires():
+    src = (
+        "def f() -> list[str]:\n"
+        "    return sorted(['b', 'a'])\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
+
+def test_sorted_list_int_literal_does_not_fire():
+    # Encoder infers seq<int> for a homogeneous int list literal.
+    src = (
+        "def f() -> list[int]:\n"
+        "    return sorted([3, 1, 2])\n"
+    )
+    assert "U-CALL" not in _fires(src)
+
+def test_sorted_list_int_index_still_fires():
+    # Encoder infers xs[0] as int, not seq<int>.
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs[0])\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
+
+def test_sorted_list_int_slice_does_not_fire():
+    # A slice keeps seq<int>; the encoder admits sorted(xs[1:]).
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs[1:])\n"
+    )
+    assert "U-CALL" not in _fires(src)
+
+def test_sorted_sliced_list_int_index_still_fires():
+    # Slice keeps seq<int>, then index peels to int — encoder rejects.
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs[1:][0])\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
