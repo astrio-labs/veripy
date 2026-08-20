@@ -64,7 +64,7 @@ _RULES = [
     Rule("T-IS", "`is` against something other than None/True/False", "§3.1 semantic traps"),
     Rule("T-MUT-DEFAULT", "mutable default argument", "§3.1 semantic traps"),
     Rule("T-GLOBAL", "write access to module-level state", "§3.1 semantic traps"),
-    Rule("T-FSTRING", "f-string with format spec, conversion, or non-str literal", "§7 curated-str; bare `{s}` concat is admitted"),
+    Rule("T-FSTRING", "f-string with format spec, conversion, non-str literal, or a non-str annotated name", "§7 curated-str; bare `{s}` concat is admitted"),
     Rule("X-TRY", "try/except/finally", "§7.4"),
     Rule("X-RAISE", "raise", "§7.4"),
     Rule("X-WITH", "with statement", "§7 excluded"),
@@ -233,12 +233,26 @@ def _ignore_comment_lines(source: str) -> set[int]:
     return lines
 
 
-def _fstring_still_outside(node: ast.JoinedStr) -> bool:
-    """True for f-strings the encoder still rejects (no types here).
+def _simple_ann(ann: ast.expr | None) -> str | None:
+    """Best-effort annotation spelling for the untyped survey (Name or
+    `list[...]` / `tuple[...]` head)."""
+    if isinstance(ann, ast.Name):
+        return ann.id
+    if isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name):
+        return ann.value.id
+    return None
+
+
+def _fstring_still_outside(node: ast.JoinedStr,
+                           anns: dict[str, str] | None = None) -> bool:
+    """True for f-strings the encoder still rejects.
 
     Bare `{name}` interpolations are admitted as str concatenation when
-    the name is str-typed; the survey is untyped, so those do not fire.
-    Format specs, `!s`/`!r`/`!a`, and non-str literals still do."""
+    the name is str-typed. The survey has no inferencer, so an
+    unannotated `{name}` does not fire; a name annotated as something
+    other than `str` does. Format specs, `!s`/`!r`/`!a`, and non-str
+    literals still fire."""
+    anns = anns or {}
     for v in node.values:
         if not isinstance(v, ast.FormattedValue):
             continue
@@ -247,6 +261,10 @@ def _fstring_still_outside(node: ast.JoinedStr) -> bool:
         if isinstance(v.value, ast.Constant) \
                 and not isinstance(v.value.value, str):
             return True
+        if isinstance(v.value, ast.Name):
+            t = anns.get(v.value.id)
+            if t is not None and t != "str":
+                return True
     return False
 
 
@@ -302,6 +320,7 @@ class _FunctionScanner:
         self.scope = scope
         self.class_flags = class_flags
         self.local_names = self._local_names()
+        self.ann_types = self._annotated_names()
 
     def fire(self, rule: str, node: ast.AST, detail: str = "") -> None:
         self.report.fires.append(
@@ -342,6 +361,32 @@ class _FunctionScanner:
             if isinstance(stmt, ast.Name) and isinstance(stmt.ctx, ast.Store):
                 names.add(stmt.id)
         return names
+
+    def _annotated_names(self) -> dict[str, str]:
+        """Syntactic annotations on this function's params and AnnAssigns.
+        Nested defs are skipped (same boundary as `_local_names`)."""
+        out: dict[str, str] = {}
+        a = self.node.args
+        for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg):
+            if arg is None or arg.annotation is None:
+                continue
+            t = _simple_ann(arg.annotation)
+            if t is not None:
+                out[arg.arg] = t
+
+        def walk(node: ast.AST) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                    continue
+                if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                    t = _simple_ann(child.annotation)
+                    if t is not None:
+                        out[child.target.id] = t
+                walk(child)
+
+        for stmt in self.node.body:
+            walk(stmt)
+        return out
 
     def _is_module_level(self, name: str, locals_: frozenset[str]) -> bool:
         return (
@@ -459,7 +504,7 @@ class _FunctionScanner:
                     elif not isinstance(c.value, _OK_CONST_TYPES):
                         self.fire("U-CONST", node, detail=type(c.value).__name__)
                 case ast.JoinedStr():
-                    if _fstring_still_outside(node):
+                    if _fstring_still_outside(node, self.ann_types):
                         self.fire("T-FSTRING", node)
                 case ast.Yield() | ast.YieldFrom():
                     self.fire("X-YIELD", node)

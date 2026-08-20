@@ -1660,6 +1660,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 except SyntaxError:
                     continue        # reported precisely elsewhere
                 for node in ast.walk(tree):
+                    if isinstance(node, ast.JoinedStr):
+                        raise _reject(
+                            "f-strings are outside the Lean slice — the "
+                            "Dafny backend admits them as concatenation "
+                            "of str pieces; this slice has no strings",
+                            clause.line)
                     if isinstance(node, ast.Call) \
                             and isinstance(node.func, ast.Name) \
                             and node.func.id in assigned_anywhere:

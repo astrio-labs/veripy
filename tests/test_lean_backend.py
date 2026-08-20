@@ -2034,3 +2034,13 @@ def test_lean_rejects_fstrings_loudly():
     )
     with pytest.raises(EncodeError, match="f-strings are outside the Lean slice"):
         _encode(src)
+
+
+def test_lean_rejects_fstring_in_spec_loudly():
+    src = (
+        "#@ ensures result == len(f\"n\")\n"
+        "def f(n: int) -> int:\n"
+        "    return 1\n"
+    )
+    with pytest.raises(EncodeError, match="f-strings are outside the Lean slice"):
+        _encode(src)

@@ -186,9 +186,15 @@ def test_fstring_conversion_still_fires():
 
 def test_bare_str_fstring_does_not_fire():
     # Admitted as concatenation when the interpolation is str-typed.
-    # The survey is untyped, so a bare `{name}` is not a miss.
     src = "def f(s: str) -> str:\n    return f'hi {s}'\n"
     assert "T-FSTRING" not in _fires(src)
+
+
+def test_bare_int_fstring_still_fires():
+    # Encoder rejects `f"{n}"` for `n: int`; the survey can see the
+    # annotation even without an inferencer.
+    src = "def f(n: int) -> str:\n    return f'{n}'\n"
+    assert "T-FSTRING" in _fires(src)
 
 
 def test_aggregate_counts():
