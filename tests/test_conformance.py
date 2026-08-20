@@ -431,3 +431,18 @@ def test_overlapping_paths_counted_once(tmp_path):
     stats = aggregate(reports)
     assert stats["files"] == 1
     assert stats["functions"] == 1
+
+
+def test_admitted_walrus_does_not_fire():
+    src = "def f(n: int) -> int:\n    return (x := n)\n"
+    assert "X-WALRUS" not in _fires(src)
+
+
+def test_walrus_under_and_still_fires():
+    src = "def f(n: int) -> bool:\n    return n > 0 and (x := n) > 0\n"
+    assert "X-WALRUS" in _fires(src)
+
+
+def test_walrus_in_comprehension_still_fires():
+    src = "def f(l: list[int]) -> list[int]:\n    return [y := x for x in l]\n"
+    assert "X-WALRUS" in _fires(src)

@@ -143,6 +143,15 @@ does (`snap[i].0`, `snap[i].1`), with an arity check at encode time.
 Dafny `assert`, so a verified function's asserts are proved never to fire,
 while CPython still executes them (they are the proof-hint idiom).
 
+**x := e** (walrus) evaluates `e`, binds `x` in the enclosing function
+scope, and yields the value — admitted only where the assignment always
+runs (if/while tests, return, assignment RHS, assert, call arguments).
+The encoder emits the assignment then the bound name. A while-test
+walrus is re-emitted at `continue` and at loop-end so each head check
+sees the new binding (Dafny's `while` condition cannot assign). Under
+`and`/`or`, a skipped if-expression branch, a comprehension, or a spec
+clause it is rejected: hoisting would ignore short-circuit.
+
 **while / if / return** are standard; loop `#@ invariant` clauses are
 proof annotations with no runtime content (loop-head, exit-inclusive).
 
@@ -198,6 +207,7 @@ translation of the *same* stub the prover saw).
 | for-range / for-each | §4 loops | hoisted while / snapshot; `for a, b in pairs` projects tuple elements | corpus-wide + unit (unpack) |
 | `break` / `continue` | §4 loops | Dafny `break`/`continue`; for-desugar steps the hidden index before `continue` | unit (while cap, range-for skip) |
 | tuples / unpack / multi-return | §4 assign | Dafny `(T, U)` products; `p.k` / `a, b := p.0, p.1`; arity checked at encode time | unit (pair return, unpack, Hypothesis) |
+| walrus `:=` | §4 assign | assignment then the bound name; while-test re-emitted at continue / loop-end | unit (return/if/while, Hypothesis) |
 | assert | §4 | Dafny `assert` | corpus (rolling_max, below_zero) |
 | truthiness §7.3 | §3 | `\|xs\| != 0` | unit |
 
