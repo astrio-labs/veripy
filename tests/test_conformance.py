@@ -197,41 +197,6 @@ def test_bare_int_fstring_still_fires():
     assert "T-FSTRING" in _fires(src)
 
 
-def test_str_int_does_not_fire():
-    src = "def f(n: int) -> str:\n    return str(n)\n"
-    assert "U-CALL" not in _fires(src)
-
-
-def test_int_str_does_not_fire():
-    src = "def f(s: str) -> int:\n    return int(s)\n"
-    assert "U-CALL" not in _fires(src)
-
-
-def test_str_bool_still_fires():
-    src = "def f(flag: bool) -> str:\n    return str(flag)\n"
-    assert "U-CALL" in _fires(src)
-
-
-def test_int_of_int_still_fires():
-    src = "def f(n: int) -> int:\n    return int(n)\n"
-    assert "U-CALL" in _fires(src)
-
-
-def test_str_keywords_still_fire():
-    src = "def f(n: int) -> str:\n    return str(object=n)\n"
-    assert "U-CALL" in _fires(src)
-
-
-def test_int_base_still_fires():
-    src = "def f(s: str) -> int:\n    return int(s, 10)\n"
-    assert "U-CALL" in _fires(src)
-
-
-def test_unannotated_str_stays_silent():
-    src = "def f(n):\n    return str(n)\n"
-    assert "U-CALL" not in _fires(src)
-
-
 def test_aggregate_counts():
     src = (
         "def good(x: int) -> int:\n"
@@ -777,6 +742,48 @@ def test_walrus_in_comprehension_still_fires():
     assert "X-WALRUS" in _fires(src)
 
 
+def test_math_gcd_does_not_fire_u_method():
+    src = (
+        "import math\n"
+        "\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    assert "U-METHOD" not in _fires(src, "f")
+    assert "T-FLOAT" not in _fires(src, "f")
+
+
+def test_math_sqrt_fires_t_float():
+    src = (
+        "import math\n"
+        "\n"
+        "def f(x: int):\n"
+        "    return math.sqrt(x)\n"
+    )
+    assert "T-FLOAT" in _fires(src, "f")
+    assert "U-METHOD" not in _fires(src, "f")
+
+
+def test_from_math_import_sqrt_fires_t_float():
+    src = (
+        "from math import sqrt\n"
+        "\n"
+        "def f(x: int):\n"
+        "    return sqrt(x)\n"
+    )
+    assert "T-FLOAT" in _fires(src, "f")
+
+
+def test_from_math_import_gcd_three_args_fires_u_call():
+    src = (
+        "from math import gcd\n"
+        "\n"
+        "def f(a: int, b: int, c: int) -> int:\n"
+        "    return gcd(a, b, c)\n"
+    )
+    assert "U-CALL" in _fires(src, "f")
+
+
 def test_admitted_str_methods_do_not_fire():
     src = (
         "def f(s: str, xs: list[str], sep: str) -> str:\n"
@@ -903,3 +910,32 @@ def test_sorted_sliced_list_int_index_still_fires():
     (fn,) = report.functions
     assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
     assert not fn.accepted
+
+
+def test_str_int_does_not_fire():
+    src = "def f(n: int) -> str:\n    return str(n)\n"
+    assert "U-CALL" not in _fires(src)
+
+def test_int_str_does_not_fire():
+    src = "def f(s: str) -> int:\n    return int(s)\n"
+    assert "U-CALL" not in _fires(src)
+
+def test_str_bool_still_fires():
+    src = "def f(flag: bool) -> str:\n    return str(flag)\n"
+    assert "U-CALL" in _fires(src)
+
+def test_int_of_int_still_fires():
+    src = "def f(n: int) -> int:\n    return int(n)\n"
+    assert "U-CALL" in _fires(src)
+
+def test_str_keywords_still_fire():
+    src = "def f(n: int) -> str:\n    return str(object=n)\n"
+    assert "U-CALL" in _fires(src)
+
+def test_int_base_still_fires():
+    src = "def f(s: str) -> int:\n    return int(s, 10)\n"
+    assert "U-CALL" in _fires(src)
+
+def test_unannotated_str_stays_silent():
+    src = "def f(n):\n    return str(n)\n"
+    assert "U-CALL" not in _fires(src)

@@ -20,7 +20,9 @@ rejection):
   (chained), and/or/not, len/min/max/abs, indexing, conditional expressions,
   single-generator list comprehensions (optional `if` filter via PyFlatten),
   eager `all`/`any`/`sum` genexp folds (filters included; all/any →
-  forall/exists, sum → mapped PySum), `sorted(xs)` on `list[int]` as
+  forall/exists, sum → mapped PySum), imported `math.gcd` / `factorial` /
+  `isqrt` (`PyGcd`/`PyFact`/`PyIsqrt`; IEEE float is a permanent veto),
+  `sorted(xs)` on `list[int]` as
   `PySorted` (permutation + order; no `key=`/`reverse=`/`list[str]`),
   walrus `:=` in always-evaluated
   positions (if/while tests, return, assignment, assert, call args;
@@ -553,6 +555,30 @@ _ENCODED_BUILTINS = frozenset({
     "str", "int",
 })
 
+# Imported math names the encoder resolves. NOT in _ENCODED_BUILTINS: that
+# set rejects module-level bindings that shadow builtins (`from math import
+# prod as sum`). Putting gcd there would illegally reject `from math import
+# gcd`. Track an import table and resolve in `_call` instead.
+_ADMITTED_MATH = frozenset({"gcd", "factorial", "isqrt"})
+_MATH_TO_PREAMBLE = {"gcd": "PyGcd", "factorial": "PyFact", "isqrt": "PyIsqrt"}
+_MATH_FLOAT = frozenset({
+    "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "cbrt",
+    "ceil", "copysign", "cos", "cosh", "degrees", "dist", "e", "erf",
+    "erfc", "exp", "exp2", "expm1", "fabs", "floor", "fmod", "frexp",
+    "fsum", "gamma", "hypot", "inf", "isclose", "isfinite", "isinf",
+    "isnan", "ldexp", "lgamma", "log", "log10", "log1p", "log2", "modf",
+    "nan", "nextafter", "pi", "pow", "radians", "remainder", "sin",
+    "sinh", "sqrt", "tan", "tanh", "tau", "trunc", "ulp",
+})
+_IEEE_FLOAT_MSG = (
+    "IEEE float is outside the fragment — use int isqrt/gcd/factorial, "
+    "or keep this call behind a later `#@ extern`"
+)
+_MATH_REWRITE = (
+    "use int isqrt/gcd/factorial, or keep this call behind a later "
+    "`#@ extern`"
+)
+
 
 def _is_admitted_int_str(value: str) -> bool:
     """Optional ASCII minus, then a nonempty string of ASCII digits 0-9."""
@@ -577,11 +603,17 @@ def _preamble_clash(name: str) -> str | None:
 class _MethodEncoder:
     def __init__(self, node: ast.FunctionDef, spec: FunctionSpec,
                  proof_lemmas: frozenset[str] = frozenset(),
-                 source_lines: list[str] | None = None):
+                 source_lines: list[str] | None = None,
+                 math_names: dict[str, str] | None = None,
+                 math_aliases: frozenset[str] = frozenset(),
+                 math_other: dict[str, str] | None = None):
         self.node = node
         self.spec = spec
         self.proof_lemmas = proof_lemmas
         self.source_lines = source_lines or []
+        self.math_names = math_names or {}
+        self.math_aliases = math_aliases
+        self.math_other = math_other or {}
         self.lines: list[str] = []
         self.line_map: dict[int, int] = {}  # emitted index -> python line
         self.params: set[str] = {
@@ -595,6 +627,7 @@ class _MethodEncoder:
                 f"to — rename it", node.lineno)
         for p in sorted(self.params & PREAMBLE_NAMES):
             raise EncodeError(f"parameter {_preamble_clash(p)}", node.lineno)
+        self._shadowed = set(self.params)
         for n in ast.walk(node):
             bound: list[str] = []
             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
@@ -606,6 +639,7 @@ class _MethodEncoder:
             elif isinstance(n, (ast.Import, ast.ImportFrom)):
                 bound = [(a.asname or a.name).split(".")[0] for a in n.names]
             for name in bound:
+                self._shadowed.add(name)
                 if name in _ENCODED_BUILTINS:
                     raise _err(n, (
                         f"binding {name!r} shadows a builtin the encoder gives "
@@ -766,6 +800,8 @@ class _MethodEncoder:
                 return "bool"
             case ast.Call(func=ast.Name(id="old"), args=[ast.Name(id=name)]):
                 return self.types.get(name)
+            case ast.Call() as call if self._admitted_math_canon(call) is not None:
+                return "int"
             case ast.Subscript(value=value, slice=ast.Slice()):
                 return self._infer(value)  # a slice keeps the sequence type
             case ast.Subscript(value=value, slice=index):
@@ -885,6 +921,18 @@ class _MethodEncoder:
                         f"the last iterated value (or unbound), the lowering does not; "
                         f"outside the slice-1 encoder"
                     ))
+                if name not in self._shadowed:
+                    if name in self.math_other:
+                        orig = self.math_other[name]
+                        raise _err(node, (
+                            _IEEE_FLOAT_MSG if orig in _MATH_FLOAT
+                            else f"math.{orig} is outside the fragment — {_MATH_REWRITE}"
+                        ))
+                    if name in self.math_names:
+                        raise _err(node, (
+                            f"{name} is a math function — call it as "
+                            f"{name}(...), or {_MATH_REWRITE}"
+                        ))
                 return self._mangle(name)
             case ast.UnaryOp(op=ast.Not(), operand=operand):
                 if self._is_seqish(self._infer(operand)):
@@ -1003,6 +1051,12 @@ class _MethodEncoder:
                 ))
             case ast.JoinedStr():
                 return self._fstring(node)
+            case ast.Attribute(value=ast.Name(id=base), attr=attr) \
+                    if base in self.math_aliases and base not in self._shadowed:
+                raise _err(node, (
+                    _IEEE_FLOAT_MSG if attr in _MATH_FLOAT
+                    else f"math.{attr} is outside the fragment — {_MATH_REWRITE}"
+                ))
             case _:
                 raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder "
                                  f"-- see the admitted-construct table in docs/SEMANTICS.md")
@@ -1369,7 +1423,74 @@ class _MethodEncoder:
             current = comp
         return "(" + " && ".join(parts) + ")" if len(parts) > 1 else f"({parts[0]})"
 
+    def _math_live(self, name: str) -> bool:
+        """True when `name` still denotes a module-level math import here."""
+        return name not in self._shadowed
+
+    def _admitted_math_canon(self, node: ast.Call) -> str | None:
+        """`gcd`/`factorial`/`isqrt` when this call is an imported math site."""
+        func = node.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            base = func.value.id
+            if (base in self.math_aliases and self._math_live(base)
+                    and func.attr in _ADMITTED_MATH):
+                return func.attr
+            return None
+        if isinstance(func, ast.Name) and self._math_live(func.id):
+            return self.math_names.get(func.id)
+        return None
+
+    def _reject_other_math(self, node: ast.Call) -> None:
+        """IEEE-float / rest-of-math diagnostic when the call is a math site."""
+        func = node.func
+        attr: str | None = None
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            base = func.value.id
+            if base in self.math_aliases and self._math_live(base):
+                attr = func.attr
+        elif isinstance(func, ast.Name) and self._math_live(func.id):
+            attr = self.math_other.get(func.id)
+        if attr is None:
+            return
+        raise _err(node, (
+            _IEEE_FLOAT_MSG if attr in _MATH_FLOAT
+            else f"math.{attr} is outside the fragment — {_MATH_REWRITE}"
+        ))
+
+    def _emit_math(self, canon: str, node: ast.Call) -> str:
+        py = _MATH_TO_PREAMBLE[canon]
+        if node.keywords:
+            raise _err(node, (
+                f"keyword arguments to math.{canon}() are outside the fragment "
+                f"— {_MATH_REWRITE}"
+            ))
+        args = node.args
+        if canon == "gcd":
+            if len(args) != 2:
+                raise _err(node, (
+                    "math.gcd is admitted for exactly two ints "
+                    "(Python 3.9+ gcd is *args) — pass two integers, or "
+                    "keep this call behind a later `#@ extern`"
+                ))
+            for a in args:
+                if self._eff_type(a) != "int":
+                    raise _err(node, "math.gcd needs int operands")
+            return f"{py}({self._deopt(args[0])}, {self._deopt(args[1])})"
+        if len(args) != 1:
+            raise _err(node, (
+                f"math.{canon} is admitted for one non-negative int — "
+                f"drop extra arguments, or keep this call behind a later "
+                "`#@ extern`"
+            ))
+        if self._eff_type(args[0]) != "int":
+            raise _err(node, f"math.{canon} needs an int operand")
+        return f"{py}({self._deopt(args[0])})"
+
     def _call(self, node: ast.Call) -> str:
+        math = self._admitted_math_canon(node)
+        if math is not None:
+            return self._emit_math(math, node)
+        self._reject_other_math(node)
         func = node.func
         if isinstance(func, ast.Attribute):
             return self._str_method(node, func)
@@ -2627,6 +2748,147 @@ def _module_shadow_check(module: ast.Module) -> None:
     scan(module.body)
 
 
+_NESTED_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _walk_skip_def_bodies(node: ast.AST):
+    """Module-visible nodes: yield nested defs/classes but do not enter them."""
+    yield node
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, _NESTED_SCOPE):
+            yield child
+            continue
+        yield from _walk_skip_def_bodies(child)
+
+
+def _alias_copy_from(target: ast.expr, value: ast.expr, aliases: set[str]) -> list[str]:
+    """Names in `target` that this assignment binds to a math-module alias."""
+    if isinstance(target, ast.Name) and isinstance(value, ast.Name) \
+            and value.id in aliases:
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)) \
+            and isinstance(value, (ast.Tuple, ast.List)) \
+            and len(target.elts) == len(value.elts) \
+            and not any(isinstance(e, ast.Starred) for e in target.elts):
+        names: list[str] = []
+        for t, v in zip(target.elts, value.elts):
+            names.extend(_alias_copy_from(t, v, aliases))
+        return names
+    return []
+
+
+def _collect_math_imports(
+    module: ast.Module,
+) -> tuple[dict[str, str], frozenset[str], dict[str, str]]:
+    """Module-level `math` bindings the encoder uses to resolve calls.
+
+    `math_names` maps a local name to `{gcd,factorial,isqrt}`; `math_aliases`
+    is the set of names bound to the `math` module itself; `math_other` maps
+    a local name to any other imported `math` attribute (for diagnostics).
+    Only unconditional top-level imports bind — a nested `if`/`for`/`try`
+    import is not guaranteed to run, and a later module-level Store, Del,
+    attribute mutation (`math.gcd = …` / `del math.gcd`), or wildcard
+    import, or an assignment that aliases the module (`m = math`) then
+    mutates through the copy (`m.gcd = …`) may replace the math meaning.
+    Recording those would lower
+    `PyGcd`/`PyFact`/`PyIsqrt` for CPython behavior the source does not have.
+    Function bodies are out of scope — only module-level imports resolve.
+    """
+    math_names: dict[str, str] = {}
+    aliases: set[str] = set()
+    math_other: dict[str, str] = {}
+
+    def unbind(name: str) -> None:
+        math_names.pop(name, None)
+        aliases.discard(name)
+        math_other.pop(name, None)
+
+    def unbind_all() -> None:
+        math_names.clear()
+        aliases.clear()
+        math_other.clear()
+
+    def drop_aliases() -> None:
+        # Attribute mutation through any alias is visible on every name
+        # bound to the same math module object (`m = math`; `m.gcd = …`
+        # replaces `math.gcd`). Drop the whole alias set; `from math
+        # import gcd` snapshots the function and stays in math_names.
+        aliases.clear()
+
+    def alias_copy_targets(stmt: ast.stmt) -> list[str]:
+        """Names this statement binds to an existing math-module alias."""
+        value: ast.expr | None = None
+        targets: list[ast.expr] = []
+        if isinstance(stmt, ast.Assign):
+            value, targets = stmt.value, list(stmt.targets)
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            value, targets = stmt.value, [stmt.target]
+        if value is None:
+            return []
+        names: list[str] = []
+        for t in targets:
+            names.extend(_alias_copy_from(t, value, aliases))
+        return names
+
+    def take(stmt: ast.stmt) -> None:
+        match stmt:
+            case ast.Import(names=alist):
+                for a in alist:
+                    local = a.asname or a.name.split(".")[0]
+                    unbind(local)
+                    if a.name == "math":
+                        aliases.add(local)
+            case ast.ImportFrom(names=alist) as im:
+                for a in alist:
+                    if a.name == "*":
+                        unbind_all()
+                        continue
+                    local = a.asname or a.name
+                    unbind(local)
+                    if im.module == "math" and not im.level:
+                        if a.name in _ADMITTED_MATH:
+                            math_names[local] = a.name
+                        else:
+                            math_other[local] = a.name
+
+    def drop_module_binds(stmt: ast.stmt) -> None:
+        copies = alias_copy_targets(stmt)
+        for n in _walk_skip_def_bodies(stmt):
+            if isinstance(n, _NESTED_SCOPE):
+                unbind(n.name)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                for a in n.names:
+                    if a.name == "*":
+                        unbind_all()
+                    else:
+                        unbind((a.asname or a.name).split(".")[0])
+            elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                unbind(n.id)
+            elif isinstance(n, ast.Attribute) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                # Mutation through any receiver can be an untracked
+                # alias of the math module (`m, _ = math, 0`; `m.gcd = …`).
+                drop_aliases()
+                if isinstance(n.value, ast.Name):
+                    unbind(n.value.id)
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                unbind(n.name)
+            elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
+                unbind(n.name)
+            elif isinstance(n, ast.MatchMapping) and n.rest:
+                unbind(n.rest)
+        for name in copies:
+            aliases.add(name)
+
+    for stmt in module.body:
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            take(stmt)
+        elif isinstance(stmt, _NESTED_SCOPE):
+            unbind(stmt.name)
+        else:
+            drop_module_binds(stmt)
+    return math_names, frozenset(aliases), math_other
+
+
 def encode_module(
     source: str,
     specs: ModuleSpecs,
@@ -2638,6 +2900,7 @@ def encode_module(
         raise EncodeError(f"spec error: {first.error}", first.line)
     module = ast.parse(source)
     _module_shadow_check(module)
+    math_names, math_aliases, math_other = _collect_math_imports(module)
     all_defs = [n for n in ast.walk(module) if isinstance(n, ast.FunctionDef)]
     seen_names: dict[str, int] = {}
     for fn in all_defs:
@@ -2670,7 +2933,11 @@ def encode_module(
         node = functions.get((spec.name, spec.lineno))
         if node is None:
             raise EncodeError(f"cannot locate function {spec.name!r}", spec.lineno)
-        enc = _MethodEncoder(node, spec, proof_lemmas, source_lines=source.split("\n"))
+        enc = _MethodEncoder(
+            node, spec, proof_lemmas, source_lines=source.split("\n"),
+            math_names=math_names, math_aliases=math_aliases,
+            math_other=math_other,
+        )
         enc.encode()
         offset = len(lines)
         lines.extend(enc.lines)

@@ -540,6 +540,7 @@ def test_preamble_names_are_exactly_the_globally_visible_declarations():
     assert PREAMBLE_NAMES == {
         "PyMod", "PyFloorDiv", "PyMin", "PyMax", "PyAbs", "PyIndex",
         "PySlice", "PySeqMax", "PySeqMin", "PySum", "PyFlatten", "PyPow",
+        "PyGcd", "PyFact", "PyIsqrt",
         "PyDigit", "PyNatToStr", "PyIntToStr", "PyIsDigits", "PyIsIntStr",
         "PyDigitsToNat", "PyStrToInt",
         "PyInsert", "PySorted",
@@ -1933,99 +1934,259 @@ def test_fstring_format_spec_rejected():
     )
 
 
-def test_str_int_lowers_to_pyinttostr():
-    dfy = _encode(
-        "#@ ensures result == str(n)\n"
-        "def show(n: int) -> str:\n"
-        "    return str(n)\n"
-    )
-    assert "PyIntToStr(n)" in dfy
-    assert "returns (result: string)" in dfy
+# --- small math subset (gcd / factorial / isqrt) --------------------------------
 
 
-def test_int_str_lowers_to_pystrtoint():
-    dfy = _encode(
-        "#@ requires s == \"12\"\n"
-        "#@ ensures result == int(s)\n"
-        "def parse(s: str) -> int:\n"
-        "    return int(s)\n"
-    )
-    assert "PyStrToInt(s)" in dfy
-    assert "returns (result: int)" in dfy
-
-
-def test_str_of_bool_rejected():
-    _expect_encode_error(
-        "#@ ensures len(result) >= 0\n"
-        "def f(flag: bool) -> str:\n"
-        "    return str(flag)\n",
-        "bool is a disjoint sort",
-    )
-
-
-def test_str_of_list_rejected():
-    _expect_encode_error(
-        "#@ ensures len(result) >= 0\n"
-        "def f(xs: list[int]) -> str:\n"
-        "    return str(xs)\n",
-        "str(int) only",
-    )
-
-
-def test_int_of_int_rejected():
-    _expect_encode_error(
-        "#@ ensures result == n\n"
-        "def f(n: int) -> int:\n"
-        "    return int(n)\n",
-        "parses a digit string",
-    )
-
-
-def test_int_with_base_rejected():
-    _expect_encode_error(
+def test_math_gcd_lowers_to_pygcd():
+    src = (
+        "import math\n"
+        "\n"
         "#@ ensures result >= 0\n"
-        "def f(s: str) -> int:\n"
-        "    return int(s, 10)\n",
-        "parses a digit string",
+        "def g(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
     )
+    dfy = _encode(src)
+    assert "PyGcd(a, b)" in dfy
+    assert "import math" not in dfy  # recorded, not emitted
 
 
-def test_int_keyword_rejected():
-    _expect_encode_error(
-        "#@ ensures result >= 0\n"
-        "def f(s: str) -> int:\n"
-        "    return int(s, base=10)\n",
-        "keyword arguments",
-    )
-
-
-def test_int_illformed_literal_rejected():
-    for lit in ('"+12"', '" 1"', '"1_2"', '""', '"-"'):
-        _expect_encode_error(
-            "#@ ensures result >= 0\n"
-            f"def f() -> int:\n"
-            f"    return int({lit})\n",
-            "strip whitespace / drop `_`/`+`",
-        )
-
-
-def test_int_annotation_is_not_shadowing():
-    # `n: int` is a type, not a binding of the builtin.
-    dfy = _encode(
-        "#@ ensures result == n\n"
+def test_from_math_import_factorial_lowers():
+    src = (
+        "from math import factorial\n"
+        "\n"
+        "#@ requires 0 <= n <= 12\n"
+        "#@ ensures result >= 1\n"
         "def f(n: int) -> int:\n"
-        "    return n\n"
+        "    return factorial(n)\n"
     )
-    assert "method f(n: int) returns (result: int)" in dfy
+    dfy = _encode(src)
+    assert "PyFact(n)" in dfy
 
 
-def test_fstring_int_interpolation_still_rejected():
-    _expect_encode_error(
-        "#@ ensures len(result) >= 0\n"
-        "def f(n: int) -> str:\n"
-        "    return f\"{n}\"\n",
-        "interpolating int",
+def test_math_aliases_resolve():
+    src = (
+        "import math as M\n"
+        "from math import gcd as g, isqrt as root\n"
+        "\n"
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int, n: int) -> int:\n"
+        "    return M.gcd(a, b) + g(a, b) + root(n)\n"
     )
+    dfy = _encode(src)
+    assert "PyGcd(a, b)" in dfy
+    assert "PyIsqrt(n)" in dfy
+    method = dfy.split("method f(")[1]
+    assert method.count("PyGcd(a, b)") == 2
+
+
+def test_math_sqrt_rejected_as_ieee_float():
+    src = (
+        "import math\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(x: int) -> int:\n"
+        "    return math.sqrt(x)\n"
+    )
+    _expect_encode_error(src, "IEEE float is outside the fragment")
+
+
+def test_from_math_import_sqrt_rejected_as_ieee_float():
+    src = (
+        "from math import sqrt\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(x: int) -> int:\n"
+        "    return sqrt(x)\n"
+    )
+    _expect_encode_error(src, "IEEE float is outside the fragment")
+
+
+def test_math_gcd_three_args_rejected():
+    src = (
+        "import math\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int, c: int) -> int:\n"
+        "    return math.gcd(a, b, c)\n"
+    )
+    _expect_encode_error(src, "exactly two ints")
+
+
+def test_unimported_gcd_is_outside():
+    src = (
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "outside the slice")
+
+
+def test_from_math_import_gcd_does_not_shadow_as_builtin():
+    # gcd must NOT be in _ENCODED_BUILTINS: that set rejects `from math
+    # import prod as sum`. Importing gcd has to resolve, not bounce.
+    src = (
+        "from math import gcd\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    dfy = _encode(src)
+    assert "PyGcd(a, b)" in dfy
+
+
+def test_conditional_math_import_does_not_lower():
+    # A nested import is not guaranteed to run; lowering gcd to PyGcd
+    # would verify CPython behavior the source does not have.
+    src = (
+        "if True:\n"
+        "    from math import gcd\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "outside the slice")
+
+
+def test_rebound_math_import_does_not_lower():
+    # A later module-level Store replaces the imported function; the
+    # call is no longer math.gcd.
+    src = (
+        "from math import gcd\n"
+        "gcd = 0\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "outside the slice")
+
+
+def test_deleted_math_import_does_not_lower():
+    # `del gcd` unbinds the name; CPython raises NameError, so lowering
+    # to PyGcd would verify a result the source cannot produce.
+    src = (
+        "from math import gcd\n"
+        "del gcd\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "outside the slice")
+
+
+def test_math_attribute_assignment_does_not_lower():
+    # `math.gcd = …` replaces the function on the module; lowering the
+    # later call to PyGcd would verify CPython's replacement instead.
+    src = (
+        "import math\n"
+        "math.gcd = abs\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "method calls are outside")
+
+
+def test_math_attribute_deletion_does_not_lower():
+    src = (
+        "import math\n"
+        "del math.gcd\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "method calls are outside")
+
+
+def test_math_name_copy_still_lowers():
+    src = (
+        "import math\n"
+        "m = math\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return m.gcd(a, b) + math.gcd(a, b)\n"
+    )
+    dfy = _encode(src)
+    method = dfy.split("method f(")[1]
+    assert method.count("PyGcd(a, b)") == 2
+
+
+def test_math_alias_copy_attribute_assignment_does_not_lower():
+    # `m = math; m.gcd = …` mutates the shared module object, so
+    # `math.gcd` is the replacement too.
+    src = (
+        "import math\n"
+        "m = math\n"
+        "m.gcd = abs\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "method calls are outside")
+
+
+def test_second_import_alias_attribute_assignment_does_not_lower():
+    src = (
+        "import math\n"
+        "import math as M\n"
+        "M.gcd = abs\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "method calls are outside")
+
+
+def test_from_import_survives_alias_module_mutation():
+    # `from math import gcd` snapshots the function; mutating the module
+    # through an alias does not rebind the local.
+    src = (
+        "from math import gcd\n"
+        "import math\n"
+        "m = math\n"
+        "m.gcd = abs\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    assert "PyGcd(a, b)" in _encode(src)
+
+
+def test_unpacked_math_alias_attribute_assignment_does_not_lower():
+    src = (
+        "import math\n"
+        "m, other = math, 0\n"
+        "m.gcd = abs\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "method calls are outside")
+
+
+def test_wildcard_import_does_not_keep_math_binding():
+    # `from other import *` may rebind gcd; keeping the math table entry
+    # would lower CPython's replacement to PyGcd.
+    src = (
+        "from math import gcd\n"
+        "from other import *\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "outside the slice")
 
 
 # --- str methods (join / split / find / startswith / replace / strip) ------
@@ -2247,3 +2408,92 @@ def test_parameter_shadowing_sorted_rejected():
     )
     with pytest.raises(EncodeError, match="shadows a builtin"):
         _encode(src)
+
+
+def test_str_int_lowers_to_pyinttostr():
+    dfy = _encode(
+        "#@ ensures result == str(n)\n"
+        "def show(n: int) -> str:\n"
+        "    return str(n)\n"
+    )
+    assert "PyIntToStr(n)" in dfy
+    assert "returns (result: string)" in dfy
+
+def test_int_str_lowers_to_pystrtoint():
+    dfy = _encode(
+        "#@ requires s == \"12\"\n"
+        "#@ ensures result == int(s)\n"
+        "def parse(s: str) -> int:\n"
+        "    return int(s)\n"
+    )
+    assert "PyStrToInt(s)" in dfy
+    assert "returns (result: int)" in dfy
+
+def test_str_of_bool_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(flag: bool) -> str:\n"
+        "    return str(flag)\n",
+        "bool is a disjoint sort",
+    )
+
+def test_str_of_list_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(xs: list[int]) -> str:\n"
+        "    return str(xs)\n",
+        "str(int) only",
+    )
+
+def test_int_of_int_rejected():
+    _expect_encode_error(
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    return int(n)\n",
+        "parses a digit string",
+    )
+
+def test_int_with_base_rejected():
+    _expect_encode_error(
+        "#@ ensures result >= 0\n"
+        "def f(s: str) -> int:\n"
+        "    return int(s, 10)\n",
+        "parses a digit string",
+    )
+
+def test_int_keyword_rejected():
+    _expect_encode_error(
+        "#@ ensures result >= 0\n"
+        "def f(s: str) -> int:\n"
+        "    return int(s, base=10)\n",
+        "keyword arguments",
+    )
+
+def test_int_illformed_literal_rejected():
+    for lit in ('"+12"', '" 1"', '"1_2"', '""', '"-"'):
+        _expect_encode_error(
+            "#@ ensures result >= 0\n"
+            f"def f() -> int:\n"
+            f"    return int({lit})\n",
+            "strip whitespace / drop `_`/`+`",
+        )
+
+def test_int_annotation_is_not_shadowing():
+    # `n: int` is a type, not a binding of the builtin.
+    dfy = _encode(
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    return n\n"
+    )
+    assert "method f(n: int) returns (result: int)" in dfy
+
+def test_fstring_int_interpolation_still_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(n: int) -> str:\n"
+        "    return f\"{n}\"\n",
+        "interpolating int",
+    )
+
+
+# --- str methods (join / split / find / startswith / replace / strip) ------

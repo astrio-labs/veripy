@@ -91,7 +91,10 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 - [x] `str(int)` / `int(str)` with parse VCs
       (one positional arg; bool is a disjoint sort; f-string int
       interpolation stays rejected — Lean has no strings)
-- [ ] A small `math` subset
+- [x] A small `math` subset
+  ```
+  (`math.gcd` / `factorial` / `isqrt` on ints; IEEE `float` still vetoed)
+  ```
 
 ### Data a product actually uses
 

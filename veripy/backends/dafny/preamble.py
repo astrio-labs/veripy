@@ -14,8 +14,8 @@ PREAMBLE_VERSION = "0.7"
 
 PREAMBLE = """\
 // VeriPy Dafny preamble v0.7 -- Python-exact arithmetic, indexing,
-// slicing, Optionals, folds, powers, int/str parse, outcomes, filtered
-// comprehensions, sorted and ASCII-faithful str methods (ARCHITECTURE §7.1, §7 catalog).
+// slicing, Optionals, folds, powers, gcd/factorial/isqrt, int/str parse,
+// outcomes, filtered comprehensions, sorted and ASCII-faithful str methods (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int
   requires b != 0
@@ -96,6 +96,36 @@ function PyPow(b: int, e: int): int
   decreases e
 {
   if e == 0 then 1 else b * PyPow(b, e - 1)
+}
+
+// math.gcd: nonnegative GCD of two ints; gcd(0, 0) == 0; gcd(-a, b) == gcd(a, b).
+// Euclidean % on the absolute values; decreases |b|.
+function PyGcd(a: int, b: int): int
+  ensures PyGcd(a, b) >= 0
+  decreases PyAbs(b)
+{
+  if b == 0 then PyAbs(a) else PyGcd(PyAbs(b), PyAbs(a) % PyAbs(b))
+}
+
+// math.factorial: 0! == 1; requires n >= 0 is Python's ValueError domain.
+function PyFact(n: int): int
+  requires n >= 0
+  decreases n
+{
+  if n == 0 then 1 else n * PyFact(n - 1)
+}
+
+// math.isqrt: floor(sqrt(n)). Logarithmic via isqrt(n) = 2*isqrt(n/4) or +1
+// — never recurse n times (Hypothesis ints would blow the stack).
+function PyIsqrt(n: int): int
+  requires n >= 0
+  decreases n
+{
+  if n <= 1 then n
+  else
+    var small := PyIsqrt(n / 4) * 2;
+    var large := small + 1;
+    if large * large > n then small else large
 }
 
 // str(n) / int(s). Recursion is O(digits). The parse domain is tight:

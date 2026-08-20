@@ -355,31 +355,42 @@ def test_fstring_greet_verifies(tmp_path, capsys):
     assert "VERIFIED" in capsys.readouterr().out
 
 
-def test_str_int_literals_verify(tmp_path, capsys):
-    src = tmp_path / "parse.py"
+def test_math_gcd_nonnegative_verifies(tmp_path, capsys):
+    src = tmp_path / "mgcd.py"
     src.write_text(
-        "#@ ensures result == \"0\"\n"
-        "def zero_str() -> str:\n"
-        "    return str(0)\n"
+        "import math\n"
         "\n"
-        "#@ ensures result == \"-7\"\n"
-        "def neg_str() -> str:\n"
-        "    return str(-7)\n"
-        "\n"
-        "#@ ensures result == 12\n"
-        "def parse_twelve() -> int:\n"
-        "    return int(\"12\")\n"
-        "\n"
-        "#@ ensures result == 8\n"
-        "def parse_leading_zero() -> int:\n"
-        "    return int(\"08\")\n"
-        "\n"
-        "#@ requires s == \"12\"\n"
-        "#@ ensures result == int(s)\n"
-        "def parse_guarded(s: str) -> int:\n"
-        "    return int(s)\n"
+        "#@ ensures result >= 0\n"
+        "def g(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
     )
-    assert cmd_verify([src], tmp_path / "out", time_limit=60, types=False) == 0
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_math_factorial_five_verifies(tmp_path, capsys):
+    src = tmp_path / "fact.py"
+    src.write_text(
+        "from math import factorial\n"
+        "\n"
+        "#@ ensures result == 120\n"
+        "def f() -> int:\n"
+        "    return factorial(5)\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_math_isqrt_eight_verifies(tmp_path, capsys):
+    src = tmp_path / "isq.py"
+    src.write_text(
+        "import math\n"
+        "\n"
+        "#@ ensures result == 2\n"
+        "def f() -> int:\n"
+        "    return math.isqrt(8)\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out
 
 
@@ -418,4 +429,32 @@ def test_sorted_identity_verifies(tmp_path, capsys):
         "    return sorted(xs)\n"
     )
     assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_str_int_literals_verify(tmp_path, capsys):
+    src = tmp_path / "parse.py"
+    src.write_text(
+        "#@ ensures result == \"0\"\n"
+        "def zero_str() -> str:\n"
+        "    return str(0)\n"
+        "\n"
+        "#@ ensures result == \"-7\"\n"
+        "def neg_str() -> str:\n"
+        "    return str(-7)\n"
+        "\n"
+        "#@ ensures result == 12\n"
+        "def parse_twelve() -> int:\n"
+        "    return int(\"12\")\n"
+        "\n"
+        "#@ ensures result == 8\n"
+        "def parse_leading_zero() -> int:\n"
+        "    return int(\"08\")\n"
+        "\n"
+        "#@ requires s == \"12\"\n"
+        "#@ ensures result == int(s)\n"
+        "def parse_guarded(s: str) -> int:\n"
+        "    return int(s)\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=60, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out

@@ -384,24 +384,25 @@ def test_fstring_translation_faithful(tmp_path):
     ]
 
 
-def test_str_int_roundtrip_translation_faithful(tmp_path):
-    src = tmp_path / "parse.py"
+def test_math_subset_translation_faithful(tmp_path):
+    src = tmp_path / "mathsub.py"
     src.write_text(
-        "#@ ensures result == str(n)\n"
-        "def show(n: int) -> str:\n"
-        "    return str(n)\n"
+        "import math\n"
+        "from math import factorial, isqrt\n"
         "\n"
-        "#@ ensures result == n\n"
-        "def roundtrip(n: int) -> int:\n"
-        "    return int(str(n))\n"
+        "#@ ensures result >= 0\n"
+        "def g(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
         "\n"
-        "#@ ensures result == 8\n"
-        "def parse_eight() -> int:\n"
-        "    return int(\"08\")\n"
+        "#@ requires 0 <= n <= 12\n"
+        "#@ ensures result >= 1\n"
+        "def fact(n: int) -> int:\n"
+        "    return factorial(n)\n"
         "\n"
-        "#@ ensures result == 0\n"
-        "def parse_neg_zero() -> int:\n"
-        "    return int(\"-0\")\n"
+        "#@ requires 0 <= n <= 1000000\n"
+        "#@ ensures result >= 0\n"
+        "def root(n: int) -> int:\n"
+        "    return isqrt(n)\n"
     )
     result = difftest_file(src, tmp_path / "out", examples=80)
     assert result.error is None, result.error
@@ -456,6 +457,32 @@ def test_sorted_translation_faithful(tmp_path):
         "#@ ensures result == sorted(xs)\n"
         "def sort_ints(xs: list[int]) -> list[int]:\n"
         "    return sorted(xs)\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]
+
+
+def test_str_int_roundtrip_translation_faithful(tmp_path):
+    src = tmp_path / "parse.py"
+    src.write_text(
+        "#@ ensures result == str(n)\n"
+        "def show(n: int) -> str:\n"
+        "    return str(n)\n"
+        "\n"
+        "#@ ensures result == n\n"
+        "def roundtrip(n: int) -> int:\n"
+        "    return int(str(n))\n"
+        "\n"
+        "#@ ensures result == 8\n"
+        "def parse_eight() -> int:\n"
+        "    return int(\"08\")\n"
+        "\n"
+        "#@ ensures result == 0\n"
+        "def parse_neg_zero() -> int:\n"
+        "    return int(\"-0\")\n"
     )
     result = difftest_file(src, tmp_path / "out", examples=80)
     assert result.error is None, result.error

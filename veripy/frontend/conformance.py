@@ -110,6 +110,28 @@ MODELED_METHODS = frozenset({
     "removesuffix",
 })
 
+# math.gcd / factorial / isqrt (imported, exact arity). Other math.* stay
+# U-METHOD, except known IEEE-float names which fire T-FLOAT instead.
+_ADMITTED_MATH = frozenset({"gcd", "factorial", "isqrt"})
+_MATH_FLOAT = frozenset({
+    "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "cbrt",
+    "ceil", "copysign", "cos", "cosh", "degrees", "dist", "e", "erf",
+    "erfc", "exp", "exp2", "expm1", "fabs", "floor", "fmod", "frexp",
+    "fsum", "gamma", "hypot", "inf", "isclose", "isfinite", "isinf",
+    "isnan", "ldexp", "lgamma", "log", "log10", "log1p", "log2", "modf",
+    "nan", "nextafter", "pi", "pow", "radians", "remainder", "sin",
+    "sinh", "sqrt", "tan", "tanh", "tau", "trunc", "ulp",
+})
+
+
+def _admitted_math_arity(canon: str, node: ast.Call) -> bool:
+    """True when this call matches the admitted (two-int gcd / one-int) shape."""
+    if node.keywords:
+        return False
+    if canon == "gcd":
+        return len(node.args) == 2
+    return len(node.args) == 1
+
 # Modeled methods that mutate their receiver — used for the global-write trap.
 MUTATING_METHODS = frozenset({
     "append", "extend", "insert", "pop", "remove", "sort", "reverse", "clear",
@@ -168,12 +190,15 @@ class ModuleScope:
     # local name -> imported module root (e.g. `import importlib as il` maps
     # "il" -> "importlib"; plain `import sys` maps "sys" -> "sys").
     module_roots: dict[str, str]
+    # local name -> {gcd,factorial,isqrt} for `from math import …`.
+    math_names: dict[str, str]
 
 
 def _collect_module_scope(module: ast.Module) -> tuple[ModuleScope, list[Fire]]:
     names: set[str] = set()
     forbidden: dict[str, str] = {}
     module_roots: dict[str, str] = {}
+    math_names: dict[str, str] = {}
     file_fires: list[Fire] = []
 
     def collect(node: ast.AST) -> None:
@@ -214,10 +239,14 @@ def _collect_module_scope(module: ast.Module) -> tuple[ModuleScope, list[Fire]]:
                         forbidden[local] = "F-EVAL"
                     elif root == "builtins" and alias.name in _REFLECTION_INTROSPECT:
                         forbidden[local] = "F-REFL"
+                    elif root == "math" and alias.name in _ADMITTED_MATH:
+                        math_names[local] = alias.name
+                    elif root == "math" and alias.name in _MATH_FLOAT:
+                        forbidden[local] = "T-FLOAT"
             collect(child)
 
     collect(module)
-    return ModuleScope(frozenset(names), forbidden, module_roots), file_fires
+    return ModuleScope(frozenset(names), forbidden, module_roots, math_names), file_fires
 
 
 def _ignore_comment_lines(source: str) -> set[int]:
@@ -999,6 +1028,8 @@ class _FunctionScanner:
                 self.fire("F-REFL", node, detail=f"builtins.{attr}")
             elif root == "builtins" and attr == "float":
                 self.fire("T-FLOAT", node, detail="builtins.float")
+            elif root == "math" and attr in _MATH_FLOAT:
+                self.fire("T-FLOAT", node, detail=f"math.{attr}")
         if isinstance(node.ctx, ast.Store):
             self.fire("X-ATTR-STORE", node, detail=attr)
             if isinstance(base, ast.Name) and self._is_module_level(base.id, locals_):
@@ -1044,6 +1075,9 @@ class _FunctionScanner:
                 self.fire("F-DYNIMPORT", node)
             elif name in self.scope.forbidden:
                 self.fire(self.scope.forbidden[name], node, detail=name)
+            elif name in self.scope.math_names:
+                if not _admitted_math_arity(self.scope.math_names[name], node):
+                    self.fire("U-CALL", node, detail=name)
             elif name in ("int", "str") and _str_int_still_outside(node, self.ann_types):
                 self.fire("U-CALL", node, detail=name)
             elif name == "sorted" and _sorted_still_outside(
@@ -1074,6 +1108,11 @@ class _FunctionScanner:
             # F-DYNIMPORT/F-CAST on the attribute itself is fired by
             # _scan_attribute during the same walk; avoid doubling up here.
             if base_forbidden:
+                return
+            if root == "math" and func.attr in _MATH_FLOAT:
+                return  # T-FLOAT already fired on the attribute
+            if (root == "math" and func.attr in _ADMITTED_MATH
+                    and _admitted_math_arity(func.attr, node)):
                 return
             if (
                 func.attr in MUTATING_METHODS
