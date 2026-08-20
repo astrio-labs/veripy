@@ -2373,13 +2373,23 @@ def test_lean_rejects_fstring_in_spec_loudly():
         _encode(src)
 
 
-def test_lean_rejects_sorted_loudly():
+def test_lean_rejects_str_int_loudly():
     src = (
-        "#@ ensures result == sorted(xs)\n"
-        "def f(xs: list[int]) -> list[int]:\n"
-        "    return sorted(xs)\n"
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    return int(str(n))\n"
     )
-    with pytest.raises(EncodeError, match="sorted is outside the Lean slice"):
+    with pytest.raises(EncodeError, match="str\\(int\\)/int\\(str\\) are outside the Lean slice"):
+        _encode(src)
+
+
+def test_lean_rejects_int_str_in_spec_loudly():
+    src = (
+        "#@ ensures result == int(\"12\")\n"
+        "def f(n: int) -> int:\n"
+        "    return 12\n"
+    )
+    with pytest.raises(EncodeError, match="str\\(int\\)/int\\(str\\) are outside the Lean slice"):
         _encode(src)
 
 
@@ -2400,4 +2410,14 @@ def test_lean_rejects_str_methods_in_spec_loudly():
         "    return 0\n"
     )
     with pytest.raises(EncodeError, match="str methods are outside the Lean slice"):
+        _encode(src)
+
+
+def test_lean_rejects_sorted_loudly():
+    src = (
+        "#@ ensures result == sorted(xs)\n"
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs)\n"
+    )
+    with pytest.raises(EncodeError, match="sorted is outside the Lean slice"):
         _encode(src)

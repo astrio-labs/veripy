@@ -384,12 +384,24 @@ def test_fstring_translation_faithful(tmp_path):
     ]
 
 
-def test_sorted_translation_faithful(tmp_path):
-    src = tmp_path / "sort_ints.py"
+def test_str_int_roundtrip_translation_faithful(tmp_path):
+    src = tmp_path / "parse.py"
     src.write_text(
-        "#@ ensures result == sorted(xs)\n"
-        "def sort_ints(xs: list[int]) -> list[int]:\n"
-        "    return sorted(xs)\n"
+        "#@ ensures result == str(n)\n"
+        "def show(n: int) -> str:\n"
+        "    return str(n)\n"
+        "\n"
+        "#@ ensures result == n\n"
+        "def roundtrip(n: int) -> int:\n"
+        "    return int(str(n))\n"
+        "\n"
+        "#@ ensures result == 8\n"
+        "def parse_eight() -> int:\n"
+        "    return int(\"08\")\n"
+        "\n"
+        "#@ ensures result == 0\n"
+        "def parse_neg_zero() -> int:\n"
+        "    return int(\"-0\")\n"
     )
     result = difftest_file(src, tmp_path / "out", examples=80)
     assert result.error is None, result.error
@@ -430,6 +442,20 @@ def test_str_methods_translation_faithful(tmp_path):
         "#@ ensures result == result\n"
         "def trimmed(s: str, chars: str) -> str:\n"
         "    return s.strip(chars)\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]
+
+
+def test_sorted_translation_faithful(tmp_path):
+    src = tmp_path / "sort_ints.py"
+    src.write_text(
+        "#@ ensures result == sorted(xs)\n"
+        "def sort_ints(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs)\n"
     )
     result = difftest_file(src, tmp_path / "out", examples=80)
     assert result.error is None, result.error

@@ -471,6 +471,42 @@ def _assert_test_still_outside(test: ast.expr, anns: dict[str, str],
     return _looks_int(test, anns, inners)
 
 
+def _is_admitted_int_str_literal(value: object) -> bool:
+    """Optional ASCII minus, then nonempty ASCII digits — the encoder's
+    parse domain. Used so a literal `int("12")` does not fire."""
+    if not isinstance(value, str):
+        return False
+    body = value[1:] if value.startswith("-") else value
+    return bool(body) and all("0" <= c <= "9" for c in body)
+
+
+def _str_int_still_outside(node: ast.Call, anns: dict[str, str]) -> bool:
+    """True when `str()`/`int()` is outside the parse-VC slice.
+
+    Admitted: one positional arg, no keywords, operand annotated `int`
+    (for str) or `str` (for int). Unannotated operands stay silent —
+    the survey has no inferencer. Keywords, wrong arity, and a
+    differently annotated operand fire U-CALL."""
+    if not isinstance(node.func, ast.Name) or node.func.id not in ("str", "int"):
+        return False
+    name = node.func.id
+    if node.keywords or len(node.args) != 1:
+        return True
+    arg = node.args[0]
+    if isinstance(arg, ast.Name):
+        t = anns.get(arg.id)
+        if t is None:
+            return False
+        if name == "str":
+            return t != "int"
+        return t != "str"
+    if isinstance(arg, ast.Constant):
+        if name == "str":
+            return type(arg.value) is not int  # bool is a disjoint sort
+        return not _is_admitted_int_str_literal(arg.value)
+    return False
+
+
 def _fstring_still_outside(node: ast.JoinedStr,
                            anns: dict[str, str] | None = None) -> bool:
     """True for f-strings the encoder still rejects.
@@ -1008,6 +1044,8 @@ class _FunctionScanner:
                 self.fire("F-DYNIMPORT", node)
             elif name in self.scope.forbidden:
                 self.fire(self.scope.forbidden[name], node, detail=name)
+            elif name in ("int", "str") and _str_int_still_outside(node, self.ann_types):
+                self.fire("U-CALL", node, detail=name)
             elif name == "sorted" and _sorted_still_outside(
                     node, self.ann_types, self.ann_inners,
                     self.ann_inner_chains):

@@ -197,87 +197,39 @@ def test_bare_int_fstring_still_fires():
     assert "T-FSTRING" in _fires(src)
 
 
-def test_sorted_list_int_does_not_fire():
-    src = (
-        "def f(xs: list[int]) -> list[int]:\n"
-        "    return sorted(xs)\n"
-    )
+def test_str_int_does_not_fire():
+    src = "def f(n: int) -> str:\n    return str(n)\n"
     assert "U-CALL" not in _fires(src)
 
 
-def test_sorted_reverse_still_fires():
-    src = (
-        "def f(xs: list[int]) -> list[int]:\n"
-        "    return sorted(xs, reverse=True)\n"
-    )
-    report = survey_source(src)
-    (fn,) = report.functions
-    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
-
-
-def test_sorted_str_literal_still_fires():
-    # Encoder rejects sorted("abc"); a silent survey would count it accepted.
-    src = (
-        "def f() -> list[str]:\n"
-        "    return sorted('abc')\n"
-    )
-    report = survey_source(src)
-    (fn,) = report.functions
-    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
-    assert not fn.accepted
-
-
-def test_sorted_list_str_literal_still_fires():
-    src = (
-        "def f() -> list[str]:\n"
-        "    return sorted(['b', 'a'])\n"
-    )
-    report = survey_source(src)
-    (fn,) = report.functions
-    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
-    assert not fn.accepted
-
-
-def test_sorted_list_int_literal_does_not_fire():
-    # Encoder infers seq<int> for a homogeneous int list literal.
-    src = (
-        "def f() -> list[int]:\n"
-        "    return sorted([3, 1, 2])\n"
-    )
+def test_int_str_does_not_fire():
+    src = "def f(s: str) -> int:\n    return int(s)\n"
     assert "U-CALL" not in _fires(src)
 
 
-def test_sorted_list_int_index_still_fires():
-    # Encoder infers xs[0] as int, not seq<int>.
-    src = (
-        "def f(xs: list[int]) -> list[int]:\n"
-        "    return sorted(xs[0])\n"
-    )
-    report = survey_source(src)
-    (fn,) = report.functions
-    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
-    assert not fn.accepted
+def test_str_bool_still_fires():
+    src = "def f(flag: bool) -> str:\n    return str(flag)\n"
+    assert "U-CALL" in _fires(src)
 
 
-def test_sorted_list_int_slice_does_not_fire():
-    # A slice keeps seq<int>; the encoder admits sorted(xs[1:]).
-    src = (
-        "def f(xs: list[int]) -> list[int]:\n"
-        "    return sorted(xs[1:])\n"
-    )
+def test_int_of_int_still_fires():
+    src = "def f(n: int) -> int:\n    return int(n)\n"
+    assert "U-CALL" in _fires(src)
+
+
+def test_str_keywords_still_fire():
+    src = "def f(n: int) -> str:\n    return str(object=n)\n"
+    assert "U-CALL" in _fires(src)
+
+
+def test_int_base_still_fires():
+    src = "def f(s: str) -> int:\n    return int(s, 10)\n"
+    assert "U-CALL" in _fires(src)
+
+
+def test_unannotated_str_stays_silent():
+    src = "def f(n):\n    return str(n)\n"
     assert "U-CALL" not in _fires(src)
-
-
-def test_sorted_sliced_list_int_index_still_fires():
-    # Slice keeps seq<int>, then index peels to int — encoder rejects.
-    src = (
-        "def f(xs: list[int]) -> list[int]:\n"
-        "    return sorted(xs[1:][0])\n"
-    )
-    report = survey_source(src)
-    (fn,) = report.functions
-    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
-    assert not fn.accepted
 
 
 def test_aggregate_counts():
@@ -875,3 +827,79 @@ def test_str_replace_empty_old_still_fires():
 def test_str_split_empty_sep_still_fires():
     src = "def f(s: str) -> list[str]:\n    return s.split(\"\")\n"
     assert "U-METHOD" in _fires(src)
+
+
+def test_sorted_list_int_does_not_fire():
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs)\n"
+    )
+    assert "U-CALL" not in _fires(src)
+
+def test_sorted_reverse_still_fires():
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs, reverse=True)\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+
+def test_sorted_str_literal_still_fires():
+    # Encoder rejects sorted("abc"); a silent survey would count it accepted.
+    src = (
+        "def f() -> list[str]:\n"
+        "    return sorted('abc')\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
+
+def test_sorted_list_str_literal_still_fires():
+    src = (
+        "def f() -> list[str]:\n"
+        "    return sorted(['b', 'a'])\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
+
+def test_sorted_list_int_literal_does_not_fire():
+    # Encoder infers seq<int> for a homogeneous int list literal.
+    src = (
+        "def f() -> list[int]:\n"
+        "    return sorted([3, 1, 2])\n"
+    )
+    assert "U-CALL" not in _fires(src)
+
+def test_sorted_list_int_index_still_fires():
+    # Encoder infers xs[0] as int, not seq<int>.
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs[0])\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
+
+def test_sorted_list_int_slice_does_not_fire():
+    # A slice keeps seq<int>; the encoder admits sorted(xs[1:]).
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs[1:])\n"
+    )
+    assert "U-CALL" not in _fires(src)
+
+def test_sorted_sliced_list_int_index_still_fires():
+    # Slice keeps seq<int>, then index peels to int — encoder rejects.
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs[1:][0])\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
