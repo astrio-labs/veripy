@@ -2471,6 +2471,19 @@ def _module_shadow_check(module: ast.Module) -> None:
     scan(module.body)
 
 
+_NESTED_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _walk_skip_def_bodies(node: ast.AST):
+    """Module-visible nodes: yield nested defs/classes but do not enter them."""
+    yield node
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, _NESTED_SCOPE):
+            yield child
+            continue
+        yield from _walk_skip_def_bodies(child)
+
+
 def _collect_math_imports(
     module: ast.Module,
 ) -> tuple[dict[str, str], frozenset[str], dict[str, str]]:
@@ -2479,51 +2492,65 @@ def _collect_math_imports(
     `math_names` maps a local name to `{gcd,factorial,isqrt}`; `math_aliases`
     is the set of names bound to the `math` module itself; `math_other` maps
     a local name to any other imported `math` attribute (for diagnostics).
+    Only unconditional top-level imports bind — a nested `if`/`for`/`try`
+    import is not guaranteed to run, and a later module-level Store replaces
+    the math meaning. Recording either would lower `PyGcd`/`PyFact`/`PyIsqrt`
+    for CPython behavior the source does not have.
     Function bodies are out of scope — only module-level imports resolve.
     """
     math_names: dict[str, str] = {}
     aliases: set[str] = set()
     math_other: dict[str, str] = {}
 
+    def unbind(name: str) -> None:
+        math_names.pop(name, None)
+        aliases.discard(name)
+        math_other.pop(name, None)
+
     def take(stmt: ast.stmt) -> None:
         match stmt:
             case ast.Import(names=alist):
                 for a in alist:
+                    local = a.asname or a.name.split(".")[0]
+                    unbind(local)
                     if a.name == "math":
-                        aliases.add(a.asname or "math")
+                        aliases.add(local)
             case ast.ImportFrom(names=alist) as im:
-                if im.module == "math" and not im.level:
-                    for a in alist:
-                        if a.name == "*":
-                            continue
-                        local = a.asname or a.name
+                for a in alist:
+                    if a.name == "*":
+                        continue
+                    local = a.asname or a.name
+                    unbind(local)
+                    if im.module == "math" and not im.level:
                         if a.name in _ADMITTED_MATH:
                             math_names[local] = a.name
                         else:
                             math_other[local] = a.name
 
-    def scan(stmts: list[ast.stmt]) -> None:
-        for stmt in stmts:
-            take(stmt)
-            match stmt:
-                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
-                    continue
-                case ast.For(body=body, orelse=orelse) \
-                        | ast.While(body=body, orelse=orelse) \
-                        | ast.If(body=body, orelse=orelse):
-                    scan(body)
-                    scan(orelse)
-                case ast.With(body=body):
-                    scan(body)
-                case ast.Try(body=body, orelse=orelse, finalbody=finalbody,
-                             handlers=handlers):
-                    scan(body)
-                    scan(orelse)
-                    scan(finalbody)
-                    for h in handlers:
-                        scan(h.body)
+    def drop_module_binds(stmt: ast.stmt) -> None:
+        for n in _walk_skip_def_bodies(stmt):
+            if isinstance(n, _NESTED_SCOPE):
+                unbind(n.name)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                for a in n.names:
+                    if a.name != "*":
+                        unbind((a.asname or a.name).split(".")[0])
+            elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                unbind(n.id)
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                unbind(n.name)
+            elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
+                unbind(n.name)
+            elif isinstance(n, ast.MatchMapping) and n.rest:
+                unbind(n.rest)
 
-    scan(module.body)
+    for stmt in module.body:
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            take(stmt)
+        elif isinstance(stmt, _NESTED_SCOPE):
+            unbind(stmt.name)
+        else:
+            drop_module_binds(stmt)
     return math_names, frozenset(aliases), math_other
 
 

@@ -2028,3 +2028,31 @@ def test_from_math_import_gcd_does_not_shadow_as_builtin():
     )
     dfy = _encode(src)
     assert "PyGcd(a, b)" in dfy
+
+
+def test_conditional_math_import_does_not_lower():
+    # A nested import is not guaranteed to run; lowering gcd to PyGcd
+    # would verify CPython behavior the source does not have.
+    src = (
+        "if True:\n"
+        "    from math import gcd\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "outside the slice")
+
+
+def test_rebound_math_import_does_not_lower():
+    # A later module-level Store replaces the imported function; the
+    # call is no longer math.gcd.
+    src = (
+        "from math import gcd\n"
+        "gcd = 0\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "outside the slice")
