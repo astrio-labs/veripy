@@ -288,3 +288,17 @@ def test_filtered_comp_and_all_verify(tmp_path, capsys):
     )
     assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_foreach_tuple_unpack_verifies(tmp_path, capsys):
+    src = tmp_path / "pairs.py"
+    src.write_text(
+        "#@ ensures result == result\n"
+        "def add_pairs(pairs: list[tuple[int, int]]) -> int:\n"
+        "    s = 0\n"
+        "    for a, b in pairs:\n"
+        "        s = s + a + b\n"
+        "    return s\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out

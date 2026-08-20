@@ -2009,3 +2009,16 @@ def test_lean_rejects_filtered_all_loudly():
     )
     with pytest.raises(EncodeError, match="filtered quantifiers are outside the Lean slice"):
         _encode(src)
+
+
+def test_lean_rejects_foreach_unpack_loudly():
+    src = (
+        "#@ ensures result >= 0 or result < 0\n"
+        "def f(n: int) -> int:\n"
+        "    s = 0\n"
+        "    for a, b in range(n):\n"
+        "        s = s + 1\n"
+        "    return s\n"
+    )
+    with pytest.raises(EncodeError, match="destructuring loop targets are outside the Lean slice"):
+        _encode(src)
