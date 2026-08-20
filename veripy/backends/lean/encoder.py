@@ -425,6 +425,16 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     # way the binder SHADOWS its name: an outer safe pair (or the take
     # index) under the same name refers to a different variable inside
     # the body, so it is dropped, never inherited.
+    # The bound hypothesis gives `lo <= v`, so a binder over a range
+    # whose lower bound is non-negative is itself non-negative — which
+    # is what an exponent needs. `range(n)` and `range(0, n)` both
+    # start at zero.
+    body_nonneg = set(lc.nonneg_names)
+    lo_arg = it.args[0] if len(it.args) == 2 else None
+    if lo_arg is None or _nonneg_bound(lo_arg, lc):
+        body_nonneg.add(v)
+    else:
+        body_nonneg.discard(v)
     safe = {k: lst for k, lst in lc.safe_idx.items() if k != v}
     hi_arg = it.args[-1]
     lo_is_zero = len(it.args) == 1 \
@@ -451,7 +461,7 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
                        None if lc.take_idx == v else lc.take_idx,
                        lc.scaffold, lc.min_len, frozenset(body_pos),
                        lc.result_list, lc.result_is_list,
-                       lc.nonneg_names)
+                       frozenset(body_nonneg))
     # Two capture hazards at the binder, both measured classes:
     # 1. The theorem's rename map (param named after its own function)
     #    must NOT apply under a binder that reuses the renamed name —
@@ -1275,17 +1285,29 @@ def _infer_measure(cond: ast.expr) -> ast.expr | None:
     if not (isinstance(cond, ast.Compare) and len(cond.ops) == 1):
         return None
     left, op, right = cond.left, cond.ops[0], cond.comparators[0]
+    # An INCLUSIVE comparison needs one more than the difference. With
+    # `while i <= n`, the measure `n - i` reaches zero while the
+    # condition is still true, so a fuel recursion runs out one step
+    # early. Dafny accepts `n - i` because its rule is
+    # decrease-and-bounded per iteration; a fuel model needs the
+    # iteration COUNT, which is one larger.
+    slack = 0
     if isinstance(op, (ast.Lt, ast.LtE)):
         hi, lo = right, left
+        slack = 1 if isinstance(op, ast.LtE) else 0
     elif isinstance(op, (ast.Gt, ast.GtE)):
         hi, lo = left, right
+        slack = 1 if isinstance(op, ast.GtE) else 0
     elif isinstance(op, ast.NotEq) and _nonneg_literal(right):
         return cond.left
     elif isinstance(op, ast.NotEq) and _nonneg_literal(left):
         return cond.comparators[0]
     else:
         return None
-    out = ast.BinOp(left=hi, op=ast.Sub(), right=lo)
+    out: ast.expr = ast.BinOp(left=hi, op=ast.Sub(), right=lo)
+    if slack:
+        out = ast.BinOp(left=out, op=ast.Add(),
+                        right=ast.Constant(value=slack))
     ast.copy_location(out, cond)
     ast.fix_missing_locations(out)
     return out

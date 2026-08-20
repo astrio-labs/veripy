@@ -1819,6 +1819,44 @@ def test_termination_measure_is_inferred_when_absent():
     with pytest.raises(EncodeError, match="decreases"):
         _encode(no_clause.replace("while c < n:", "while c != n + c - c:"))
 
+    # An INCLUSIVE condition needs one MORE than the difference: with
+    # `i <= n`, the measure `n - i` reaches zero while the condition is
+    # still true, so a fuel recursion would run out one step early.
+    # Dafny accepts `n - i` because its rule is decrease-and-bounded per
+    # iteration; a fuel model needs the iteration count.
+    inclusive = ("#@ requires n >= 0\n"
+                 "#@ ensures result == n\n"
+                 "def f(n: int) -> int:\n"
+                 "    t = 0\n"
+                 "    i = 1\n"
+                 "    while i <= n:\n"
+                 "        #@ invariant 1 <= i <= n + 1\n"
+                 "        #@ invariant t == i - 1\n"
+                 "        t = t + 1\n"
+                 "        i = i + 1\n"
+                 "    return t\n")
+    assert "((«n» - «i») + 1)" in _encode(inclusive).lean_source
+
+
+def test_range_binders_are_non_negative_exponents():
+    # The bound hypothesis gives `lo <= v`, so a binder over a range
+    # with a non-negative lower bound is itself non-negative, which is
+    # exactly what an exponent needs.
+    for rng in ("range(n)", "range(0, n)"):
+        src = (f"#@ requires n >= 0\n"
+               f"#@ ensures all(2 ** i > 0 for i in {rng})\n"
+               f"def f(n: int) -> int:\n"
+               f"    return n\n")
+        assert "VeriPy.PyPow" in _encode(src).lean_source
+
+    # A negative lower bound proves nothing about the binder.
+    neg = ("#@ requires n >= 0\n"
+           "#@ ensures all(2 ** i > 0 for i in range(-3, n))\n"
+           "def f(n: int) -> int:\n"
+           "    return n\n")
+    with pytest.raises(EncodeError, match="exponent"):
+        _encode(neg)
+
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_inferred_measure_still_refuses_non_termination(tmp_path):
