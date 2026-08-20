@@ -155,6 +155,11 @@ class _ListCtx:
     # cannot run. This slice discharges that obligation only via positivity,
     # which is also the domain where the prelude's omega bridges apply.
     pos_names: frozenset[str] = frozenset()
+    # For a list-returning function: the parameter whose length an
+    # EARLIER `ensures` proved equal to `result`'s. That is what makes
+    # `result[i]` in bounds when `i` ranges over that list, and it rides
+    # the same clause-ordering rule as divisor positivity.
+    result_list: str | None = None
 
     def positive(self, e: "ast.expr") -> bool:
         if isinstance(e, ast.Constant) and isinstance(e.value, int) \
@@ -224,6 +229,26 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
         op = "PyFloorDiv" if isinstance(e.op, ast.FloorDiv) else "PyMod"
         return f"(VeriPy.{op} {a} {b})"
     if isinstance(e, ast.Subscript) and isinstance(e.value, ast.Name) \
+            and e.value.id == "result" and result is not None:
+        idx = e.slice
+        if lc.result_list is None:
+            raise _reject(
+                "`result[...]` needs an earlier `ensures` proving "
+                "`len(result)` equal to a list parameter's length — "
+                "without it nothing bounds the index, and Lean's total "
+                "indexing would quietly read the default where Python "
+                "raises IndexError", line)
+        if isinstance(idx, ast.Name) \
+                and lc.safe_for(idx.id, lc.result_list):
+            # In bounds because an earlier clause proved `result` and
+            # that list the same length.
+            return f"({result}.getD ({_lref(idx.id, rename)}).toNat 0)"
+        raise _reject(
+            "index into `result` is not structurally in bounds — it "
+            "needs an index this slice already knows is in bounds for "
+            "the list an earlier `ensures` proved `result` matches",
+            line)
+    if isinstance(e, ast.Subscript) and isinstance(e.value, ast.Name) \
             and e.value.id in lc.lists:
         if isinstance(e.slice, ast.Slice):
             raise _reject("a list slice appears only as `sum(xs[:i])` "
@@ -271,6 +296,9 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             return (f"(VeriPy.PyAbs "
                     f"{_int_expr(args[0], names, line, result, rename, lc)})")
         if e.func.id == "len" and len(args) == 1:
+            if isinstance(args[0], ast.Name) \
+                    and args[0].id == "result" and result is not None:
+                return f"(({result}.length : Int))"
             if isinstance(args[0], ast.Name) and args[0].id in lc.lists:
                 # Python len == List.length exactly (both count elements,
                 # both nonnegative); the cast lands in omega's fragment.
@@ -388,7 +416,8 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         safe[v] = hi_arg.args[0].id
     body_lc = _ListCtx(lc.lists, safe,
                        None if lc.take_idx == v else lc.take_idx,
-                       lc.scaffold, lc.min_len, frozenset(body_pos))
+                       lc.scaffold, lc.min_len, frozenset(body_pos),
+                       lc.result_list)
     # Two capture hazards at the binder, both measured classes:
     # 1. The theorem's rename map (param named after its own function)
     #    must NOT apply under a binder that reuses the renamed name —
@@ -643,9 +672,43 @@ def _bool_expr(e: ast.expr, names: set[str], line: int,
                   "expression in slice 2", line)
 
 
+def _list_expr(e: ast.expr, names: set[str], line: int,
+               lc: _ListCtx) -> str:
+    """A `List Int`-valued Lean term. `[f(x) for x in xs]` becomes
+    `xs.map (fun x => f x)`, which is the same order and length as
+    Python's comprehension. Filtered comprehensions change the length
+    and stay out of this slice."""
+    if isinstance(e, ast.Name) and e.id in lc.lists:
+        return _ident(e.id)
+    if isinstance(e, ast.ListComp):
+        if len(e.generators) != 1:
+            raise _reject("only one comprehension generator in this "
+                          "slice", line)
+        comp = e.generators[0]
+        if comp.ifs or comp.is_async:
+            raise _reject("a FILTERED comprehension changes the list's "
+                          "length, which this slice does not model",
+                          line)
+        if not isinstance(comp.target, ast.Name):
+            raise _reject("destructuring comprehension targets are "
+                          "outside this slice", line)
+        if not (isinstance(comp.iter, ast.Name)
+                and comp.iter.id in lc.lists):
+            raise _reject("a comprehension iterates a list parameter in "
+                          "this slice", line)
+        v = comp.target.id
+        if v in names:
+            raise _reject(f"comprehension binder {v!r} shadows a name in "
+                          f"scope — outside this slice", line)
+        body = _int_expr(e.elt, names | {v}, line, lc=lc)
+        return f"({_ident(comp.iter.id)}.map (fun {_ident(v)} => {body}))"
+    raise _reject("a list return must be a list parameter or a "
+                  "comprehension over one in this slice", line)
+
+
 def _body_expr(stmts: list[ast.stmt], names: set[str],
                params: tuple[str, ...], is_bool: bool = False,
-               lc: _ListCtx | None = None) -> str:
+               lc: _ListCtx | None = None, is_list: bool = False) -> str:
     """Compile a loop-free statement list to one Lean term."""
     if not stmts:
         raise _reject("fall through the end of the function without a "
@@ -659,6 +722,9 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
             raise _reject("unreachable code after `return`",
                           rest[0].lineno)
         _no_old(head.value, head.lineno)
+        if is_list:
+            return _list_expr(head.value, names, head.lineno,
+                              lc or _NO_LISTS)
         if is_bool:
             return _bool_expr(head.value, names, head.lineno, lc)
         return _int_expr(head.value, names, head.lineno, lc=lc)
@@ -822,6 +888,31 @@ def _nonneg_bound(e: ast.expr, lc: "_ListCtx") -> bool:
             and not isinstance(e.value, bool):
         return e.value >= 0
     return _positive_bound(e, lc)
+
+
+def _result_length_match(e: ast.expr,
+                         lists: frozenset[str]) -> str | None:
+    """If this clause says `len(result) == len(X)` (either way round),
+    the list X whose length `result` matches. That licenses `result[i]`
+    for indices already known in bounds for X — the list analogue of the
+    positivity a clause hands to the clauses after it."""
+    if not (isinstance(e, ast.Compare) and len(e.ops) == 1
+            and isinstance(e.ops[0], ast.Eq)):
+        return None
+
+    def _len_of(x: ast.expr) -> str | None:
+        if isinstance(x, ast.Call) and isinstance(x.func, ast.Name) \
+                and x.func.id == "len" and not x.keywords \
+                and len(x.args) == 1 and isinstance(x.args[0], ast.Name):
+            return x.args[0].id
+        return None
+
+    a, b = _len_of(e.left), _len_of(e.comparators[0])
+    if a == "result" and b in lists:
+        return b
+    if b == "result" and a in lists:
+        return a
+    return None
 
 
 def _sign_facts(e: ast.expr) -> tuple[set[str], set[str], set[str]]:
@@ -1597,10 +1688,16 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 "tuple types are outside the Lean slice — the Dafny "
                 "backend admits them; this slice has no product types",
                 fn.lineno)
-        if not (isinstance(ret, ast.Name) and ret.id in ("int", "bool")):
-            raise _reject("return type must be `int` or `bool` in this "
-                          "slice", fn.lineno)
-        is_bool = ret.id == "bool"
+        is_list_ret = (isinstance(ret, ast.Subscript)
+                       and isinstance(ret.value, ast.Name)
+                       and ret.value.id == "list"
+                       and isinstance(ret.slice, ast.Name)
+                       and ret.slice.id == "int")
+        if not is_list_ret and not (isinstance(ret, ast.Name)
+                                    and ret.id in ("int", "bool")):
+            raise _reject("return type must be `int`, `bool`, or "
+                          "`list[int]` in this slice", fn.lineno)
+        is_bool = (not is_list_ret) and ret.id == "bool"
         params = tuple(arg.arg for arg in a.args)
         names = set(params)
 
@@ -1669,7 +1766,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # message, so a `while` never falls through to the
             # "this function has no loop" error below.
             wloop = _split_while(fn, spec_fn)
-            if is_bool:
+            if is_bool or is_list_ret:
                 raise _reject("`while` functions return `int` in this "
                               "slice (integer measures and "
                               "accumulators)", fn.lineno)
@@ -2263,8 +2360,10 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             body = _body_expr([s for s in fn.body
                                if not (isinstance(s, ast.Expr)
                                        and isinstance(s.value, ast.Constant))],
-                              names, params, is_bool, lc0)
-            ret_ty = "Bool" if is_bool else "Int"
+                              names, params, is_bool, lc0,
+                              is_list=is_list_ret)
+            ret_ty = ("List Int" if is_list_ret
+                      else ("Bool" if is_bool else "Int"))
             emit("", None)
             emit(f"def {_ident(spec_fn.name)} {binders} : {ret_ty} :=",
                  fn.lineno)
@@ -2313,6 +2412,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                      rename=rename,
                                      result_is_bool=is_bool,
                                      avoid=avoid, lc=post_lc), line))
+            lmatch = _result_length_match(expr, lc0.lists)
+            if lmatch is not None and post_lc.result_list is None:
+                post_lc = _ListCtx(post_lc.lists, post_lc.safe_idx,
+                                   post_lc.take_idx, post_lc.scaffold,
+                                   post_lc.min_len, post_lc.pos_names,
+                                   lmatch)
             _, _, e_pos = _sign_facts(expr)
             if e_pos:
                 # Remember the TRANSLATED clause: if a later divisor
@@ -2323,7 +2428,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 post_lc = _ListCtx(post_lc.lists, post_lc.safe_idx,
                                    post_lc.take_idx, post_lc.scaffold,
                                    post_lc.min_len,
-                                   frozenset(post_lc.pos_names | e_pos))
+                                   frozenset(post_lc.pos_names | e_pos),
+                                   post_lc.result_list)
         goal = " ∧ ".join(p for p, _ in posts)
         sig = " ".join(x for x in [thm_binders, *hyps] if x)
         first_ensures_line = posts[0][1]
@@ -2524,6 +2630,19 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # simp lemma turns `decide p = true` goals back into `p` so
         # omega sees arithmetic, not booleans.
         emit("  try simp only [decide_eq_true_eq]", first_ensures_line)
+        # List goals: `map` preserves length and commutes with
+        # indexing, and the index bound the quantifier supplies is what
+        # turns `getElem?` into `getElem`. Inert when no list is
+        # involved, hence guarded.
+        # ONLY for list-returning functions. These rewrites turn
+        # `getD` into `getElem?`, and firing them on an int-returning
+        # list task rewrote the goal while a hypothesis kept the old
+        # form — one atom split into two, and a loop proof that had
+        # been passing broke. Nothing outside this branch sees them.
+        if is_list_ret:
+            emit("  all_goals (try simp only "
+                 "[List.getD_eq_getElem?_getD, List.getElem?_map, "
+                 "List.length_map])", first_ensures_line)
         emit("  repeat' split", first_ensures_line)
         # Bounded-quantifier goals open with ∀/→; intros peels them so
         # omega faces the linear body (∃ goals need witnesses no fixed
@@ -2536,6 +2655,9 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # both measured in the slice-2 matrix. Goals it fully closes are
         # done; whatever remains must be linear arithmetic for omega,
         # with `trivial` as the last resort for reflexive leftovers.
+        if is_list_ret:
+            emit("  all_goals (try (rw [List.getElem?_eq_getElem "
+                 "(by omega : _ < _)]))", first_ensures_line)
         emit("  all_goals (try simp_all)", first_ensures_line)
         emit("  all_goals (first | omega | trivial)", first_ensures_line)
 

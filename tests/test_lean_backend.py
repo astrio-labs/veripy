@@ -517,9 +517,10 @@ def test_list_misuse_is_refused_not_mistranslated():
         # only list[int] element types have a model
         ("#@ ensures result >= 0\ndef f(xs: list[str]) -> int:\n"
          "    return 0\n", "must be `int` or `list"),
-        # lists cannot be returned in this slice
+        # lists CAN be returned now, but list-valued equality is not
+        # modeled: `result == xs` compares whole lists.
         ("#@ ensures result == xs\ndef f(xs: list[int]) -> list[int]:\n"
-         "    return xs\n", "return type"),
+         "    return xs\n", "integer position"),
         # a quantifier binder shadowing a list parameter
         ("#@ ensures all(xs >= 0 for xs in range(n))\n"
          "def f(xs: list[int], n: int) -> int:\n"
@@ -1698,6 +1699,51 @@ def test_end_to_end_cross_clause_divisors_verify(tmp_path):
                    "def f(n: int) -> int:\n"
                    "    return n\n")
     assert verify_structured(bad, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
+
+
+INCR_LIST = ("#@ ensures len(result) == len(l)\n"
+             "#@ ensures forall i in range(len(l)) :: result[i] == l[i] + 1\n"
+             "def incr_list(l: list[int]) -> list[int]:\n"
+             "    return [(e + 1) for e in l]\n")
+
+
+def test_list_returns_and_comprehensions():
+    # `[f(x) for x in xs]` is `xs.map`, which has the same order and
+    # length as Python's comprehension.
+    enc = _encode(INCR_LIST)
+    assert "def «incr_list» («l» : List Int) : List Int" in enc.lean_source
+    assert "«l».map (fun «e» => («e» + 1))" in enc.lean_source
+    # `result[i]` is licensed by the EARLIER `len(result) == len(l)`
+    # clause — the list analogue of cross-clause positivity.
+    assert "(«incr_list» «l»).getD («i»).toNat 0" in enc.lean_source
+
+    # Without that earlier clause there is nothing to bound the index.
+    unlicensed = INCR_LIST.replace(
+        "#@ ensures len(result) == len(l)\n", "")
+    with pytest.raises(EncodeError, match="needs an earlier `ensures`"):
+        _encode(unlicensed)
+
+    # A FILTERED comprehension changes the length, so it stays out.
+    filtered = INCR_LIST.replace("for e in l]", "for e in l if e > 0]")
+    with pytest.raises(EncodeError, match="FILTERED"):
+        _encode(filtered)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_list_return_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # The frozen-corpus incr_list (HumanEval/42) shape verbatim.
+    src = tmp_path / "incr_list.py"
+    src.write_text(INCR_LIST)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # A wrong element relation still fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(INCR_LIST.replace("l[i] + 1", "l[i] + 2"))
+    assert verify_structured(bad, tmp_path / "o2",
                              backend="lean")["status"] == "failed"
 
 
