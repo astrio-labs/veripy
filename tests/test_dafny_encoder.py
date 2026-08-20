@@ -2162,6 +2162,19 @@ def test_from_import_survives_alias_module_mutation():
     assert "PyGcd(a, b)" in _encode(src)
 
 
+def test_unpacked_math_alias_attribute_assignment_does_not_lower():
+    src = (
+        "import math\n"
+        "m, other = math, 0\n"
+        "m.gcd = abs\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return math.gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "method calls are outside")
+
+
 def test_wildcard_import_does_not_keep_math_binding():
     # `from other import *` may rebind gcd; keeping the math table entry
     # would lower CPython's replacement to PyGcd.

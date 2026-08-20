@@ -2761,6 +2761,22 @@ def _walk_skip_def_bodies(node: ast.AST):
         yield from _walk_skip_def_bodies(child)
 
 
+def _alias_copy_from(target: ast.expr, value: ast.expr, aliases: set[str]) -> list[str]:
+    """Names in `target` that this assignment binds to a math-module alias."""
+    if isinstance(target, ast.Name) and isinstance(value, ast.Name) \
+            and value.id in aliases:
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)) \
+            and isinstance(value, (ast.Tuple, ast.List)) \
+            and len(target.elts) == len(value.elts) \
+            and not any(isinstance(e, ast.Starred) for e in target.elts):
+        names: list[str] = []
+        for t, v in zip(target.elts, value.elts):
+            names.extend(_alias_copy_from(t, v, aliases))
+        return names
+    return []
+
+
 def _collect_math_imports(
     module: ast.Module,
 ) -> tuple[dict[str, str], frozenset[str], dict[str, str]]:
@@ -2807,12 +2823,11 @@ def _collect_math_imports(
             value, targets = stmt.value, list(stmt.targets)
         elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
             value, targets = stmt.value, [stmt.target]
-        if not (isinstance(value, ast.Name) and value.id in aliases):
+        if value is None:
             return []
         names: list[str] = []
         for t in targets:
-            if isinstance(t, ast.Name):
-                names.append(t.id)
+            names.extend(_alias_copy_from(t, value, aliases))
         return names
 
     def take(stmt: ast.stmt) -> None:
@@ -2850,11 +2865,11 @@ def _collect_math_imports(
             elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
                 unbind(n.id)
             elif isinstance(n, ast.Attribute) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                # Mutation through any receiver can be an untracked
+                # alias of the math module (`m, _ = math, 0`; `m.gcd = …`).
+                drop_aliases()
                 if isinstance(n.value, ast.Name):
-                    if n.value.id in aliases:
-                        drop_aliases()
-                    else:
-                        unbind(n.value.id)
+                    unbind(n.value.id)
             elif isinstance(n, ast.ExceptHandler) and n.name:
                 unbind(n.name)
             elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
