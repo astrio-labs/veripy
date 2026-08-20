@@ -545,6 +545,9 @@ def test_preamble_names_are_exactly_the_globally_visible_declarations():
         "PyExn", "ValueError", "IndexError", "ZeroDivisionError",
         "TypeError", "KeyError",
         "PyOutcome", "PyOk", "PyErr",
+        "PyStrFind", "PyStrJoin", "PyStrSplit", "PyStrStartsWith",
+        "PyStrEndsWith", "PyStrReplace", "PyStrLStrip", "PyStrRStrip",
+        "PyStrStrip",
     }
     # Datatype members are reached only through a receiver, so they are not
     # in the top-level scope and a Python name equal to one cannot collide.
@@ -1966,3 +1969,182 @@ def test_parameter_shadowing_sorted_rejected():
     )
     with pytest.raises(EncodeError, match="shadows a builtin"):
         _encode(src)
+# --- str methods (join / split / find / startswith / replace / strip) ------
+
+
+def test_str_join_lowers_to_pystrjoin():
+    dfy = _encode(
+        "#@ ensures result == \"xay\"\n"
+        "def glue() -> str:\n"
+        "    return \"a\".join([\"x\", \"y\"])\n"
+    )
+    assert "PyStrJoin(\"a\", [\"x\", \"y\"])" in dfy
+
+
+def test_str_join_empty_list():
+    dfy = _encode(
+        "#@ ensures result == \"\"\n"
+        "def empty() -> str:\n"
+        "    return \"\".join([])\n"
+    )
+    assert "PyStrJoin(\"\", [])" in dfy
+
+
+def test_str_split_lowers_to_pystrsplit():
+    dfy = _encode(
+        "#@ ensures len(result) >= 1\n"
+        "def parts(s: str) -> list[str]:\n"
+        "    return s.split(\",\")\n"
+    )
+    assert "PyStrSplit(s, \",\")" in dfy
+
+
+def test_str_find_lowers_to_pystrfind():
+    dfy = _encode(
+        "#@ ensures result == -1 or result >= 0\n"
+        "def loc(s: str, sub: str) -> int:\n"
+        "    return s.find(sub)\n"
+    )
+    assert "PyStrFind(s, sub)" in dfy
+
+
+def test_str_startswith_endswith_lower():
+    dfy = _encode(
+        "#@ ensures result == True or result == False\n"
+        "def pref(s: str, p: str) -> bool:\n"
+        "    return s.startswith(p)\n"
+        "\n"
+        "#@ ensures result == True or result == False\n"
+        "def suff(s: str, t: str) -> bool:\n"
+        "    return s.endswith(t)\n"
+    )
+    assert "PyStrStartsWith(s, p)" in dfy
+    assert "PyStrEndsWith(s, t)" in dfy
+
+
+def test_str_replace_and_strip_lower():
+    dfy = _encode(
+        "#@ ensures len(result) >= 0\n"
+        "def swapped(s: str) -> str:\n"
+        "    return s.replace(\"a\", \"b\")\n"
+        "\n"
+        "#@ ensures len(result) >= 0\n"
+        "def trimmed(s: str) -> str:\n"
+        "    return s.strip(\" \")\n"
+        "\n"
+        "#@ ensures len(result) >= 0\n"
+        "def left(s: str) -> str:\n"
+        "    return s.lstrip(\"x\")\n"
+        "\n"
+        "#@ ensures len(result) >= 0\n"
+        "def right(s: str) -> str:\n"
+        "    return s.rstrip(\"x\")\n"
+    )
+    assert "PyStrReplace(s, \"a\", \"b\")" in dfy
+    assert "PyStrStrip(s, \" \")" in dfy
+    assert "PyStrLStrip(s, \"x\")" in dfy
+    assert "PyStrRStrip(s, \"x\")" in dfy
+
+
+def test_str_noarg_split_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> list[str]:\n"
+        "    return s.split()\n",
+        "pass an explicit sep",
+    )
+
+
+def test_str_noarg_strip_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> str:\n"
+        "    return s.strip()\n",
+        "pass an explicit chars",
+    )
+
+
+def test_str_lower_rejected_as_unicode_table():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> str:\n"
+        "    return s.lower()\n",
+        "silent ASCII approximation",
+    )
+
+
+def test_str_upper_rejected_as_unicode_table():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> str:\n"
+        "    return s.upper()\n",
+        "Unicode-table",
+    )
+
+
+def test_str_split_maxsplit_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> list[str]:\n"
+        "    return s.split(\",\", 1)\n",
+        "maxsplit",
+    )
+
+
+def test_str_split_empty_sep_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> list[str]:\n"
+        "    return s.split(\"\")\n",
+        "empty sep",
+    )
+
+
+def test_str_startswith_tuple_rejected():
+    _expect_encode_error(
+        "#@ ensures result == True or result == False\n"
+        "def f(s: str) -> bool:\n"
+        "    return s.startswith((\"a\", \"b\"))\n",
+        "tuple of prefixes",
+    )
+
+
+def test_str_replace_count_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> str:\n"
+        "    return s.replace(\"a\", \"b\", 1)\n",
+        "count",
+    )
+
+
+def test_str_replace_empty_old_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> str:\n"
+        "    return s.replace(\"\", \"-\")\n",
+        "empty old",
+    )
+
+
+def test_str_method_on_non_str_rejected():
+    _expect_encode_error(
+        "#@ ensures result >= 0\n"
+        "def f(xs: list[int]) -> int:\n"
+        "    return xs.find(1)\n",
+        "not str",
+    )
+
+
+def test_str_method_keywords_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(s: str) -> list[str]:\n"
+        "    return s.split(sep=\",\")\n",
+        "keyword arguments",
+    )
+
+
+def test_append_statement_still_lowers():
+    dfy = _encode(APPEND_OK)
+    assert "out := out + [0];" in dfy

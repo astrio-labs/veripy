@@ -396,3 +396,43 @@ def test_sorted_translation_faithful(tmp_path):
     assert result.functions and all(f.ok for f in result.functions), [
         (f.name, f.mismatch, f.error) for f in result.functions
     ]
+
+
+def test_str_methods_translation_faithful(tmp_path):
+    src = tmp_path / "strmethods.py"
+    src.write_text(
+        "#@ ensures result == result\n"
+        "def glue(sep: str, xs: list[str]) -> str:\n"
+        "    return sep.join(xs)\n"
+        "\n"
+        "#@ requires len(sep) >= 1\n"
+        "#@ ensures result == result\n"
+        "def parts(s: str, sep: str) -> list[str]:\n"
+        "    return s.split(sep)\n"
+        "\n"
+        "#@ ensures result == result\n"
+        "def loc(s: str, sub: str) -> int:\n"
+        "    return s.find(sub)\n"
+        "\n"
+        "#@ ensures result == True or result == False\n"
+        "def pref(s: str, p: str) -> bool:\n"
+        "    return s.startswith(p)\n"
+        "\n"
+        "#@ ensures result == True or result == False\n"
+        "def suff(s: str, t: str) -> bool:\n"
+        "    return s.endswith(t)\n"
+        "\n"
+        "#@ requires len(pat) >= 1\n"
+        "#@ ensures result == result\n"
+        "def swapped(s: str, pat: str, repl: str) -> str:\n"
+        "    return s.replace(pat, repl)\n"
+        "\n"
+        "#@ ensures result == result\n"
+        "def trimmed(s: str, chars: str) -> str:\n"
+        "    return s.strip(chars)\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]

@@ -365,3 +365,29 @@ def test_sorted_identity_verifies(tmp_path, capsys):
     assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out
 
+
+def test_str_methods_verify(tmp_path, capsys):
+    src = tmp_path / "strs.py"
+    src.write_text(
+        "#@ ensures result == \"\"\n"
+        "def empty_join() -> str:\n"
+        "    return \"\".join([])\n"
+        "\n"
+        "#@ ensures result == \"xay\"\n"
+        "def join_two() -> str:\n"
+        "    return \"a\".join([\"x\", \"y\"])\n"
+        "\n"
+        "#@ ensures result == -1\n"
+        "def find_miss() -> int:\n"
+        "    return \"\".find(\"z\")\n"
+        "\n"
+        "#@ ensures result == 0\n"
+        "def find_empty() -> int:\n"
+        "    return \"abc\".find(\"\")\n"
+        "\n"
+        "#@ ensures result == True\n"
+        "def starts() -> bool:\n"
+        "    return \"hello\".startswith(\"he\")\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out

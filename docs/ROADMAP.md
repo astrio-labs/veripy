@@ -83,8 +83,8 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 
 ### Tier 2 preamble (the real volume — `U-METHOD`)
 
-- [ ] `str` methods (`split` / `join` / `find` / `strip` / …), ASCII or
-      axiom-flagged in the report
+- [x] `str` methods (`split` / `join` / `find` / `strip` / …), ASCII or
+      exact-match `PyStr*` models; Unicode-table methods rejected
 - [x] `sorted` (permutation + order; stability only on demand)
       (`sorted(xs)` on `list[int]` as `PySorted`; no `key=` / `reverse=` /
       `list[str]` — Dafny seq `<` is prefix order, Python str `<` is lex)
