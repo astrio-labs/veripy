@@ -81,7 +81,7 @@ _RULES = [
     Rule("X-ASSERT", "assert statement", "candidate (maps to VC)"),
     Rule("X-ATTR-STORE", "attribute assignment (any binding construct)", "§3.1 attributes"),
     Rule("X-LOOP-ELSE", "for/while else clause", "§7 excluded"),
-    Rule("X-WALRUS", "walrus assignment expression", "candidate"),
+    Rule("X-WALRUS", "walrus under and/or, chained comparison, if-expr branch, or a comprehension", "candidate; always-evaluated `:=` is admitted"),
     Rule("U-OP", "operator without a catalog row (**, @)", "§7 catalog"),
     Rule("U-CONST", "literal type without a catalog row (bytes, complex, ...)", "§7 catalog"),
     Rule("U-METHOD", "method call outside the modeled container/str surface", "§3.3 Tier 2"),
@@ -231,6 +231,35 @@ def _ignore_comment_lines(source: str) -> set[int]:
     except tokenize.TokenError:
         pass
     return lines
+
+
+def _walrus_still_outside(node: ast.NamedExpr, root: ast.AST) -> bool:
+    """True when `:=` would not always run (short-circuit, skipped
+    if-expr branch, later chained-comparison operand, comprehension /
+    lambda). Always-evaluated positions are admitted; the survey is
+    untyped, so those do not fire."""
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(root):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    cur: ast.AST = node
+    while cur in parents:
+        parent = parents[cur]
+        if isinstance(parent, (ast.ListComp, ast.SetComp, ast.DictComp,
+                               ast.GeneratorExp, ast.Lambda, ast.comprehension)):
+            return True
+        if isinstance(parent, ast.BoolOp):
+            return True
+        if isinstance(parent, ast.IfExp) and cur is not parent.test:
+            return True
+        if isinstance(parent, ast.Compare):
+            always = [parent.left]
+            if parent.comparators:
+                always.append(parent.comparators[0])
+            if cur not in always:
+                return True
+        cur = parent
+    return False
 
 
 def _simple_ann(ann: ast.expr | None) -> str | None:
@@ -509,7 +538,8 @@ class _FunctionScanner:
                 case ast.Yield() | ast.YieldFrom():
                     self.fire("X-YIELD", node)
                 case ast.NamedExpr():
-                    self.fire("X-WALRUS", node)
+                    if _walrus_still_outside(node, root):
+                        self.fire("X-WALRUS", node)
                 case ast.BinOp(op=op):
                     if isinstance(op, ast.Div):
                         self.fire("T-DIV", node)

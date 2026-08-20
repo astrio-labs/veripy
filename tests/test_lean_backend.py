@@ -2103,6 +2103,16 @@ def test_lean_rejects_foreach_unpack_loudly():
         _encode(src)
 
 
+def test_lean_rejects_walrus_loudly():
+    src = (
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    return (x := n)\n"
+    )
+    with pytest.raises(EncodeError, match="walrus is outside the Lean slice"):
+        _encode(src)
+
+
 def test_lean_rejects_fstrings_loudly():
     # Dafny admits `len(f"n")` as |"n"|; Lean has no strings, so the
     # f-string must fail here rather than vanish into a later rejection.

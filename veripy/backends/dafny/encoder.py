@@ -20,7 +20,10 @@ rejection):
   (chained), and/or/not, len/min/max/abs, indexing, conditional expressions,
   single-generator list comprehensions (optional `if` filter via PyFlatten),
   eager `all`/`any`/`sum` genexp folds (filters included; all/any →
-  forall/exists, sum → mapped PySum), f-strings as concatenation of
+  forall/exists, sum → mapped PySum), walrus `:=` in always-evaluated
+  positions (if/while tests, return, assignment, assert, call args;
+  while-test `:=` is re-emitted at continue / loop-end — a bare Dafny
+  `while` condition cannot assign), f-strings as concatenation of
   str pieces (no format spec, no `!s`/`!r`/`!a`, no int/bool/char
   interpolation — `str(int)` is a later row)
 - specs: requires/ensures/invariant/decreases; forall/exists over range or
@@ -54,6 +57,10 @@ Soundness rules enforced here (each closes a reviewed miscompilation class):
 - `#@ invariant`/`#@ decreases` must sit at the top of the loop body,
   before its first statement (the documented convention, now enforced —
   trailing comment lines would otherwise attach to the wrong loop).
+- Walrus `:=` under `and`/`or`, a later chained-comparison operand, a
+  conditional-expression branch, or a comprehension is rejected: Dafny
+  has no expression-level assignment, and hoisting those would ignore
+  short-circuit / skip the bind.
 
 Semantics note baked in here: `#@ invariant` has Dafny loop-head semantics
 (holds on entry and at every head check, including the final one where the
@@ -69,6 +76,7 @@ may edit the sidecar only.
 from __future__ import annotations
 
 import ast
+import copy
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -758,6 +766,8 @@ class _MethodEncoder:
                     else:
                         self.types[comp.target.id] = saved
                 return f"seq<{et}>" if et is not None else None
+            case ast.NamedExpr(value=value):
+                return self._infer(value)
             case ast.JoinedStr():
                 return "string" if self._joined_str_is_str(node) else None
             case _:
@@ -909,6 +919,19 @@ class _MethodEncoder:
                     "only single-generator list comprehensions are in the "
                     "slice encoder (no nested `for`, no async) — bind "
                     "the inner sequence first, or write nested loops"
+                ))
+            case ast.NamedExpr():
+                if self.spec_mode:
+                    raise _err(node, (
+                        "walrus `:=` in a spec clause has no assignment to "
+                        "perform — write the condition without `:=`"
+                    ))
+                raise _err(node, (
+                    "walrus `:=` in this position is outside this slice — "
+                    "it is admitted in if/while tests, return, assignment, "
+                    "assert, and always-evaluated call arguments; under "
+                    "`and`/`or`, a chained comparison, or a comprehension "
+                    "write an `if` or a loop"
                 ))
             case ast.JoinedStr():
                 return self._fstring(node)
@@ -1442,17 +1465,19 @@ class _MethodEncoder:
             if rhs is not None and name not in first_rhs:
                 first_rhs[name] = rhs
 
-        def record_expr_loads(node: ast.AST, path: tuple) -> None:
+        def record_expr_loads(node: ast.AST, path: tuple, stmt: ast.stmt) -> None:
             for n in ast.walk(node):
                 if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
                     loads.setdefault(n.id, []).append(path)
+                elif isinstance(n, ast.NamedExpr) and isinstance(n.target, ast.Name):
+                    record_store(n.target.id, path, n.value, stmt)
 
         def walk(stmts: list[ast.stmt], path: tuple) -> None:
             for idx, stmt in enumerate(stmts):
                 match stmt:
                     case ast.Assign(targets=[ast.Name(id=name)], value=value):
                         record_store(name, path, value, stmt)
-                        record_expr_loads(value, path)
+                        record_expr_loads(value, path, stmt)
                     case ast.Assign(targets=[ast.Tuple(elts=elts)], value=value):
                         if isinstance(value, ast.Tuple):
                             vals = value.elts
@@ -1471,7 +1496,7 @@ class _MethodEncoder:
                                     record_store(e.id, path, None, stmt)
                                     if j < len(elems) and e.id not in ann_types:
                                         ann_types[e.id] = elems[j]
-                        record_expr_loads(value, path)
+                        record_expr_loads(value, path, stmt)
                     case ast.AnnAssign(target=ast.Name(id=name), annotation=ann, value=value):
                         record_store(name, path, value, stmt)
                         try:
@@ -1479,26 +1504,26 @@ class _MethodEncoder:
                         except EncodeError:
                             pass
                         if value is not None:
-                            record_expr_loads(value, path)
+                            record_expr_loads(value, path, stmt)
                     case ast.AugAssign(target=ast.Name(id=name), value=value):
                         record_store(name, path, None, stmt)
                         loads.setdefault(name, []).append(path)
-                        record_expr_loads(value, path)
+                        record_expr_loads(value, path, stmt)
                     case ast.If(test=test, body=body, orelse=orelse):
-                        record_expr_loads(test, path)
+                        record_expr_loads(test, path, stmt)
                         walk(body, path + (idx, "t"))
                         walk(orelse, path + (idx, "e"))
                     case ast.While(test=test, body=body):
-                        record_expr_loads(test, path)
+                        record_expr_loads(test, path, stmt)
                         walk(body, path + (idx, "w"))
                     case ast.For(target=target, iter=it, body=body):
                         for n in ast.walk(target):
                             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
                                 loop_indices.add(n.id)
-                        record_expr_loads(it, path)
+                        record_expr_loads(it, path, stmt)
                         walk(body, path + (idx, "f"))
                     case _:
-                        record_expr_loads(stmt, path)
+                        record_expr_loads(stmt, path, stmt)
 
         walk(self.node.body, ())
 
@@ -1724,6 +1749,126 @@ class _MethodEncoder:
         if isinstance(rhs_node, ast.Name) and self._is_seqish(self._infer(rhs_node)):
             self.owned.discard(rhs_node.id)
 
+    def _reject_walrus_context(self, expr: ast.expr) -> None:
+        """Refuse `:=` that would not always run, or that has no assignment
+        in a spec. Dafny cannot spell expression-level assignment, so
+        hoisting those would ignore short-circuit."""
+        encoder = self
+
+        class _Walk(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.lazy = 0
+                self.nested = 0
+
+            def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+                if encoder.spec_mode:
+                    raise _err(node, (
+                        "walrus `:=` in a spec clause has no assignment to "
+                        "perform — write the condition without `:=`"
+                    ))
+                if self.nested:
+                    raise _err(node, (
+                        "walrus in a comprehension or lambda is outside this "
+                        "slice — Python binds it in the enclosing scope; "
+                        "write a loop"
+                    ))
+                if self.lazy:
+                    raise _err(node, (
+                        "walrus under `and`/`or`, a chained comparison, or "
+                        "a conditional expression is outside this slice — "
+                        "short-circuit would skip the assignment; write an "
+                        "`if`"
+                    ))
+                if not isinstance(node.target, ast.Name):
+                    raise _err(node, "walrus target must be a plain name")
+                self.visit(node.value)
+
+            def visit_BoolOp(self, node: ast.BoolOp) -> None:
+                self.lazy += 1
+                self.generic_visit(node)
+                self.lazy -= 1
+
+            def visit_IfExp(self, node: ast.IfExp) -> None:
+                self.visit(node.test)
+                self.lazy += 1
+                self.visit(node.body)
+                self.visit(node.orelse)
+                self.lazy -= 1
+
+            def visit_Compare(self, node: ast.Compare) -> None:
+                # `a < b < c` evaluates `c` only if `a < b` is true.
+                # `left` and the first comparator always run.
+                self.visit(node.left)
+                if node.comparators:
+                    self.visit(node.comparators[0])
+                    self.lazy += 1
+                    for later in node.comparators[1:]:
+                        self.visit(later)
+                    self.lazy -= 1
+
+            def visit_ListComp(self, node: ast.ListComp) -> None:
+                self.nested += 1
+                self.generic_visit(node)
+                self.nested -= 1
+
+            visit_SetComp = visit_ListComp
+            visit_DictComp = visit_ListComp
+            visit_GeneratorExp = visit_ListComp
+            visit_Lambda = visit_ListComp
+
+        _Walk().visit(expr)
+
+    def _strip_walruses(self, expr: ast.expr) -> tuple[ast.expr, list[ast.NamedExpr]]:
+        if not any(isinstance(n, ast.NamedExpr) for n in ast.walk(expr)):
+            return expr, []
+        bindings: list[ast.NamedExpr] = []
+
+        class _Strip(ast.NodeTransformer):
+            def visit_NamedExpr(self, node: ast.NamedExpr) -> ast.expr:
+                value = self.visit(node.value)
+                bound = ast.NamedExpr(target=node.target, value=value)
+                ast.copy_location(bound, node)
+                bindings.append(bound)
+                if not isinstance(node.target, ast.Name):
+                    return node
+                return ast.copy_location(
+                    ast.Name(id=node.target.id, ctx=ast.Load()), node)
+
+        stripped = _Strip().visit(copy.deepcopy(expr))
+        ast.fix_missing_locations(stripped)
+        return stripped, bindings
+
+    def _emit_walrus_bindings(self, bindings: list[ast.NamedExpr],
+                              indent: str, stmt: ast.stmt) -> None:
+        for ne in bindings:
+            if not isinstance(ne.target, ast.Name):
+                raise _err(stmt, "walrus target must be a plain name")
+            name = ne.target.id
+            expected = self.types.get(name) or self.hoisted.get(name)
+            self._assign_name(
+                name, self._coerce(ne.value, expected), indent, stmt,
+                rhs_node=ne.value,
+            )
+
+    def _walrus_rebind_steps(self, bindings: list[ast.NamedExpr]) -> tuple[str, ...]:
+        steps: list[str] = []
+        for ne in bindings:
+            if not isinstance(ne.target, ast.Name):
+                continue
+            name = ne.target.id
+            expected = self.types.get(name) or self.hoisted.get(name)
+            rhs = self._coerce(ne.value, expected)
+            steps.append(f"{self._mangle(name)} := {rhs};")
+        return tuple(steps)
+
+    def _emit_walruses(self, expr: ast.expr, indent: str, stmt: ast.stmt) -> ast.expr:
+        """Turn always-evaluated `:=` into assignments; return the
+        assignment-free expression (the bound names)."""
+        self._reject_walrus_context(expr)
+        stripped, bindings = self._strip_walruses(expr)
+        self._emit_walrus_bindings(bindings, indent, stmt)
+        return stripped
+
     def _bool_ctx(self, test: ast.expr) -> str:
         """Encode an expression used as a condition; §7.3 truthiness for
         list/str operands."""
@@ -1770,6 +1915,9 @@ class _MethodEncoder:
                 return  # docstring
             case ast.Pass():
                 return
+            case ast.Expr(value=ast.NamedExpr() as value):
+                self._emit_walruses(value, indent, stmt)
+                return
             case ast.Expr(value=ast.Call(
                 func=ast.Attribute(value=ast.Name(id=target), attr="append"),
                 args=[arg],
@@ -1786,6 +1934,7 @@ class _MethodEncoder:
                         f"list — the value lowering is sound only for owned "
                         f"containers (§3.2 ownership)"
                     ))
+                arg = self._emit_walruses(arg, indent, stmt)
                 mt = self._mangle(target)
                 target_type = self.types.get(target)
                 elem_type = target_type[4:-1] if target_type and target_type.startswith("seq<") else None
@@ -1794,19 +1943,23 @@ class _MethodEncoder:
             case ast.Expr(value=ast.Call(func=ast.Attribute(attr=method))):
                 raise _err(stmt, f"method call .{method}(...) is outside the slice encoder")
             case ast.AnnAssign(target=ast.Name(id=name), annotation=ann, value=value) if value is not None:
+                value = self._emit_walruses(value, indent, stmt)
                 dtype = _dafny_type(ann, stmt)
                 self._assign_name(name, self._coerce(value, dtype), indent, stmt, rhs_node=value, ann=dtype)
             case ast.Assign(targets=[ast.Name(id=name)], value=value):
+                value = self._emit_walruses(value, indent, stmt)
                 self._assign_name(
                     name,
                     self._coerce(value, self.types.get(name) or self.hoisted.get(name)),
                     indent, stmt, rhs_node=value,
                 )
             case ast.Assign(targets=[ast.Tuple(elts=elts)], value=value):
+                value = self._emit_walruses(value, indent, stmt)
                 self._assign_unpack(stmt, elts, value, indent)
             case ast.AugAssign(target=ast.Name(id=name), op=op, value=value):
                 if name in self.params:
                     raise _err(stmt, "parameter rebinding is outside the fragment (parameters are immutable)")
+                value = self._emit_walruses(value, indent, stmt)
                 if self.types.get(name) != "int" or self._infer(value) != "int":
                     raise _err(stmt, (
                         "augmented assignment on non-int operands is outside the "
@@ -1829,6 +1982,7 @@ class _MethodEncoder:
             case ast.Return(value=value):
                 if value is None:
                     raise _err(stmt, "bare `return` is outside the slice-1 encoder")
+                value = self._emit_walruses(value, indent, stmt)
                 self.emit(f"{indent}result := {self._coerce(value, self.return_type)};", stmt.lineno)
                 self.emit(f"{indent}return;")
             case ast.Assert(test=test, msg=msg):
@@ -1836,11 +1990,13 @@ class _MethodEncoder:
                 # dual role #@ specs have.
                 if msg is not None and not isinstance(msg, ast.Constant):
                     raise _err(stmt, "assert messages must be literals (side effects)")
+                test = self._emit_walruses(test, indent, stmt)
                 self.emit(f"{indent}assert {self._bool_ctx(test)};", stmt.lineno)
             case ast.If(test=test, body=body, orelse=orelse):
                 # Ownership is path-sensitive: a name is owned after the If
                 # only if it is owned on EVERY path through it.
                 pre_owned = set(self.owned)
+                test = self._emit_walruses(test, indent, stmt)
                 self.emit(f"{indent}if {self._bool_ctx(test)} {{", stmt.lineno)
                 self.block(body, indent + "  ")
                 then_owned = set(self.owned)
@@ -1857,11 +2013,21 @@ class _MethodEncoder:
                 if orelse:
                     raise _err(stmt, "while/else is outside the fragment")
                 pre_owned = set(self.owned)
+                # The while condition runs every head check, including after
+                # continue. Hoist `:=` before the loop and re-emit the same
+                # assignments at continue / fall-through — a Dafny `while`
+                # test cannot assign.
+                self._reject_walrus_context(test)
+                test, bindings = self._strip_walruses(test)
+                self._emit_walrus_bindings(bindings, indent, stmt)
                 self.emit(f"{indent}while {self._bool_ctx(test)}", stmt.lineno)
                 self._loop_clauses(stmt, indent)
                 self.emit(f"{indent}{{")
-                self._loops.append(())
+                steps = self._walrus_rebind_steps(bindings)
+                self._loops.append(steps)
                 self.block(body, indent + "  ")
+                for step in steps:
+                    self.emit(f"{indent}  {step}", stmt.lineno)
                 self._loops.pop()
                 self.emit(f"{indent}}}")
                 # The body may run zero or many times: keep only names owned
@@ -1931,10 +2097,11 @@ class _MethodEncoder:
         for n in ast.walk(ast.Module(body=stmt.body, type_ignores=[])):
             if isinstance(n, ast.Name) and n.id == var and isinstance(n.ctx, ast.Store):
                 raise _err(n, "reassigning the loop index is outside the fragment")
-        if len(it.args) == 1:
-            lo_expr, hi_expr = "0", self.expr(it.args[0])
+        range_args = [self._emit_walruses(a, indent, stmt) for a in it.args]
+        if len(range_args) == 1:
+            lo_expr, hi_expr = "0", self.expr(range_args[0])
         else:
-            lo_expr, hi_expr = self.expr(it.args[0]), self.expr(it.args[1])
+            lo_expr, hi_expr = self.expr(range_args[0]), self.expr(range_args[1])
         mv = self._mangle(var)
         pre_owned = set(self.owned)
         # Python evaluates range() bounds ONCE; hoist them. Fresh names are
@@ -1973,7 +2140,8 @@ class _MethodEncoder:
         if stmt.orelse:
             raise _err(stmt, "for/else is outside the fragment")
         names = self._for_each_names(stmt)
-        it_type = self._infer(stmt.iter)
+        it = self._emit_walruses(stmt.iter, indent, stmt)
+        it_type = self._infer(it)
         if not (it_type is not None and it_type.startswith("seq<")):
             raise _err(stmt, "for-each iterables must be list-typed (or use `for i in range(...)`)")
         elem = it_type[4:-1]
@@ -2017,7 +2185,7 @@ class _MethodEncoder:
         head = self._mangle(names[0])
         snap = self._fresh(f"{head}_it")
         idx = self._fresh(f"{head}_i")
-        self.emit(f"{indent}var {snap} := {self.expr(stmt.iter)};", stmt.lineno)
+        self.emit(f"{indent}var {snap} := {self.expr(it)};", stmt.lineno)
         self.emit(f"{indent}var {idx} := 0;", stmt.lineno)
         self.emit(f"{indent}while {idx} < |{snap}|", stmt.lineno)
         self._loop_clauses(stmt, indent, extra=(f"0 <= {idx} <= |{snap}|",))
@@ -2036,7 +2204,7 @@ class _MethodEncoder:
         # Only unfreeze what WE froze, so nested loops over the same list
         # cannot thaw an enclosing iteration.
         frozen_added: set[str] = set()
-        for n in ast.walk(stmt.iter):
+        for n in ast.walk(it):
             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) \
                     and self._is_seqish(self.types.get(n.id)) \
                     and n.id not in self.frozen:
