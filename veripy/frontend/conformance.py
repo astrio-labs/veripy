@@ -272,6 +272,39 @@ def _simple_ann(ann: ast.expr | None) -> str | None:
     return None
 
 
+def _tuple_elem_anns(ann: ast.expr | None) -> tuple[str, ...] | None:
+    """Element spellings of `tuple[T, U, ...]` (Name or parameterized head)."""
+    if not (isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name)
+            and ann.value.id == "tuple"):
+        return None
+    sl = ann.slice
+    if isinstance(sl, ast.Tuple):
+        elts = list(sl.elts)
+    elif sl is not None:
+        elts = [sl]
+    else:
+        return None
+    out: list[str] = []
+    for e in elts:
+        if isinstance(e, ast.Name):
+            out.append(e.id)
+        elif isinstance(e, ast.Subscript) and isinstance(e.value, ast.Name):
+            out.append(e.value.id)
+        else:
+            return None
+    return tuple(out) if out else None
+
+
+def _const_int_expr(node: ast.expr) -> int | None:
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) \
+            and isinstance(node.operand, ast.Constant) \
+            and type(node.operand.value) is int:
+        return -node.operand.value
+    return None
+
+
 def _ann_inner(ann: ast.expr | None) -> str | None:
     """Element/payload spelling of `list[T]` / `Optional[T]`.
 
@@ -325,7 +358,8 @@ def _looks_int(test: ast.expr, anns: dict[str, str],
 
 
 def _assert_test_still_outside(test: ast.expr, anns: dict[str, str],
-                               inners: dict[str, str]) -> bool:
+                               inners: dict[str, str],
+                               tuple_elems: dict[str, tuple[str, ...]] | None = None) -> bool:
     """True when Dafny's bool-context check will reject this test.
 
     The survey has no inferencer. Comparisons / `not` / bool names stay
@@ -333,6 +367,7 @@ def _assert_test_still_outside(test: ast.expr, anns: dict[str, str],
     tuple-valued indexing, int if-exprs, and `len`/`abs`/`min`/`max`/`sum`
     fire. `str`/`list` names (and `list[str]` / `list[bool]` elements) do
     not — the encoder admits those as emptiness / bool."""
+    tuple_elems = tuple_elems or {}
     if isinstance(test, ast.Constant):
         return type(test.value) not in (bool, str)
     if isinstance(test, ast.Name):
@@ -342,6 +377,17 @@ def _assert_test_still_outside(test: ast.expr, anns: dict[str, str],
         if isinstance(test.value, ast.Name):
             if anns.get(test.value.id) == "str":
                 return True  # index is char
+            if anns.get(test.value.id) == "tuple":
+                elems = tuple_elems.get(test.value.id, ())
+                k = _const_int_expr(test.slice)
+                if not elems or k is None:
+                    return True
+                if k < 0:
+                    k += len(elems)
+                if 0 <= k < len(elems):
+                    el = elems[k]
+                    return el != "bool" and el not in _SEQISH_ANN
+                return True
             inner = inners.get(test.value.id)
             if inner is None:
                 return False
@@ -426,7 +472,7 @@ class _FunctionScanner:
         self.scope = scope
         self.class_flags = class_flags
         self.local_names = self._local_names()
-        self.ann_types, self.ann_inners = self._annotated_names()
+        self.ann_types, self.ann_inners, self.ann_tuple_elems = self._annotated_names()
 
     def fire(self, rule: str, node: ast.AST, detail: str = "") -> None:
         self.report.fires.append(
@@ -468,23 +514,33 @@ class _FunctionScanner:
                 names.add(stmt.id)
         return names
 
-    def _annotated_names(self) -> tuple[dict[str, str], dict[str, str]]:
+    def _annotated_names(self) -> tuple[dict[str, str], dict[str, str],
+                                       dict[str, tuple[str, ...]]]:
         """Syntactic annotations on this function's params and AnnAssigns,
         plus int inferred from `n = 1` / `n = len(xs)` style assigns.
         Nested defs are skipped (same boundary as `_local_names`).
-        The second map is the inner spelling of `list[T]` / `Optional[T]`."""
+        The second map is the inner spelling of `list[T]` / `Optional[T]`;
+        the third is `tuple[T, U, ...]` element spellings."""
         out: dict[str, str] = {}
         inners: dict[str, str] = {}
+        tuple_elems: dict[str, tuple[str, ...]] = {}
+
+        def record(name: str, ann: ast.expr | None) -> None:
+            t = _simple_ann(ann)
+            if t is not None:
+                out[name] = t
+            inner = _ann_inner(ann)
+            if inner is not None:
+                inners[name] = inner
+            elems = _tuple_elem_anns(ann)
+            if elems is not None:
+                tuple_elems[name] = elems
+
         a = self.node.args
         for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg):
             if arg is None or arg.annotation is None:
                 continue
-            t = _simple_ann(arg.annotation)
-            if t is not None:
-                out[arg.arg] = t
-            inner = _ann_inner(arg.annotation)
-            if inner is not None:
-                inners[arg.arg] = inner
+            record(arg.arg, arg.annotation)
 
         def walk(node: ast.AST) -> None:
             # Inspect `node` itself: a top-level `n: int = 1` is the
@@ -492,12 +548,7 @@ class _FunctionScanner:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
                 return
             if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                t = _simple_ann(node.annotation)
-                if t is not None:
-                    out[node.target.id] = t
-                inner = _ann_inner(node.annotation)
-                if inner is not None:
-                    inners[node.target.id] = inner
+                record(node.target.id, node.annotation)
             elif isinstance(node, ast.Assign) and len(node.targets) == 1 \
                     and isinstance(node.targets[0], ast.Name):
                 name = node.targets[0].id
@@ -508,7 +559,7 @@ class _FunctionScanner:
 
         for stmt in self.node.body:
             walk(stmt)
-        return out, inners
+        return out, inners, tuple_elems
 
     def _is_module_level(self, name: str, locals_: frozenset[str]) -> bool:
         return (
@@ -574,7 +625,9 @@ class _FunctionScanner:
             case ast.Assert(test=test, msg=msg):
                 if msg is not None and not isinstance(msg, ast.Constant):
                     self.fire("X-ASSERT", stmt)
-                elif _assert_test_still_outside(test, self.ann_types, self.ann_inners):
+                elif _assert_test_still_outside(
+                    test, self.ann_types, self.ann_inners, self.ann_tuple_elems,
+                ):
                     self.fire("X-ASSERT", stmt)
             case ast.Global() | ast.Nonlocal():
                 self.fire("T-GLOBAL", stmt)
