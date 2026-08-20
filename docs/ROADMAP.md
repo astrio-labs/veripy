@@ -68,7 +68,9 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 
 ### Cheap coverage (survey’s admittable peak)
 
-- [ ] f-strings (`T-FSTRING`)
+- [x] f-strings (`T-FSTRING`)
+      (str interpolations only; format specs / `!s`/`!r`/`!a` / int
+      interpolation still rejected — `str(int)` is a later row)
 - [x] Walrus `:=`
       (always-evaluated positions only; `and`/`or`, later chained-
       comparison operands, if-expr branches, comprehensions, and specs
