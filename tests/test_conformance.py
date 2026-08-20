@@ -504,3 +504,31 @@ def test_assert_list_name_does_not_fire():
         "    return xs\n"
     )
     assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_list_int_index_still_fires():
+    src = (
+        "def f(xs: list[int]) -> int:\n"
+        "    assert xs[0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_ifexp_int_still_fires():
+    src = (
+        "def f(n: int, m: int, flag: bool) -> int:\n"
+        "    assert n if flag else m\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_list_str_index_does_not_fire():
+    # Element is str; encoder admits str truthiness as emptiness.
+    src = (
+        "def f(xs: list[str]) -> str:\n"
+        "    assert xs[0]\n"
+        "    return xs[0]\n"
+    )
+    assert "X-ASSERT" not in _fires(src)

@@ -243,14 +243,25 @@ def _simple_ann(ann: ast.expr | None) -> str | None:
     return None
 
 
+def _ann_inner(ann: ast.expr | None) -> str | None:
+    """Element/payload spelling of `list[T]` / `Optional[T]` (Name `T`)."""
+    if isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name):
+        sl = ann.slice
+        if isinstance(sl, ast.Name):
+            return sl.id
+    return None
+
+
 _INT_BINOPS = (ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod, ast.Pow)
 _INT_CALLS = frozenset({"len", "abs", "min", "max", "sum"})
 _SEQISH_ANN = frozenset({"str", "list"})
 
 
-def _looks_int(test: ast.expr, anns: dict[str, str]) -> bool:
+def _looks_int(test: ast.expr, anns: dict[str, str],
+               inners: dict[str, str]) -> bool:
     """Syntactic stand-in for 'this encodes as int' — enough to match
-    Dafny's bool-context rejection of `n + 1`, `-n`, `len(xs)`."""
+    Dafny's bool-context rejection of `n + 1`, `-n`, `len(xs)`, `xs[0]`,
+    and `n if flag else m`."""
     if isinstance(test, ast.Constant) and type(test.value) is int:
         return True
     if isinstance(test, ast.Name):
@@ -261,27 +272,38 @@ def _looks_int(test: ast.expr, anns: dict[str, str]) -> bool:
         if isinstance(test.op, _INT_BINOPS):
             return True
         if isinstance(test.op, ast.Add):
-            return _looks_int(test.left, anns) or _looks_int(test.right, anns)
+            return (_looks_int(test.left, anns, inners)
+                    or _looks_int(test.right, anns, inners))
         return False
     if isinstance(test, ast.Call) and isinstance(test.func, ast.Name) \
             and test.func.id in _INT_CALLS:
         return True
+    if isinstance(test, ast.Subscript) and not isinstance(test.slice, ast.Slice):
+        if isinstance(test.value, ast.Name):
+            if anns.get(test.value.id) == "str":
+                return True  # index is char, rejected in bool context
+            return inners.get(test.value.id) == "int"
+        return False
+    if isinstance(test, ast.IfExp):
+        return (_looks_int(test.body, anns, inners)
+                and _looks_int(test.orelse, anns, inners))
     return False
 
 
-def _assert_test_still_outside(test: ast.expr, anns: dict[str, str]) -> bool:
+def _assert_test_still_outside(test: ast.expr, anns: dict[str, str],
+                               inners: dict[str, str]) -> bool:
     """True when Dafny's bool-context check will reject this test.
 
     The survey has no inferencer. Comparisons / `not` / bool names stay
-    admitted; int names, int arithmetic, and `len`/`abs`/`min`/`max`/`sum`
-    fire. `str`/`list` names do not — the encoder admits those as
-    emptiness checks."""
+    admitted; int names, int arithmetic, indexing into `list[int]`/`str`,
+    int if-exprs, and `len`/`abs`/`min`/`max`/`sum` fire. `str`/`list`
+    names do not — the encoder admits those as emptiness checks."""
     if isinstance(test, ast.Constant):
         return type(test.value) not in (bool, str)
     if isinstance(test, ast.Name):
         t = anns.get(test.id)
         return t is not None and t != "bool" and t not in _SEQISH_ANN
-    return _looks_int(test, anns)
+    return _looks_int(test, anns, inners)
 
 
 def _is_mutable_literal(node: ast.expr) -> bool:
@@ -336,7 +358,7 @@ class _FunctionScanner:
         self.scope = scope
         self.class_flags = class_flags
         self.local_names = self._local_names()
-        self.ann_types = self._annotated_names()
+        self.ann_types, self.ann_inners = self._annotated_names()
 
     def fire(self, rule: str, node: ast.AST, detail: str = "") -> None:
         self.report.fires.append(
@@ -378,10 +400,12 @@ class _FunctionScanner:
                 names.add(stmt.id)
         return names
 
-    def _annotated_names(self) -> dict[str, str]:
+    def _annotated_names(self) -> tuple[dict[str, str], dict[str, str]]:
         """Syntactic annotations on this function's params and AnnAssigns.
-        Nested defs are skipped (same boundary as `_local_names`)."""
+        Nested defs are skipped (same boundary as `_local_names`).
+        The second map is the inner spelling of `list[T]` / `Optional[T]`."""
         out: dict[str, str] = {}
+        inners: dict[str, str] = {}
         a = self.node.args
         for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg):
             if arg is None or arg.annotation is None:
@@ -389,6 +413,9 @@ class _FunctionScanner:
             t = _simple_ann(arg.annotation)
             if t is not None:
                 out[arg.arg] = t
+            inner = _ann_inner(arg.annotation)
+            if inner is not None:
+                inners[arg.arg] = inner
 
         def walk(node: ast.AST) -> None:
             for child in ast.iter_child_nodes(node):
@@ -398,11 +425,14 @@ class _FunctionScanner:
                     t = _simple_ann(child.annotation)
                     if t is not None:
                         out[child.target.id] = t
+                    inner = _ann_inner(child.annotation)
+                    if inner is not None:
+                        inners[child.target.id] = inner
                 walk(child)
 
         for stmt in self.node.body:
             walk(stmt)
-        return out
+        return out, inners
 
     def _is_module_level(self, name: str, locals_: frozenset[str]) -> bool:
         return (
@@ -468,7 +498,7 @@ class _FunctionScanner:
             case ast.Assert(test=test, msg=msg):
                 if msg is not None and not isinstance(msg, ast.Constant):
                     self.fire("X-ASSERT", stmt)
-                elif _assert_test_still_outside(test, self.ann_types):
+                elif _assert_test_still_outside(test, self.ann_types, self.ann_inners):
                     self.fire("X-ASSERT", stmt)
             case ast.Global() | ast.Nonlocal():
                 self.fire("T-GLOBAL", stmt)
