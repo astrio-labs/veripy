@@ -501,18 +501,34 @@ def _sorted_still_outside(node: ast.Call, anns: dict[str, str],
     """True when Dafny still rejects this `sorted()` call.
 
     Admitted: one positional arg, no keywords, operand annotated
-    `list[int]`. Unannotated `sorted(xs)` stays silent (untyped survey
-    optimism). Keywords, extra args, `str`, `list[str]` / `list[bool]`
+    `list[int]`, or a list literal of ints. Unannotated `sorted(xs)`
+    stays silent (untyped survey optimism). Keywords, extra args,
+    `str` literals, `list[str]` / `list[bool]` names and literals
     fire `U-CALL`."""
     if node.keywords or len(node.args) != 1:
         return True
     arg = node.args[0]
-    if not isinstance(arg, ast.Name):
+    if isinstance(arg, ast.Name):
+        t = anns.get(arg.id)
+        if t is None:
+            return False
+        return not (t == "list" and inners.get(arg.id) == "int")
+    if isinstance(arg, ast.List):
+        if not arg.elts:
+            return True  # encoder infers None for []
+        for e in arg.elts:
+            if _const_int_expr(e) is not None:
+                continue
+            if isinstance(e, ast.Name):
+                t = anns.get(e.id)
+                if t is None or t == "int":
+                    continue  # untyped optimism, or visible int
+            return True  # statically not list[int]
         return False
-    t = anns.get(arg.id)
-    if t is None:
-        return False
-    return not (t == "list" and inners.get(arg.id) == "int")
+    if isinstance(arg, (ast.Constant, ast.Tuple, ast.Set, ast.Dict,
+                        ast.JoinedStr)):
+        return True  # never seq<int>
+    return False  # other non-names: no inferencer
 
 
 def _is_mutable_literal(node: ast.expr) -> bool:

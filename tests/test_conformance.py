@@ -215,6 +215,38 @@ def test_sorted_reverse_still_fires():
     assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
 
 
+def test_sorted_str_literal_still_fires():
+    # Encoder rejects sorted("abc"); a silent survey would count it accepted.
+    src = (
+        "def f() -> list[str]:\n"
+        "    return sorted('abc')\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
+
+
+def test_sorted_list_str_literal_still_fires():
+    src = (
+        "def f() -> list[str]:\n"
+        "    return sorted(['b', 'a'])\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+    assert not fn.accepted
+
+
+def test_sorted_list_int_literal_does_not_fire():
+    # Encoder infers seq<int> for a homogeneous int list literal.
+    src = (
+        "def f() -> list[int]:\n"
+        "    return sorted([3, 1, 2])\n"
+    )
+    assert "U-CALL" not in _fires(src)
+
+
 def test_aggregate_counts():
     src = (
         "def good(x: int) -> int:\n"
