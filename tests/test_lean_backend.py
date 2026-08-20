@@ -2101,3 +2101,25 @@ def test_lean_rejects_foreach_unpack_loudly():
     )
     with pytest.raises(EncodeError, match="destructuring loop targets are outside the Lean slice"):
         _encode(src)
+
+
+def test_lean_rejects_fstrings_loudly():
+    # Dafny admits `len(f"n")` as |"n"|; Lean has no strings, so the
+    # f-string must fail here rather than vanish into a later rejection.
+    src = (
+        "#@ ensures result == 1\n"
+        "def f(n: int) -> int:\n"
+        "    return len(f\"n\")\n"
+    )
+    with pytest.raises(EncodeError, match="f-strings are outside the Lean slice"):
+        _encode(src)
+
+
+def test_lean_rejects_fstring_in_spec_loudly():
+    src = (
+        "#@ ensures result == len(f\"n\")\n"
+        "def f(n: int) -> int:\n"
+        "    return 1\n"
+    )
+    with pytest.raises(EncodeError, match="f-strings are outside the Lean slice"):
+        _encode(src)

@@ -20,7 +20,9 @@ rejection):
   (chained), and/or/not, len/min/max/abs, indexing, conditional expressions,
   single-generator list comprehensions (optional `if` filter via PyFlatten),
   eager `all`/`any`/`sum` genexp folds (filters included; all/any →
-  forall/exists, sum → mapped PySum)
+  forall/exists, sum → mapped PySum), f-strings as concatenation of
+  str pieces (no format spec, no `!s`/`!r`/`!a`, no int/bool/char
+  interpolation — `str(int)` is a later row)
 - specs: requires/ensures/invariant/decreases; forall/exists over range or
   membership domains; `result`; `old(param)` lowers to the parameter (our
   fragment's parameters are immutable — guards copy in, ownership forbids
@@ -357,6 +359,8 @@ _NODE_RULES: dict[type, str] = {
     ast.SetComp: "unsupported-comprehension",
     ast.DictComp: "unsupported-comprehension",
     ast.GeneratorExp: "unsupported-comprehension",
+    ast.JoinedStr: "unsupported-fstring",
+    ast.FormattedValue: "unsupported-fstring",
     ast.ClassDef: "unsupported-class",
     ast.FunctionDef: "unsupported-function",
 }
@@ -754,6 +758,8 @@ class _MethodEncoder:
                     else:
                         self.types[comp.target.id] = saved
                 return f"seq<{et}>" if et is not None else None
+            case ast.JoinedStr():
+                return "string" if self._joined_str_is_str(node) else None
             case _:
                 return None
 
@@ -904,6 +910,8 @@ class _MethodEncoder:
                     "slice encoder (no nested `for`, no async) — bind "
                     "the inner sequence first, or write nested loops"
                 ))
+            case ast.JoinedStr():
+                return self._fstring(node)
             case _:
                 raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder "
                                  f"-- see the admitted-construct table in docs/SEMANTICS.md")
@@ -1003,6 +1011,87 @@ class _MethodEncoder:
         # [e for x in xs if P] → flatten a seq of 0/1-element seqs so
         # order is preserved and omitted elements do not leave a hole.
         return f"PyFlatten({seq_of(f'(if {pred} then [{body}] else [])')})"
+
+    def _joined_str_is_str(self, node: ast.JoinedStr) -> bool:
+        """True when every interpolation is a bare str (no spec, no
+        conversion). Infer returns `string` only in that case so a
+        rejected f-string does not type as str and then fail later."""
+        for v in node.values:
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                continue
+            if isinstance(v, ast.FormattedValue) and v.conversion == -1 \
+                    and v.format_spec is None \
+                    and self._infer(v.value) == "string":
+                continue
+            return False
+        return True
+
+    def _fstring(self, node: ast.JoinedStr) -> str:
+        """`f"a{s}b"` → `"a" + s + "b"`. Identity on a str interpolation
+        with no spec is CPython's default format; int/bool/char and
+        format specs would need `str(int)` or the format mini-language,
+        which are later rows."""
+        parts: list[str] = []
+        for v in node.values:
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                if v.value == "":
+                    continue
+                parts.append(self._escape_str(v.value, v))
+                continue
+            if not isinstance(v, ast.FormattedValue):
+                raise _err(node, (
+                    "f-string piece is outside the slice encoder — "
+                    "interpolate a str value with no format spec"
+                ))
+            if v.conversion != -1:
+                raise _err(v, (
+                    "f-string conversions (`!s`/`!r`/`!a`) are outside "
+                    "the slice encoder — interpolate a str value, or "
+                    "write the concatenation explicitly (`a + b`)"
+                ))
+            if v.format_spec is not None:
+                raise _err(v, (
+                    "f-string format specs (`{x:...}`) are outside the "
+                    "slice encoder — interpolate a str value with no "
+                    "spec, or write the concatenation explicitly (`a + b`)"
+                ))
+            t = self._infer(v.value)
+            if t != "string":
+                raise _err(v, self._fstring_type_msg(t))
+            parts.append(self.expr(v.value))
+        if not parts:
+            return '""'
+        if len(parts) == 1:
+            return parts[0]
+        return "(" + " + ".join(parts) + ")"
+
+    def _fstring_type_msg(self, t: str | None) -> str:
+        if t == "int":
+            return (
+                "interpolating int in an f-string is outside this slice "
+                "— `str(int)` is a later catalog row; concatenate str "
+                "values, or write the digits as a literal"
+            )
+        if t == "bool":
+            return (
+                "interpolating bool in an f-string is outside this slice "
+                "— Python would spell True/False; concatenate str values"
+            )
+        if t == "char":
+            return (
+                "interpolating a character (`s[i]`) is outside this "
+                "slice — the model treats a str index as char, not str; "
+                "slice `s[i:i+1]` instead"
+            )
+        if t is None:
+            return (
+                "cannot determine the type of an f-string interpolation; "
+                "this slice interpolates str values only"
+            )
+        return (
+            f"interpolating {_py_type_name(t)} in an f-string is outside "
+            f"this slice — concatenate str values (`a + b`)"
+        )
 
     def _escape_str(self, value: str, node: ast.expr) -> str:
         out = []
