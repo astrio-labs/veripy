@@ -353,3 +353,31 @@ def test_fstring_greet_verifies(tmp_path, capsys):
     )
     assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_str_int_literals_verify(tmp_path, capsys):
+    src = tmp_path / "parse.py"
+    src.write_text(
+        "#@ ensures result == \"0\"\n"
+        "def zero_str() -> str:\n"
+        "    return str(0)\n"
+        "\n"
+        "#@ ensures result == \"-7\"\n"
+        "def neg_str() -> str:\n"
+        "    return str(-7)\n"
+        "\n"
+        "#@ ensures result == 12\n"
+        "def parse_twelve() -> int:\n"
+        "    return int(\"12\")\n"
+        "\n"
+        "#@ ensures result == 8\n"
+        "def parse_leading_zero() -> int:\n"
+        "    return int(\"08\")\n"
+        "\n"
+        "#@ requires s == \"12\"\n"
+        "#@ ensures result == int(s)\n"
+        "def parse_guarded(s: str) -> int:\n"
+        "    return int(s)\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=60, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out

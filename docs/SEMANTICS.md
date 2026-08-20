@@ -209,6 +209,7 @@ translation of the *same* stub the prover saw).
 | `break` / `continue` | §4 loops | Dafny `break`/`continue`; for-desugar steps the hidden index before `continue` | unit (while cap, range-for skip) |
 | tuples / unpack / multi-return | §4 assign | Dafny `(T, U)` products; `p.k` / `a, b := p.0, p.1`; arity checked at encode time | unit (pair return, unpack, Hypothesis) |
 | f-strings | §3 concat | `"a" + s + "b"`; str interpolations only | unit (greet, Hypothesis) |
+| `str(int)` / `int(str)` | §3 builtins | `PyIntToStr` / `PyStrToInt` (requires `PyIsIntStr`) | unit (roundtrip, Hypothesis) |
 | walrus `:=` | §4 assign | assignment then the bound name; while-test re-emitted at continue / loop-end | unit (return/if/while, Hypothesis) |
 | assert | §4 | Dafny `assert` | corpus (rolling_max, below_zero) + unit |
 | truthiness §7.3 | §3 | `\|xs\| != 0` | unit |

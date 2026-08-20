@@ -1885,6 +1885,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "f-strings are outside the Lean slice — the Dafny "
                     "backend admits them as concatenation of str "
                     "pieces; this slice has no strings", node.lineno)
+            if isinstance(node, ast.Call) \
+                    and isinstance(node.func, ast.Name) \
+                    and node.func.id in ("str", "int"):
+                raise _reject(
+                    "str(int)/int(str) are outside the Lean slice — the "
+                    "Dafny backend admits them with parse VCs; this "
+                    "slice has no strings", node.lineno)
         # The same question in SPEC clauses, which are comments and so
         # are invisible to the walk above. A clause calling a name the
         # function also binds as a local is ambiguous — the builtin at
@@ -1904,6 +1911,14 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                             "f-strings are outside the Lean slice — the "
                             "Dafny backend admits them as concatenation "
                             "of str pieces; this slice has no strings",
+                            clause.line)
+                    if isinstance(node, ast.Call) \
+                            and isinstance(node.func, ast.Name) \
+                            and node.func.id in ("str", "int"):
+                        raise _reject(
+                            "str(int)/int(str) are outside the Lean "
+                            "slice — the Dafny backend admits them with "
+                            "parse VCs; this slice has no strings",
                             clause.line)
                     if isinstance(node, ast.Call) \
                             and isinstance(node.func, ast.Name) \

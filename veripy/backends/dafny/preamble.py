@@ -14,8 +14,8 @@ PREAMBLE_VERSION = "0.7"
 
 PREAMBLE = """\
 // VeriPy Dafny preamble v0.7 -- Python-exact arithmetic, indexing,
-// slicing, Optionals, folds, powers, outcomes, filtered comprehensions
-// (ARCHITECTURE §7.1, §7 catalog).
+// slicing, Optionals, folds, powers, int/str parse, outcomes, filtered
+// comprehensions (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int
   requires b != 0
@@ -96,6 +96,57 @@ function PyPow(b: int, e: int): int
   decreases e
 {
   if e == 0 then 1 else b * PyPow(b, e - 1)
+}
+
+// str(n) / int(s). Recursion is O(digits). The parse domain is tight:
+// optional ASCII minus, then a nonempty string of ASCII digits 0-9.
+// No leading '+', no underscores, no whitespace, no 0x/0b/0o, no empty,
+// no "-" alone. int("08") == 8 (default int() is not octal); int("-0") == 0.
+// PyIsIntStr is exactly Python's ValueError condition on that domain.
+function PyDigit(n: nat): char
+  requires n <= 9
+{
+  (('0' as int) + n) as char
+}
+
+function PyNatToStr(n: nat): string
+  decreases n
+{
+  if n < 10 then [PyDigit(n)]
+  else PyNatToStr(n / 10) + [PyDigit(n % 10)]
+}
+
+function PyIntToStr(n: int): string
+{
+  if n >= 0 then PyNatToStr(n as nat)
+  else "-" + PyNatToStr((-n) as nat)
+}
+
+predicate PyIsDigits(s: string)
+{
+  |s| >= 1 && forall i :: 0 <= i < |s| ==> '0' <= s[i] <= '9'
+}
+
+predicate PyIsIntStr(s: string)
+{
+  if |s| == 0 then false
+  else if s[0] == '-' then PyIsDigits(s[1..])
+  else PyIsDigits(s)
+}
+
+function PyDigitsToNat(s: string): nat
+  requires PyIsDigits(s)
+  decreases |s|
+{
+  if |s| == 1 then (s[0] as int - '0' as int) as nat
+  else PyDigitsToNat(s[..|s|-1]) * 10 + (s[|s|-1] as int - '0' as int) as nat
+}
+
+function PyStrToInt(s: string): int
+  requires PyIsIntStr(s)
+{
+  if s[0] == '-' then -(PyDigitsToNat(s[1..]) as int)
+  else PyDigitsToNat(s) as int
 }
 
 // Exceptions as VALUES (ARCHITECTURE §7.4). A function that can raise

@@ -86,7 +86,9 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 - [ ] `str` methods (`split` / `join` / `find` / `strip` / …), ASCII or
       axiom-flagged in the report
 - [ ] `sorted` (permutation + order; stability only on demand)
-- [ ] `str(int)` / `int(str)` with parse VCs
+- [x] `str(int)` / `int(str)` with parse VCs
+      (one positional arg; bool is a disjoint sort; f-string int
+      interpolation stays rejected; Lean has no strings)
 - [ ] A small `math` subset
 
 ### Data a product actually uses
