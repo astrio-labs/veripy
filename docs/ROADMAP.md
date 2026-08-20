@@ -68,7 +68,9 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 
 ### Cheap coverage (survey’s admittable peak)
 
-- [ ] f-strings (`T-FSTRING`)
+- [x] f-strings (`T-FSTRING`)
+      (str interpolations only; format specs / `!s`/`!r`/`!a` / int
+      interpolation still rejected — `str(int)` is a later row)
 - [ ] Walrus `:=`
 - [x] `assert` as a VC, uniformly
       (Dafny already lowered it; survey no longer counts a bare `assert`

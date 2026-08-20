@@ -315,3 +315,18 @@ def test_assert_as_vc_verifies(tmp_path, capsys):
     )
     assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
     assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_fstring_greet_verifies(tmp_path, capsys):
+    src = tmp_path / "greet.py"
+    src.write_text(
+        "#@ ensures result == \"hi \" + s\n"
+        "def greet(s: str) -> str:\n"
+        "    return f\"hi {s}\"\n"
+        "\n"
+        "#@ ensures result == f\"hi {s}\"\n"
+        "def greet_spec(s: str) -> str:\n"
+        "    return \"hi \" + s\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out

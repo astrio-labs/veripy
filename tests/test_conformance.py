@@ -174,8 +174,26 @@ def test_attr_store_fires():
     assert "X-ATTR-STORE" in _fires(src)
 
 
-def test_fstring_fires():
-    src = "def f(x: int) -> str:\n    return f'{x}'\n"
+def test_fstring_format_spec_still_fires():
+    src = "def f(x: int) -> str:\n    return f'{x:d}'\n"
+    assert "T-FSTRING" in _fires(src)
+
+
+def test_fstring_conversion_still_fires():
+    src = "def f(s: str) -> str:\n    return f'{s!r}'\n"
+    assert "T-FSTRING" in _fires(src)
+
+
+def test_bare_str_fstring_does_not_fire():
+    # Admitted as concatenation when the interpolation is str-typed.
+    src = "def f(s: str) -> str:\n    return f'hi {s}'\n"
+    assert "T-FSTRING" not in _fires(src)
+
+
+def test_bare_int_fstring_still_fires():
+    # Encoder rejects `f"{n}"` for `n: int`; the survey can see the
+    # annotation even without an inferencer.
+    src = "def f(n: int) -> str:\n    return f'{n}'\n"
     assert "T-FSTRING" in _fires(src)
 
 
@@ -464,6 +482,16 @@ def test_assert_annotated_local_still_fires():
     src = (
         "def f() -> int:\n"
         "    n: int = 1\n"
+        "    assert n\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_inferred_int_local_still_fires():
+    src = (
+        "def f() -> int:\n"
+        "    n = 1\n"
         "    assert n\n"
         "    return n\n"
     )

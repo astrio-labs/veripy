@@ -64,7 +64,7 @@ _RULES = [
     Rule("T-IS", "`is` against something other than None/True/False", "§3.1 semantic traps"),
     Rule("T-MUT-DEFAULT", "mutable default argument", "§3.1 semantic traps"),
     Rule("T-GLOBAL", "write access to module-level state", "§3.1 semantic traps"),
-    Rule("T-FSTRING", "f-string / string interpolation", "§7 curated-str candidate"),
+    Rule("T-FSTRING", "f-string with format spec, conversion, non-str literal, or a non-str annotated name", "§7 curated-str; bare `{s}` concat is admitted"),
     Rule("X-TRY", "try/except/finally", "§7.4"),
     Rule("X-RAISE", "raise", "§7.4"),
     Rule("X-WITH", "with statement", "§7 excluded"),
@@ -306,6 +306,31 @@ def _assert_test_still_outside(test: ast.expr, anns: dict[str, str],
     return _looks_int(test, anns, inners)
 
 
+def _fstring_still_outside(node: ast.JoinedStr,
+                           anns: dict[str, str] | None = None) -> bool:
+    """True for f-strings the encoder still rejects.
+
+    Bare `{name}` interpolations are admitted as str concatenation when
+    the name is str-typed. The survey has no inferencer, so an
+    unannotated `{name}` does not fire; a name annotated as something
+    other than `str` does. Format specs, `!s`/`!r`/`!a`, and non-str
+    literals still fire."""
+    anns = anns or {}
+    for v in node.values:
+        if not isinstance(v, ast.FormattedValue):
+            continue
+        if v.conversion != -1 or v.format_spec is not None:
+            return True
+        if isinstance(v.value, ast.Constant) \
+                and not isinstance(v.value.value, str):
+            return True
+        if isinstance(v.value, ast.Name):
+            t = anns.get(v.value.id)
+            if t is not None and t != "str":
+                return True
+    return False
+
+
 def _is_mutable_literal(node: ast.expr) -> bool:
     return isinstance(node, (ast.List, ast.Dict, ast.Set, ast.ListComp,
                              ast.DictComp, ast.SetComp)) or (
@@ -401,7 +426,8 @@ class _FunctionScanner:
         return names
 
     def _annotated_names(self) -> tuple[dict[str, str], dict[str, str]]:
-        """Syntactic annotations on this function's params and AnnAssigns.
+        """Syntactic annotations on this function's params and AnnAssigns,
+        plus int inferred from `n = 1` / `n = len(xs)` style assigns.
         Nested defs are skipped (same boundary as `_local_names`).
         The second map is the inner spelling of `list[T]` / `Optional[T]`."""
         out: dict[str, str] = {}
@@ -429,6 +455,11 @@ class _FunctionScanner:
                 inner = _ann_inner(node.annotation)
                 if inner is not None:
                     inners[node.target.id] = inner
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                    and isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+                if name not in out and _looks_int(node.value, out, inners):
+                    out[name] = "int"
             for child in ast.iter_child_nodes(node):
                 walk(child)
 
@@ -555,7 +586,8 @@ class _FunctionScanner:
                     elif not isinstance(c.value, _OK_CONST_TYPES):
                         self.fire("U-CONST", node, detail=type(c.value).__name__)
                 case ast.JoinedStr():
-                    self.fire("T-FSTRING", node)
+                    if _fstring_still_outside(node, self.ann_types):
+                        self.fire("T-FSTRING", node)
                 case ast.Yield() | ast.YieldFrom():
                     self.fire("X-YIELD", node)
                 case ast.NamedExpr():

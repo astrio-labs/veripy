@@ -198,6 +198,7 @@ translation of the *same* stub the prover saw).
 | for-range / for-each | §4 loops | hoisted while / snapshot; `for a, b in pairs` projects tuple elements | corpus-wide + unit (unpack) |
 | `break` / `continue` | §4 loops | Dafny `break`/`continue`; for-desugar steps the hidden index before `continue` | unit (while cap, range-for skip) |
 | tuples / unpack / multi-return | §4 assign | Dafny `(T, U)` products; `p.k` / `a, b := p.0, p.1`; arity checked at encode time | unit (pair return, unpack, Hypothesis) |
+| f-strings | §3 concat | `"a" + s + "b"`; str interpolations only | unit (greet, Hypothesis) |
 | assert | §4 | Dafny `assert` | corpus (rolling_max, below_zero) + unit |
 | truthiness §7.3 | §3 | `\|xs\| != 0` | unit |
 
