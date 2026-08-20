@@ -140,6 +140,7 @@ sidecar.
 | `postcondition` | An `#@ ensures` clause was not proved on some return path. Strengthen invariants or supply lemmas. |
 | `resolution` | The proof sidecar does not typecheck — an unresolved name, a wrong argument count, or a wrong argument type. The proof was never attempted, so strengthening it is the wrong move: fix the declaration against the preamble signatures. This is the most common failure a repair engine actually hits (15 of 15 unclassified records in the first n=6 live run were of this kind). |
 | `termination` | A `decreases` obligation failed; the prover cannot show the loop or recursion terminates. |
+| `axiom-footprint` | A theorem was proved, but its axiom footprint escapes the allowed set — the evidence was never kernel-checked (a `sorry` or `admit` anywhere in its dependencies surfaces as `sorryAx`). Remove the admitted step and prove it. |
 | `timeout` | The prover ran out of time or resources on this obligation. NOT a disproof: the property may still hold. |
 
 ### Front-end rejections — the source or specs must change

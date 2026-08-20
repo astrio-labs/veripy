@@ -92,6 +92,14 @@ class ProofBackend(Protocol):
 
     def encoded_text(self, encoded: EncodedLike) -> str: ...
 
+    def compose_artifact(self, encoded: EncodedLike,
+                         sidecar: SidecarLike) -> str:
+        """The full artifact text: the encoded module plus the proof
+        pack. Appending suits a whole-program checker like Dafny, where
+        declaration order does not matter. A backend whose language
+        requires declaration-before-use overrides this."""
+        return self.encoded_text(encoded) + sidecar.text
+
     def artifact_name(self, stem: str) -> str: ...
 
     def verify_artifact(self, artifact: Path, line_map: dict[int, int], *,
