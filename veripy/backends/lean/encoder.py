@@ -65,6 +65,11 @@ from .prelude import PRELUDE, PRELUDE_VERSION  # noqa: F401  (version re-exporte
 
 _SLICE_RULE = "lean-slice-1"
 
+_DAFNY_STR_METHODS = frozenset({
+    "join", "split", "find", "startswith", "endswith", "replace",
+    "strip", "lstrip", "rstrip",
+})
+
 # Every user-derived identifier (function, parameter, local, generated
 # theorem) is emitted in Lean's escaped-identifier syntax «name». A
 # keyword BLOCKLIST is inherently incomplete — `forall` escaped the
@@ -1898,6 +1903,14 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "f-strings are outside the Lean slice — the Dafny "
                     "backend admits them as concatenation of str "
                     "pieces; this slice has no strings", node.lineno)
+            if isinstance(node, ast.Call) \
+                    and isinstance(node.func, ast.Attribute) \
+                    and node.func.attr in _DAFNY_STR_METHODS:
+                raise _reject(
+                    "str methods are outside the Lean slice — the Dafny "
+                    "backend admits join/split/find/startswith/"
+                    "endswith/replace/strip; this slice has no strings",
+                    node.lineno)
         # The same question in SPEC clauses, which are comments and so
         # are invisible to the walk above. A clause calling a name the
         # function also binds as a local is ambiguous — the builtin at
@@ -1918,6 +1931,14 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                             "Dafny backend admits them as concatenation "
                             "of str pieces; this slice has no strings",
                             clause.line)
+                    if isinstance(node, ast.Call) \
+                            and isinstance(node.func, ast.Attribute) \
+                            and node.func.attr in _DAFNY_STR_METHODS:
+                        raise _reject(
+                            "str methods are outside the Lean slice — "
+                            "the Dafny backend admits join/split/find/"
+                            "startswith/endswith/replace/strip; this "
+                            "slice has no strings", clause.line)
                     if isinstance(node, ast.Call) \
                             and isinstance(node.func, ast.Name) \
                             and node.func.id in assigned_anywhere:

@@ -2371,3 +2371,23 @@ def test_lean_rejects_fstring_in_spec_loudly():
     )
     with pytest.raises(EncodeError, match="f-strings are outside the Lean slice"):
         _encode(src)
+
+
+def test_lean_rejects_str_methods_loudly():
+    src = (
+        "#@ ensures result == 0\n"
+        "def f(n: int) -> int:\n"
+        "    return \"abc\".find(\"a\")\n"
+    )
+    with pytest.raises(EncodeError, match="str methods are outside the Lean slice"):
+        _encode(src)
+
+
+def test_lean_rejects_str_methods_in_spec_loudly():
+    src = (
+        "#@ ensures result == \"ab\".find(\"a\")\n"
+        "def f(n: int) -> int:\n"
+        "    return 0\n"
+    )
+    with pytest.raises(EncodeError, match="str methods are outside the Lean slice"):
+        _encode(src)

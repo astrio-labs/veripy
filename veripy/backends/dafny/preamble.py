@@ -14,8 +14,8 @@ PREAMBLE_VERSION = "0.7"
 
 PREAMBLE = """\
 // VeriPy Dafny preamble v0.7 -- Python-exact arithmetic, indexing,
-// slicing, Optionals, folds, powers, outcomes, filtered comprehensions
-// (ARCHITECTURE §7.1, §7 catalog).
+// slicing, Optionals, folds, powers, outcomes, filtered comprehensions,
+// ASCII-faithful str methods (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
 function PyMod(a: int, b: int): int
   requires b != 0
@@ -121,6 +121,91 @@ datatype PyOutcome<T> = PyOk(value: T) | PyErr(exn: PyExn)
   function Extract(): T
     requires !IsFailure()
   { this.value }
+}
+
+// str methods, CPython-faithful on the admitted domain (exact substring
+// match / char membership). Unicode-table methods (lower/upper/isdigit,
+// no-arg strip/split) are encoder rejections — an ASCII A-Z rewrite
+// would be a silent approximation.
+// Empty needle: s.find("") == 0, including on "".
+function PyStrFind(s: string, sub: string): int
+  decreases |s|
+{
+  if |sub| == 0 then 0
+  else if |s| < |sub| then -1
+  else if s[..|sub|] == sub then 0
+  else
+    var rest := PyStrFind(s[1..], sub);
+    if rest < 0 then -1 else rest + 1
+}
+
+function PyStrJoin(sep: string, parts: seq<string>): string
+  decreases |parts|
+{
+  if |parts| == 0 then ""
+  else if |parts| == 1 then parts[0]
+  else parts[0] + sep + PyStrJoin(sep, parts[1..])
+}
+
+// Unlimited split on a nonempty sep. Empty s → [""]; consecutive seps
+// yield empty parts. The encoder rejects a visible empty sep; the
+// requires is the ValueError condition for a non-literal empty.
+function PyStrSplit(s: string, sep: string): seq<string>
+  requires |sep| >= 1
+  ensures |PyStrSplit(s, sep)| >= 1
+  decreases |s|
+{
+  if |s| < |sep| then
+    [s]
+  else if s[..|sep|] == sep then
+    [""] + PyStrSplit(s[|sep|..], sep)
+  else
+    var rest := PyStrSplit(s[1..], sep);
+    [s[..1] + rest[0]] + rest[1..]
+}
+
+function PyStrStartsWith(s: string, prefix: string): bool
+{
+  |prefix| <= |s| && s[..|prefix|] == prefix
+}
+
+function PyStrEndsWith(s: string, suffix: string): bool
+{
+  |suffix| <= |s| && s[|s| - |suffix|..] == suffix
+}
+
+// Non-overlapping left-to-right replace. Empty `pat` is Python's
+// insert-between-chars (rejected by the encoder); the requires is that
+// domain condition for a non-literal old. Parameter names avoid Dafny
+// keywords `old` / `new`.
+function PyStrReplace(s: string, pat: string, repl: string): string
+  requires |pat| >= 1
+  decreases |s|
+{
+  if |s| < |pat| then s
+  else if s[..|pat|] == pat then repl + PyStrReplace(s[|pat|..], pat, repl)
+  else s[..1] + PyStrReplace(s[1..], pat, repl)
+}
+
+function PyStrLStrip(s: string, chars: string): string
+  decreases |s|
+{
+  if |s| == 0 then ""
+  else if s[0] in chars then PyStrLStrip(s[1..], chars)
+  else s
+}
+
+function PyStrRStrip(s: string, chars: string): string
+  decreases |s|
+{
+  if |s| == 0 then ""
+  else if s[|s| - 1] in chars then PyStrRStrip(s[..|s| - 1], chars)
+  else s
+}
+
+function PyStrStrip(s: string, chars: string): string
+{
+  PyStrRStrip(PyStrLStrip(s, chars), chars)
 }
 """
 
