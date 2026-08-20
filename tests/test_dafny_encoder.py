@@ -2056,3 +2056,17 @@ def test_rebound_math_import_does_not_lower():
         "    return gcd(a, b)\n"
     )
     _expect_encode_error(src, "outside the slice")
+
+
+def test_deleted_math_import_does_not_lower():
+    # `del gcd` unbinds the name; CPython raises NameError, so lowering
+    # to PyGcd would verify a result the source cannot produce.
+    src = (
+        "from math import gcd\n"
+        "del gcd\n"
+        "\n"
+        "#@ ensures result >= 0\n"
+        "def f(a: int, b: int) -> int:\n"
+        "    return gcd(a, b)\n"
+    )
+    _expect_encode_error(src, "outside the slice")

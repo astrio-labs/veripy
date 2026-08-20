@@ -2493,9 +2493,9 @@ def _collect_math_imports(
     is the set of names bound to the `math` module itself; `math_other` maps
     a local name to any other imported `math` attribute (for diagnostics).
     Only unconditional top-level imports bind — a nested `if`/`for`/`try`
-    import is not guaranteed to run, and a later module-level Store replaces
-    the math meaning. Recording either would lower `PyGcd`/`PyFact`/`PyIsqrt`
-    for CPython behavior the source does not have.
+    import is not guaranteed to run, and a later module-level Store or Del
+    replaces the math meaning. Recording either would lower
+    `PyGcd`/`PyFact`/`PyIsqrt` for CPython behavior the source does not have.
     Function bodies are out of scope — only module-level imports resolve.
     """
     math_names: dict[str, str] = {}
@@ -2535,7 +2535,7 @@ def _collect_math_imports(
                 for a in n.names:
                     if a.name != "*":
                         unbind((a.asname or a.name).split(".")[0])
-            elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
                 unbind(n.id)
             elif isinstance(n, ast.ExceptHandler) and n.name:
                 unbind(n.name)
