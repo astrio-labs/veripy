@@ -418,16 +418,18 @@ class _FunctionScanner:
                 inners[arg.arg] = inner
 
         def walk(node: ast.AST) -> None:
+            # Inspect `node` itself: a top-level `n: int = 1` is the
+            # statement, so a children-only walk would miss it.
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                return
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                t = _simple_ann(node.annotation)
+                if t is not None:
+                    out[node.target.id] = t
+                inner = _ann_inner(node.annotation)
+                if inner is not None:
+                    inners[node.target.id] = inner
             for child in ast.iter_child_nodes(node):
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-                    continue
-                if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
-                    t = _simple_ann(child.annotation)
-                    if t is not None:
-                        out[child.target.id] = t
-                    inner = _ann_inner(child.annotation)
-                    if inner is not None:
-                        inners[child.target.id] = inner
                 walk(child)
 
         for stmt in self.node.body:

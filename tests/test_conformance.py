@@ -460,6 +460,16 @@ def test_assert_int_name_still_fires():
     assert "X-ASSERT" in _fires(src)
 
 
+def test_assert_annotated_local_still_fires():
+    src = (
+        "def f() -> int:\n"
+        "    n: int = 1\n"
+        "    assert n\n"
+        "    return n\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
 def test_assert_bool_name_does_not_fire():
     src = (
         "def f(flag: bool) -> bool:\n"
