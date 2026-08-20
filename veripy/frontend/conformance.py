@@ -364,12 +364,18 @@ def _assert_test_still_outside(test: ast.expr, anns: dict[str, str],
 
     The survey has no inferencer. Comparisons / `not` / bool names stay
     admitted; int names, int arithmetic, indexing into `list[int]`/`str`,
-    tuple-valued indexing, int if-exprs, and `len`/`abs`/`min`/`max`/`sum`
-    fire. `str`/`list` names (and `list[str]` / `list[bool]` elements) do
-    not — the encoder admits those as emptiness / bool."""
+    tuple literals / tuple-valued indexing, int if-exprs, int walrus,
+    and `len`/`abs`/`min`/`max`/`sum` fire. `str`/`list` names (and
+    `list[str]` / `list[bool]` elements) do not — the encoder admits
+    those as emptiness / bool."""
     tuple_elems = tuple_elems or {}
     if isinstance(test, ast.Constant):
         return type(test.value) not in (bool, str)
+    if isinstance(test, ast.Tuple):
+        return True  # never bool; Dafny infers (T, U, ...) and rejects
+    if isinstance(test, ast.NamedExpr):
+        return _assert_test_still_outside(
+            test.value, anns, inners, tuple_elems)
     if isinstance(test, ast.Name):
         t = anns.get(test.id)
         return t is not None and t != "bool" and t not in _SEQISH_ANN
