@@ -496,23 +496,48 @@ def _fstring_still_outside(node: ast.JoinedStr,
     return False
 
 
+def _sorted_name_is_list_int(name: str, anns: dict[str, str],
+                             inners: dict[str, str]) -> bool | None:
+    """True if annotated list[int], False if annotated otherwise, None if unknown."""
+    t = anns.get(name)
+    if t is None:
+        return None
+    return t == "list" and inners.get(name) == "int"
+
+
 def _sorted_still_outside(node: ast.Call, anns: dict[str, str],
-                          inners: dict[str, str]) -> bool:
+                          inners: dict[str, str],
+                          inner_chains: dict[str, tuple[str, ...]] | None = None,
+                          ) -> bool:
     """True when Dafny still rejects this `sorted()` call.
 
     Admitted: one positional arg, no keywords, operand annotated
-    `list[int]`, or a list literal of ints. Unannotated `sorted(xs)`
-    stays silent (untyped survey optimism). Keywords, extra args,
-    `str` literals, `list[str]` / `list[bool]` names and literals
-    fire `U-CALL`."""
+    `list[int]`, a slice of that, or a list literal of ints.
+    Unannotated `sorted(xs)` stays silent (untyped survey optimism).
+    Keywords, extra args, `str` literals, `list[str]` / `list[bool]`
+    names and literals, and `xs[0]` on `list[int]` (element is int,
+    not seq<int>) fire `U-CALL`."""
+    inner_chains = inner_chains or {}
     if node.keywords or len(node.args) != 1:
         return True
     arg = node.args[0]
     if isinstance(arg, ast.Name):
-        t = anns.get(arg.id)
+        ok = _sorted_name_is_list_int(arg.id, anns, inners)
+        return False if ok is None else not ok
+    info = _subscript_name_depth(arg)
+    if info is not None:
+        name, depth = info
+        t = anns.get(name)
         if t is None:
             return False
-        return not (t == "list" and inners.get(arg.id) == "int")
+        chain = inner_chains.get(name) or ()
+        # After `depth` indexes, remaining is seq<int> iff the annotation
+        # was list[list[…][int]] with exactly `depth` list peels left.
+        return chain != ("list",) * depth + ("int",)
+    if isinstance(arg, ast.Subscript) and isinstance(arg.slice, ast.Slice) \
+            and isinstance(arg.value, ast.Name):
+        ok = _sorted_name_is_list_int(arg.value.id, anns, inners)
+        return False if ok is None else not ok
     if isinstance(arg, ast.List):
         if not arg.elts:
             return True  # encoder infers None for []
@@ -916,7 +941,8 @@ class _FunctionScanner:
             elif name in self.scope.forbidden:
                 self.fire(self.scope.forbidden[name], node, detail=name)
             elif name == "sorted" and _sorted_still_outside(
-                    node, self.ann_types, self.ann_inners):
+                    node, self.ann_types, self.ann_inners,
+                    self.ann_inner_chains):
                 self.fire("U-CALL", node, detail="sorted")
             elif name not in SAFE_BUILTINS and name not in self.scope.names:
                 self.fire("U-CALL", node, detail=name)
