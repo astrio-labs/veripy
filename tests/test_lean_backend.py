@@ -1081,8 +1081,9 @@ def test_while_shape_rejections():
     base = ("#@ requires n >= 0\n#@ ensures result == n\n"
             "def f(n: int) -> int:\n")
     cases = [
-        # the measure is the fuel bound, so it is required
-        (base + "    c = 0\n    while c < n:\n"
+        # a measure is still required when none can be INFERRED: this
+        # condition names no quantity that visibly counts down
+        (base + "    c = 0\n    while c != n + c - c:\n"
                 "        #@ invariant 0 <= c <= n\n"
                 "        c = c + 1\n    return c\n", "decreases"),
         # exactly one measure
@@ -1778,6 +1779,143 @@ def test_end_to_end_list_return_verifies(tmp_path):
     bad.write_text(INCR_LIST.replace("l[i] + 1", "l[i] + 2"))
     assert verify_structured(bad, tmp_path / "o2",
                              backend="lean")["status"] == "failed"
+
+
+def test_power_carries_a_non_negative_exponent_obligation():
+    # CPython returns a FLOAT for a negative exponent, which is outside
+    # the int fragment, so the exponent carries the same kind of
+    # obligation a divisor does. Zero, unlike a divisor, is fine.
+    lit = ("#@ ensures result == 2 ** 3\n"
+           "def f() -> int:\n"
+           "    return 8\n")
+    assert "VeriPy.PyPow" in _encode(lit).lean_source
+
+    bound = ("#@ requires e >= 0\n"
+             "#@ ensures result == 2 ** e\n"
+             "def f(e: int) -> int:\n"
+             "    return 1\n")
+    assert "VeriPy.PyPow" in _encode(bound).lean_source
+
+    with pytest.raises(EncodeError, match="exponent"):
+        _encode(bound.replace("#@ requires e >= 0\n", ""))
+
+
+def test_termination_measure_is_inferred_when_absent():
+    # Dafny infers here, and the frozen corpus relies on it. Inference
+    # is a PROPOSAL: the induction theorem still proves the measure
+    # decreases and stays bounded below, so a wrong guess costs a failed
+    # proof rather than admitting a loop that never ends.
+    no_clause = ("#@ requires n >= 0\n"
+                 "#@ ensures result == n\n"
+                 "def countup(n: int) -> int:\n"
+                 "    c = 0\n"
+                 "    while c < n:\n"
+                 "        #@ invariant 0 <= c <= n\n"
+                 "        c = c + 1\n"
+                 "    return c\n")
+    assert "def «countup_meas»" in _encode(no_clause).lean_source
+
+    # A condition naming nothing that counts down still needs a clause.
+    with pytest.raises(EncodeError, match="decreases"):
+        _encode(no_clause.replace("while c < n:", "while c != n + c - c:"))
+
+    # An INCLUSIVE condition needs one MORE than the difference: with
+    # `i <= n`, the measure `n - i` reaches zero while the condition is
+    # still true, so a fuel recursion would run out one step early.
+    # Dafny accepts `n - i` because its rule is decrease-and-bounded per
+    # iteration; a fuel model needs the iteration count.
+    inclusive = ("#@ requires n >= 0\n"
+                 "#@ ensures result == n\n"
+                 "def f(n: int) -> int:\n"
+                 "    t = 0\n"
+                 "    i = 1\n"
+                 "    while i <= n:\n"
+                 "        #@ invariant 1 <= i <= n + 1\n"
+                 "        #@ invariant t == i - 1\n"
+                 "        t = t + 1\n"
+                 "        i = i + 1\n"
+                 "    return t\n")
+    assert "((«n» - «i») + 1)" in _encode(inclusive).lean_source
+
+
+def test_range_binders_are_non_negative_exponents():
+    # The bound hypothesis gives `lo <= v`, so a binder over a range
+    # with a non-negative lower bound is itself non-negative, which is
+    # exactly what an exponent needs.
+    for rng in ("range(n)", "range(0, n)"):
+        src = (f"#@ requires n >= 0\n"
+               f"#@ ensures all(2 ** i > 0 for i in {rng})\n"
+               f"def f(n: int) -> int:\n"
+               f"    return n\n")
+        assert "VeriPy.PyPow" in _encode(src).lean_source
+
+    # A negative lower bound proves nothing about the binder.
+    neg = ("#@ requires n >= 0\n"
+           "#@ ensures all(2 ** i > 0 for i in range(-3, n))\n"
+           "def f(n: int) -> int:\n"
+           "    return n\n")
+    with pytest.raises(EncodeError, match="exponent"):
+        _encode(neg)
+
+    # A NAMED lower bound counts too when the contract proves it
+    # non-negative, with or without a constant offset.
+    for lo in ("lo", "lo + 2"):
+        named = (f"#@ requires lo >= 0\n"
+                 f"#@ requires n >= 0\n"
+                 f"#@ ensures all(2 ** j > 0 for j in range({lo}, n))\n"
+                 f"def f(lo: int, n: int) -> int:\n"
+                 f"    return n\n")
+        assert "VeriPy.PyPow" in _encode(named).lean_source
+
+    # ...but an unbounded name proves nothing.
+    unbounded = ("#@ requires n >= 0\n"
+                 "#@ ensures all(2 ** j > 0 for j in range(lo, n))\n"
+                 "def f(lo: int, n: int) -> int:\n"
+                 "    return n\n")
+    with pytest.raises(EncodeError, match="exponent"):
+        _encode(unbounded)
+
+    # The non-negative/positive distinction has to survive this: a
+    # binder that is only >= 0 is a fine EXPONENT and a bad DIVISOR.
+    divisor = ("#@ requires lo >= 0\n"
+               "#@ requires n >= 0\n"
+               "#@ ensures all(n % j >= 0 for j in range(lo, n))\n"
+               "def f(lo: int, n: int) -> int:\n"
+               "    return n\n")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(divisor)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_inferred_measure_still_refuses_non_termination(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # The soundness property has to survive inference: this loop never
+    # terminates in Python, and an inferred measure must not rescue it.
+    spin = tmp_path / "spin.py"
+    spin.write_text("#@ requires n >= 1\n"
+                    "#@ ensures result == n\n"
+                    "def spin(n: int) -> int:\n"
+                    "    c = 0\n"
+                    "    while c < n:\n"
+                    "        #@ invariant 0 <= c <= n\n"
+                    "        c = c\n"
+                    "    return c\n")
+    assert verify_structured(spin, tmp_path / "o1",
+                             backend="lean")["status"] == "failed"
+
+    # ...while the terminating version verifies with no clause at all.
+    good = tmp_path / "countup.py"
+    good.write_text("#@ requires n >= 0\n"
+                    "#@ ensures result == n\n"
+                    "def countup(n: int) -> int:\n"
+                    "    c = 0\n"
+                    "    while c < n:\n"
+                    "        #@ invariant 0 <= c <= n\n"
+                    "        c = c + 1\n"
+                    "    return c\n")
+    assert verify_structured(good, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
 
 
 def test_duplicate_defs_are_refused_not_mispaired():

@@ -165,6 +165,9 @@ class _ListCtx:
     # `.length` on an Int and Lean failed to elaborate — a tool error
     # where the encoder owed a refusal.
     result_is_list: bool = False
+    # Names the contract proves >= 0. Weaker than `pos_names`, and
+    # enough for an exponent, where zero is a perfectly good value.
+    nonneg_names: frozenset[str] = frozenset()
 
     def positive(self, e: "ast.expr") -> bool:
         if isinstance(e, ast.Constant) and isinstance(e.value, int) \
@@ -221,6 +224,22 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
         a = _int_expr(e.left, names, line, result, rename, lc)
         b = _int_expr(e.right, names, line, result, rename, lc)
         return f"({a} {_ARITH[type(e.op)]} {b})"
+    if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Pow):
+        # A NEGATIVE exponent makes CPython return a float, which is
+        # outside the int fragment, so the exponent carries the same
+        # kind of well-formedness obligation a divisor does. Unlike a
+        # divisor, zero is fine.
+        if not (lc.positive(e.right) or _nonneg_literal(e.right)
+                or (isinstance(e.right, ast.Name)
+                    and e.right.id in lc.nonneg_names)):
+            raise _reject(
+                "the exponent of `**` must be a non-negative literal, or "
+                "a name the contract proves non-negative — CPython "
+                "returns a FLOAT for a negative exponent, which is "
+                "outside this fragment", line)
+        a = _int_expr(e.left, names, line, result, rename, lc)
+        b = _int_expr(e.right, names, line, result, rename, lc)
+        return f"(VeriPy.PyPow {a} {b})"
     if isinstance(e, ast.BinOp) and isinstance(e.op, (ast.FloorDiv, ast.Mod)):
         if not lc.positive(e.right):
             raise _reject(
@@ -406,6 +425,16 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     # way the binder SHADOWS its name: an outer safe pair (or the take
     # index) under the same name refers to a different variable inside
     # the body, so it is dropped, never inherited.
+    # The bound hypothesis gives `lo <= v`, so a binder over a range
+    # whose lower bound is non-negative is itself non-negative — which
+    # is what an exponent needs. `range(n)` and `range(0, n)` both
+    # start at zero.
+    body_nonneg = set(lc.nonneg_names)
+    lo_arg = it.args[0] if len(it.args) == 2 else None
+    if lo_arg is None or _nonneg_bound(lo_arg, lc):
+        body_nonneg.add(v)
+    else:
+        body_nonneg.discard(v)
     safe = {k: lst for k, lst in lc.safe_idx.items() if k != v}
     hi_arg = it.args[-1]
     lo_is_zero = len(it.args) == 1 \
@@ -431,7 +460,8 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
     body_lc = _ListCtx(lc.lists, safe,
                        None if lc.take_idx == v else lc.take_idx,
                        lc.scaffold, lc.min_len, frozenset(body_pos),
-                       lc.result_list, lc.result_is_list)
+                       lc.result_list, lc.result_is_list,
+                       frozenset(body_nonneg))
     # Two capture hazards at the binder, both measured classes:
     # 1. The theorem's rename map (param named after its own function)
     #    must NOT apply under a binder that reuses the renamed name —
@@ -900,11 +930,20 @@ def _positive_bound(e: ast.expr, lc: "_ListCtx") -> bool:
 
 
 def _nonneg_bound(e: ast.expr, lc: "_ListCtx") -> bool:
-    """Is this expression provably >= 0? Positive implies non-negative;
-    a literal speaks for itself."""
+    """Is this expression provably >= 0? A literal speaks for itself, a
+    name the contract proves non-negative counts, and positive implies
+    non-negative. The middle case was missing, so `range(lo, n)` under
+    `requires lo >= 0` did not mark its binder non-negative and a valid
+    `2 ** j` in the body was refused."""
     if isinstance(e, ast.Constant) and isinstance(e.value, int) \
             and not isinstance(e.value, bool):
         return e.value >= 0
+    if isinstance(e, ast.Name) and e.id in lc.nonneg_names:
+        return True
+    if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
+        # `lo + k` is non-negative when both parts are.
+        return (_nonneg_bound(e.left, lc)
+                and _nonneg_bound(e.right, lc))
     return _positive_bound(e, lc)
 
 
@@ -988,6 +1027,24 @@ def _sign_facts(e: ast.expr) -> tuple[set[str], set[str], set[str]]:
 
     walk(e)
     return nonneg, nonzero, positive
+
+
+def _nonneg_literal(e: ast.expr) -> bool:
+    return (isinstance(e, ast.Constant) and isinstance(e.value, int)
+            and not isinstance(e.value, bool) and e.value >= 0)
+
+
+def _requires_nonneg(spec_fn: FunctionSpec) -> frozenset[str]:
+    """Names a top-level `requires` conjunct proves >= 0."""
+    out: set[str] = set()
+    for clause in spec_fn.by_kind("requires"):
+        text = clause.desugared if clause.desugared is not None else clause.raw
+        try:
+            nn, _, pos = _sign_facts(ast.parse(text, mode="eval").body)
+        except SyntaxError:
+            continue
+        out |= nn | pos
+    return frozenset(out)
 
 
 def _requires_positive(spec_fn: FunctionSpec) -> frozenset[str]:
@@ -1228,6 +1285,43 @@ def _proj(k: int, n: int) -> str:
     return ".2" * k + (".1" if k < n - 1 else "")
 
 
+def _infer_measure(cond: ast.expr) -> ast.expr | None:
+    """A termination measure read off the loop condition: `i < n` counts
+    down as `n - i`, `x > y` as `x - y`, and `y != 0` as `y`. Only a
+    proposal — the induction theorem still has to prove it decreases and
+    stays non-negative, so a bad guess costs a failed proof, never a
+    false one."""
+    if not (isinstance(cond, ast.Compare) and len(cond.ops) == 1):
+        return None
+    left, op, right = cond.left, cond.ops[0], cond.comparators[0]
+    # An INCLUSIVE comparison needs one more than the difference. With
+    # `while i <= n`, the measure `n - i` reaches zero while the
+    # condition is still true, so a fuel recursion runs out one step
+    # early. Dafny accepts `n - i` because its rule is
+    # decrease-and-bounded per iteration; a fuel model needs the
+    # iteration COUNT, which is one larger.
+    slack = 0
+    if isinstance(op, (ast.Lt, ast.LtE)):
+        hi, lo = right, left
+        slack = 1 if isinstance(op, ast.LtE) else 0
+    elif isinstance(op, (ast.Gt, ast.GtE)):
+        hi, lo = left, right
+        slack = 1 if isinstance(op, ast.GtE) else 0
+    elif isinstance(op, ast.NotEq) and _nonneg_literal(right):
+        return cond.left
+    elif isinstance(op, ast.NotEq) and _nonneg_literal(left):
+        return cond.comparators[0]
+    else:
+        return None
+    out: ast.expr = ast.BinOp(left=hi, op=ast.Sub(), right=lo)
+    if slack:
+        out = ast.BinOp(left=out, op=ast.Add(),
+                        right=ast.Constant(value=slack))
+    ast.copy_location(out, cond)
+    ast.fix_missing_locations(out)
+    return out
+
+
 def _loop_decreases(spec_fn: FunctionSpec,
                     loop: ast.While) -> tuple[ast.expr, int]:
     """The single `#@ decreases` measure at the loop head. Placement is
@@ -1241,6 +1335,20 @@ def _loop_decreases(spec_fn: FunctionSpec,
     if misplaced:
         raise _reject("`decreases` must sit at the top of the loop body, "
                       "before its first statement", misplaced[0].line)
+    if not at_head:
+        # No clause: infer one from the condition. This is SAFE rather
+        # than clever — the generated theorem still proves that the
+        # measure decreases and stays bounded below, so a wrong guess
+        # fails honestly instead of admitting a loop that never ends.
+        # Dafny infers here too, and the frozen corpus relies on it.
+        inferred = _infer_measure(loop.test)
+        if inferred is None:
+            raise _reject(
+                "a `while` loop needs a `#@ decreases` measure here — "
+                "one could not be inferred from the condition, and "
+                "without a measure a loop that stops early cannot be "
+                "ruled out", loop.lineno)
+        return inferred, loop.lineno
     if len(at_head) != 1:
         raise _reject("a `while` loop needs exactly one `#@ decreases` "
                       f"measure in this slice (found {len(at_head)}) — "
@@ -1703,7 +1811,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                            if t == "List Int")
         lc0 = _ListCtx(lists0, {}, None,
                        min_len=_requires_min_len(spec_fn, lists0),
-                       pos_names=_requires_positive(spec_fn))
+                       pos_names=_requires_positive(spec_fn),
+                       nonneg_names=_requires_nonneg(spec_fn))
         ret = fn.returns
         if isinstance(ret, ast.Subscript) \
                 and isinstance(ret.value, ast.Name) \
@@ -1900,13 +2009,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # still apply there.
             cond_pos = frozenset(lc0.pos_names | inv_pos
                                  | (inv_nn & inv_nz))
+            # Non-negativity from loop context too, which an exponent
+            # needs: `2 ** i` under an invariant `0 <= i <= n` is fine,
+            # and zero is a perfectly good exponent.
+            body_nn = frozenset(lc0.nonneg_names | nn | inv_pos | cnd_pos)
             body_lc = _ListCtx(lc0.lists, {}, None, min_len=lc0.min_len,
-                               pos_names=body_pos)
+                               pos_names=body_pos, nonneg_names=body_nn)
             cond_lc = _ListCtx(lc0.lists, {}, None, min_len=lc0.min_len,
-                               pos_names=cond_pos)
+                               pos_names=cond_pos,
+                               nonneg_names=frozenset(lc0.nonneg_names
+                                                      | inv_nn | inv_pos))
             inv_lc = _ListCtx(lc0.lists, {}, None, scaffold=True,
                               min_len=lc0.min_len,
-                              pos_names=lc0.pos_names)
+                              pos_names=lc0.pos_names,
+                              nonneg_names=frozenset(lc0.nonneg_names
+                                                     | inv_nn | inv_pos))
             init_ts = [_int_expr(e, names, fn.lineno, lc=lc0)
                        for e in wloop.inits]
             _reject_undecidable_quantifier(wloop.cond, body_names,
