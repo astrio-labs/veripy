@@ -38,6 +38,11 @@ PROVER_KINDS: dict[str, str] = {
                          "sequence) was not established at the call site.",
     "termination": "A `decreases` obligation failed; the prover cannot show "
                    "the loop or recursion terminates.",
+    "axiom-footprint": "A theorem was proved, but its axiom footprint "
+                       "escapes the allowed set — the evidence was never "
+                       "kernel-checked (a `sorry` or `admit` anywhere in its "
+                       "dependencies surfaces as `sorryAx`). Remove the "
+                       "admitted step and prove it.",
     "bounds": "An index was not shown in range (Python's IndexError "
               "condition, modeled by PyIndex).",
     "division": "A divisor was not shown nonzero (Python's "

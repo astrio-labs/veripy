@@ -9,6 +9,8 @@ slice).
 
 from __future__ import annotations
 
+import re
+
 import functools
 import json
 import shutil
@@ -43,8 +45,38 @@ _KINDS: tuple[tuple[str, str], ...] = (
     # needle is the robust form: ANY diagnostic displaying an unsolved
     # goal is the spec theorem failing, whatever tactic reported it.
     ("tactic `assumption` failed", "postcondition"),
+    ("depends on disallowed axioms", "axiom-footprint"),
     ("⊢", "postcondition"),
 )
+
+
+# The only axioms a proof may rest on. These three are Lean's own
+# classical foundations, present in ordinary mathematics and trusted by
+# the kernel. Anything else — above all `sorryAx`, which both `sorry`
+# and `admit` introduce — means the "proof" was never checked.
+ALLOWED_AXIOMS = frozenset({"propext", "Quot.sound", "Classical.choice"})
+
+_AXIOM_LINE = re.compile(r"'([^']+)' depends on axioms: \[([^\]]*)\]")
+
+
+def axiom_violations(messages: list[str]) -> list[tuple[str, list[str]]]:
+    """(theorem, offending axioms) for every `#print axioms` line whose
+    footprint escapes ALLOWED_AXIOMS.
+
+    This is the semantic no-assumption guarantee: a syntactic whitelist
+    can only approximate it, because it has to enumerate the ways a
+    proof might cheat, while the footprint simply reports what the
+    proof actually used."""
+    out: list[tuple[str, list[str]]] = []
+    for msg in messages:
+        m = _AXIOM_LINE.search(msg)
+        if not m:
+            continue
+        used = [a.strip() for a in m.group(2).split(",") if a.strip()]
+        bad = [a for a in used if a not in ALLOWED_AXIOMS]
+        if bad:
+            out.append((m.group(1), bad))
+    return out
 
 
 def classify_lean_message(message: str) -> str:
@@ -168,6 +200,23 @@ def verify_lean_file(path: Path, line_map: dict[int, int],
             error=(f"lean exited {proc.returncode} without diagnostics: "
                    f"{(proc.stderr or proc.stdout)[:400]}"))
     ok = proc.returncode == 0 and not errors
+    # A proof that elaborated is not yet a proof that was CHECKED. Lean
+    # reports each theorem's axiom footprint, and anything outside the
+    # allowed set means the evidence rests on something the kernel
+    # never verified — `sorryAx` above all, which is what both `sorry`
+    # and `admit` leave behind. A syntactic whitelist has to enumerate
+    # the ways a proof might cheat; this reports what it actually used.
+    if ok:
+        violations = axiom_violations([d.message for d in diagnostics])
+        for thm, bad in violations:
+            diagnostics.append(LeanDiagnostic(
+                dafny_line=0, py_line=None, severity="error",
+                message=(f"theorem {thm!r} depends on disallowed axioms "
+                         f"{bad} — the proof was not kernel-checked"),
+            ))
+        if violations:
+            ok = False
+            errors = [d for d in diagnostics if d.severity == "error"]
     summary = (f"lean finished with {len(errors)} error(s)"
                if diagnostics or proc.returncode else "lean finished clean")
     return LeanVerifyResult(ok=ok, diagnostics=diagnostics,

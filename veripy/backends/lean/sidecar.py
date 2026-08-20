@@ -36,10 +36,17 @@ _RULE = "lean-sidecar"
 # can replace a definition's meaning after the fact; `set_option` can
 # turn checks off.
 _FORBIDDEN = (
-    "axiom", "sorry", "native_decide", "unsafe", "partial", "opaque",
-    "extern", "implemented_by", "macro", "macro_rules", "syntax",
-    "elab", "notation", "set_option", "#eval", "instance",
+    "axiom", "sorry", "admit", "native_decide", "unsafe", "partial",
+    "opaque", "extern", "implemented_by", "macro", "macro_rules",
+    "syntax", "elab", "notation", "set_option", "#eval", "instance",
 )
+# `admit` is `sorry` wearing a tactic's clothes, and its absence here
+# was a real hole. The lesson is the list's, not the entry's: a
+# blocklist cannot enumerate every route to unchecked evidence. The
+# axiom-footprint check in the driver is the structural answer — it
+# catches `sorry` and `admit` alike, by their shared `sorryAx`, along
+# with routes nobody has thought of yet. This list stays as the cheap
+# first gate that refuses before Lean is ever invoked.
 
 _DECL = re.compile(r"^\s*(theorem|lemma|def)\s+([^\s:({\[]+)", re.M)
 _COMMENT_LINE = re.compile(r"--.*?$", re.M)

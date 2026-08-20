@@ -1812,6 +1812,45 @@ def test_sidecar_whitelist_admits_only_proved_declarations():
         "p.lean")) == ["F"]
 
 
+def test_axiom_footprint_is_the_real_guarantee():
+    # A blocklist has to enumerate the ways a proof might cheat, and it
+    # missed `admit` — `sorry` wearing a tactic's clothes. The footprint
+    # reports what a proof actually USED, so it needs no enumeration.
+    from veripy.backends.lean.driver import (ALLOWED_AXIOMS,
+                                             axiom_violations)
+
+    assert ALLOWED_AXIOMS == {"propext", "Quot.sound", "Classical.choice"}
+
+    clean = ["'f_spec' does not depend on any axioms",
+             "'g_spec' depends on axioms: [propext, Classical.choice]"]
+    assert axiom_violations(clean) == []
+
+    dirty = ["'f_spec' depends on axioms: [sorryAx]"]
+    assert axiom_violations(dirty) == [("f_spec", ["sorryAx"])]
+
+    # The classifier names it, so a host can branch on the outcome
+    # rather than parsing prose.
+    assert classify_lean_message(
+        "theorem 'f' depends on disallowed axioms ['sorryAx']"
+    ) == "axiom-footprint"
+
+
+def test_encoder_asks_for_every_theorem_footprint():
+    enc = _encode(BUMP)
+    assert "#print axioms «bump_spec»" in enc.lean_source
+
+
+def test_sidecar_bans_admit_alongside_sorry():
+    from veripy.backends.lean.sidecar import validate_sidecar_text
+
+    # `admit` closes any goal exactly as `sorry` does, and its absence
+    # from the list was a real hole rather than a stylistic gap.
+    for tactic in ("sorry", "admit"):
+        with pytest.raises(EncodeError, match="not allowed"):
+            validate_sidecar_text(
+                f"theorem F (a : Int) : a = a + 1 := by {tactic}", "p.lean")
+
+
 def test_proof_clause_must_name_a_declared_lemma():
     with pytest.raises(EncodeError, match="unknown lemma"):
         _encode(GAUSS)

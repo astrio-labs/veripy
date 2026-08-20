@@ -2897,5 +2897,14 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         emit("  all_goals (try (congr 1 <;> omega))", first_ensures_line)
         emit("  all_goals (first | omega | trivial)", first_ensures_line)
 
+    # Ask Lean for every proved theorem's axiom footprint. The driver
+    # then refuses anything outside the allowed set — the SEMANTIC
+    # no-assumption guarantee a syntactic whitelist can only
+    # approximate, since a whitelist must enumerate the ways a proof
+    # might cheat while the footprint reports what it actually used.
+    if theorems:
+        lines.append("")
+        for t in theorems:
+            lines.append(f"#print axioms {_ident(t)}")
     return LeanEncoded(lean_source="\n".join(lines) + "\n",
                        line_map=line_map, theorems=theorems)
