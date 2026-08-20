@@ -42,6 +42,14 @@ class DafnyBackend:
     def encoded_text(self, encoded: Any) -> str:
         return encoded.dafny_source
 
+    def compose_artifact(self, encoded: Any, sidecar: Any) -> str:
+        """Dafny checks a whole program, so declaration order does not
+        matter and the pack is simply appended — the behaviour this
+        backend has always had. Stated explicitly rather than inherited,
+        because ProofBackend is a Protocol and structural implementers
+        get no default body from it."""
+        return self.encoded_text(encoded) + sidecar.text
+
     def artifact_name(self, stem: str) -> str:
         return f"{stem}.dfy"
 

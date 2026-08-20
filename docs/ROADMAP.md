@@ -83,8 +83,8 @@ count is visible. Classes, `async`, and IEEE float stay refused.
 
 ### Tier 2 preamble (the real volume — `U-METHOD`)
 
-- [ ] `str` methods (`split` / `join` / `find` / `strip` / …), ASCII or
-      axiom-flagged in the report
+- [x] `str` methods (`split` / `join` / `find` / `strip` / …), ASCII or
+      exact-match `PyStr*` models; Unicode-table methods rejected
 - [ ] `sorted` (permutation + order; stability only on demand)
 - [x] `str(int)` / `int(str)` with parse VCs
       (one positional arg; bool is a disjoint sort; f-string int

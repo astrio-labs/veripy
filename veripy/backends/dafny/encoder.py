@@ -27,7 +27,14 @@ rejection):
   str pieces (no format spec, no `!s`/`!r`/`!a`, no int/bool/char
   interpolation — write `str(n)` for int-to-str), `str(n)` via
   PyIntToStr (int operand only; bool is a disjoint sort), `int(s)`
-  via PyStrToInt (str operand; requires PyIsIntStr is the parse VC)
+  via PyStrToInt (str operand; requires PyIsIntStr is the parse VC),
+  str methods on a str receiver: `sep.join(xs)`, `s.split(sep)`
+  (nonempty sep, unlimited), `s.find(sub)`, `s.startswith`/`endswith`
+  (one str, not a tuple), `s.replace(old, new)` (nonempty old, no
+  count), `s.strip(chars)` / `lstrip` / `rstrip` (chars required).
+  Unicode-table methods (`lower`/`upper`/`isdigit`/…) and no-arg
+  `strip`/`split` are rejected — ASCII-only would be a silent
+  approximation.
 - specs: requires/ensures/invariant/decreases; forall/exists over range or
   membership domains; `result`; `old(param)` lowers to the parameter (our
   fragment's parameters are immutable — guards copy in, ownership forbids
@@ -464,6 +471,32 @@ def _concat_types(left: ast.expr, right: ast.expr,
     return lt, rt
 
 
+def _const_str(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Constant) and type(node.value) is str:
+        return node.value
+    return None
+
+
+def _is_empty_list(node: ast.expr) -> bool:
+    return isinstance(node, ast.List) and not node.elts
+
+
+# str methods this encoder models, plus names it rejects with a rewrite
+# rather than the generic "only append statements" message.
+_STR_ADMITTED = frozenset({
+    "join", "split", "find", "startswith", "endswith", "replace",
+    "strip", "lstrip", "rstrip",
+})
+_STR_UNICODE_TABLE = frozenset({
+    "lower", "upper", "isdigit", "isalpha", "isalnum", "isspace",
+})
+_STR_STILL_OUTSIDE = frozenset({
+    "rsplit", "rfind", "splitlines", "format_map", "zfill", "ljust",
+    "rjust", "partition", "rpartition", "removeprefix", "removesuffix",
+})
+_STR_SURFACE = _STR_ADMITTED | _STR_UNICODE_TABLE | _STR_STILL_OUTSIDE
+
+
 def _opt_inner(tdesc: str | None) -> str | None:
     """PyOpt<T> -> T, else None."""
     if tdesc is not None and tdesc.startswith("PyOpt<") and tdesc.endswith(">"):
@@ -783,8 +816,26 @@ class _MethodEncoder:
                 return self._infer(value)
             case ast.JoinedStr():
                 return "string" if self._joined_str_is_str(node) else None
+            case ast.Call(func=ast.Attribute() as attr):
+                return self._infer_str_method(attr.attr, attr.value)
             case _:
                 return None
+
+    def _infer_str_method(self, method: str, receiver: ast.expr) -> str | None:
+        """Result types for admitted str methods. Infer only when the
+        receiver is a str so a rejected `.lower()` does not type as
+        string and then fail later on a different rule."""
+        if self._infer(receiver) != "string":
+            return None
+        if method in ("join", "replace", "strip", "lstrip", "rstrip"):
+            return "string"
+        if method == "split":
+            return "seq<string>"
+        if method == "find":
+            return "int"
+        if method in ("startswith", "endswith"):
+            return "bool"
+        return None
 
     def _comp_binder_type(self, comp: ast.comprehension) -> str | None:
         it = comp.iter
@@ -1316,6 +1367,8 @@ class _MethodEncoder:
 
     def _call(self, node: ast.Call) -> str:
         func = node.func
+        if isinstance(func, ast.Attribute):
+            return self._str_method(node, func)
         if not isinstance(func, ast.Name):
             raise _err(node, "method calls are outside the slice-1 encoder -- only "
                              "`xs.append(v)` statements are modeled")
@@ -1428,6 +1481,157 @@ class _MethodEncoder:
                 "int() in this slice parses a digit string"
             ))
         raise _err(node, f"call to {name!r} is outside the slice-1 encoder")
+
+    def _require_str_arg(self, node: ast.Call, method: str, arg: ast.expr,
+                         what: str) -> str:
+        t = self._infer(arg)
+        if t != "string":
+            raise _err(node, (
+                f".{method}() is outside the fragment because {what} is "
+                f"{_py_type_name(t)}, not str — pass a str"
+            ))
+        return self.expr(arg)
+
+    def _str_method(self, node: ast.Call, func: ast.Attribute) -> str:
+        method = func.attr
+        if method not in _STR_SURFACE:
+            raise _err(node, (
+                "method calls are outside the slice-1 encoder -- only "
+                "`xs.append(v)` statements are modeled"
+            ))
+        if node.keywords:
+            raise _err(node, (
+                f"keyword arguments to .{method}() are outside the fragment "
+                "because they would be silently dropped — pass positional "
+                "arguments"
+            ))
+        recv_t = self._infer(func.value)
+        if recv_t != "string":
+            raise _err(node, (
+                f".{method}() is outside the fragment because the receiver "
+                f"is {_py_type_name(recv_t)}, not str — call it on a str "
+                "(or annotate the receiver)"
+            ))
+        recv = self.expr(func.value)
+        args = node.args
+        if method in _STR_UNICODE_TABLE:
+            raise _err(node, (
+                f".{method}() is outside the fragment because Unicode-table "
+                "methods would be a silent ASCII approximation — this slice "
+                "has no Unicode case/category tables; rewrite with an "
+                "explicit ASCII check or keep the original string"
+            ))
+        if method in _STR_STILL_OUTSIDE:
+            if method == "rsplit":
+                raise _err(node, (
+                    ".rsplit() is outside the fragment because this slice "
+                    "models only left-to-right unlimited split — use "
+                    "s.split(sep) with a nonempty sep"
+                ))
+            raise _err(node, (
+                f".{method}() is outside the fragment because it has no "
+                "model in this slice — rewrite using join/split/find/"
+                "startswith/endswith/replace/strip(chars)"
+            ))
+        if method == "join":
+            if len(args) != 1:
+                raise _err(node, (
+                    ".join() is outside the fragment because it takes one "
+                    "list[str] of parts — pass the sequence as a single "
+                    "positional argument"
+                ))
+            pt = self._infer(args[0])
+            if pt is None and _is_empty_list(args[0]):
+                pt = "seq<string>"
+            if pt != "seq<string>":
+                raise _err(node, (
+                    ".join() is outside the fragment because the parts "
+                    f"are {_py_type_name(pt)}, not list[str] — pass a "
+                    "list of strings"
+                ))
+            return f"PyStrJoin({recv}, {self.expr(args[0])})"
+        if method == "split":
+            if len(args) == 0:
+                raise _err(node, (
+                    ".split() is outside the fragment because no-arg split "
+                    "uses the Unicode whitespace table — pass an explicit "
+                    "sep (e.g. s.split(' '))"
+                ))
+            if len(args) != 1:
+                raise _err(node, (
+                    ".split() is outside the fragment because maxsplit is "
+                    "not in this slice — omit maxsplit for an unlimited "
+                    "split"
+                ))
+            if _const_str(args[0]) == "":
+                raise _err(node, (
+                    ".split() is outside the fragment because an empty sep "
+                    "raises ValueError in Python — pass a nonempty sep"
+                ))
+            sep = self._require_str_arg(node, method, args[0], "sep")
+            return f"PyStrSplit({recv}, {sep})"
+        if method == "find":
+            if len(args) != 1:
+                raise _err(node, (
+                    ".find() is outside the fragment because it takes one "
+                    "substring in this slice — drop start/end or slice the "
+                    "receiver first"
+                ))
+            sub = self._require_str_arg(node, method, args[0], "the substring")
+            return f"PyStrFind({recv}, {sub})"
+        if method in ("startswith", "endswith"):
+            kind = "prefix" if method == "startswith" else "suffix"
+            fn = "PyStrStartsWith" if method == "startswith" else "PyStrEndsWith"
+            if len(args) != 1:
+                raise _err(node, (
+                    f".{method}() is outside the fragment because it takes "
+                    f"one str {kind} in this slice — drop start/end"
+                ))
+            if isinstance(args[0], ast.Tuple):
+                raise _err(node, (
+                    f".{method}() is outside the fragment because a tuple "
+                    f"of {kind}es is not in this slice — write "
+                    f"s.{method}(a) or s.{method}(b), or an `or` of those"
+                ))
+            arg = self._require_str_arg(node, method, args[0], f"the {kind}")
+            return f"{fn}({recv}, {arg})"
+        if method == "replace":
+            if len(args) == 3:
+                raise _err(node, (
+                    ".replace() is outside the fragment because count is "
+                    "not in this slice — omit count to replace all "
+                    "occurrences"
+                ))
+            if len(args) != 2:
+                raise _err(node, (
+                    ".replace() is outside the fragment because it takes "
+                    "old and new strings — pass two str arguments"
+                ))
+            if _const_str(args[0]) == "":
+                raise _err(node, (
+                    ".replace() is outside the fragment because an empty "
+                    "old inserts between every character — pass a nonempty "
+                    "old"
+                ))
+            old = self._require_str_arg(node, method, args[0], "old")
+            new = self._require_str_arg(node, method, args[1], "new")
+            return f"PyStrReplace({recv}, {old}, {new})"
+        # strip / lstrip / rstrip
+        if len(args) == 0:
+            raise _err(node, (
+                f".{method}() is outside the fragment because no-arg "
+                f"{method} uses the Unicode whitespace table — pass an "
+                f"explicit chars argument (e.g. s.{method}(' \\t\\n'))"
+            ))
+        if len(args) != 1:
+            raise _err(node, (
+                f".{method}() is outside the fragment because it takes "
+                "one chars string — pass a single str"
+            ))
+        chars = self._require_str_arg(node, method, args[0], "chars")
+        fn = {"strip": "PyStrStrip", "lstrip": "PyStrLStrip",
+              "rstrip": "PyStrRStrip"}[method]
+        return f"{fn}({recv}, {chars})"
 
     def _quantifier(self, kind: str, gen: ast.GeneratorExp) -> str:
         binders: list[str] = []

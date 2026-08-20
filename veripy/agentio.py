@@ -245,7 +245,7 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
         "lemmas": sorted(sidecar.lemmas),
         "text": sidecar.text,
     }
-    stub_text = be.encoded_text(encoded) + sidecar.text
+    stub_text = be.compose_artifact(encoded, sidecar)
     try:
         if workdir is None:  # keep_artifacts: name it after its content
             workdir = stub_dir_for(outdir, path, stub_text)

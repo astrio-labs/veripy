@@ -532,6 +532,63 @@ def _fstring_still_outside(node: ast.JoinedStr,
     return False
 
 
+def _empty_str_const(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and node.value == ""
+
+
+def _str_method_still_outside(node: ast.Call) -> bool:
+    """True for str-method calls the encoder still rejects.
+
+    Survey is optimistic-by-name for list/dict/set methods. For the
+    str surface, admitted forms (`s.split(sep)`, `sep.join(xs)`, …)
+    do not fire; no-arg strip/split, Unicode-table methods, tuple
+    startswith, replace-with-count, and a visible empty sep/old do."""
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return False
+    name = func.attr
+    if name not in MODELED_METHODS:
+        return False
+    # Container methods stay name-optimistic.
+    str_names = {
+        "split", "rsplit", "join", "strip", "lstrip", "rstrip", "find",
+        "rfind", "startswith", "endswith", "replace", "lower", "upper",
+        "isdigit", "isalpha", "isalnum", "isspace", "splitlines",
+        "format_map", "zfill", "ljust", "rjust", "partition",
+        "rpartition", "removeprefix", "removesuffix",
+    }
+    if name not in str_names:
+        return False
+    admitted = {
+        "join", "split", "find", "startswith", "endswith", "replace",
+        "strip", "lstrip", "rstrip",
+    }
+    if name not in admitted:
+        return True
+    if node.keywords:
+        return True
+    args = node.args
+    if name == "join":
+        return len(args) != 1
+    if name == "split":
+        if len(args) != 1:
+            return True
+        return _empty_str_const(args[0])
+    if name == "find":
+        return len(args) != 1
+    if name in ("startswith", "endswith"):
+        if len(args) != 1:
+            return True
+        return isinstance(args[0], ast.Tuple)
+    if name == "replace":
+        if len(args) != 2:
+            return True
+        return _empty_str_const(args[0])
+    if name in ("strip", "lstrip", "rstrip"):
+        return len(args) != 1
+    return True
+
+
 def _is_mutable_literal(node: ast.expr) -> bool:
     return isinstance(node, (ast.List, ast.Dict, ast.Set, ast.ListComp,
                              ast.DictComp, ast.SetComp)) or (
@@ -950,6 +1007,8 @@ class _FunctionScanner:
             ):
                 self.fire("T-GLOBAL", node, detail=f"{base.id}.{func.attr}(...)")
             if func.attr not in MODELED_METHODS:
+                self.fire("U-METHOD", node, detail=func.attr)
+            elif _str_method_still_outside(node):
                 self.fire("U-METHOD", node, detail=func.attr)
 
 

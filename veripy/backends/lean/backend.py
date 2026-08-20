@@ -18,6 +18,7 @@ from ..dafny.encoder import EncodeError
 from .driver import lean_version, verify_lean_file
 from .encoder import encode_module_lean
 from .prelude import PRELUDE_VERSION
+from .sidecar import load_lean_sidecar, validate_sidecar_text
 
 
 @dataclass(frozen=True)
@@ -37,19 +38,26 @@ class LeanBackend:
         return source_path.with_name(source_path.stem + ".proofs.lean")
 
     def load_sidecar(self, source_path: Path) -> Any:
-        found = self.sidecar_path(source_path)
-        if found.exists():
-            raise EncodeError(
-                f"{found.name}: Lean proof sidecars land in the track's P3 "
-                f"— refusing to verify while ignoring lemmas you wrote",
-                None, rule="lean-slice-1")
-        return _EmptySidecar()
+        return load_lean_sidecar(source_path)
 
     def validate_sidecar(self, text: str) -> None:
-        if text.strip():
-            raise EncodeError(
-                "Lean proof sidecars land in the track's P3",
-                None, rule="lean-slice-1")
+        validate_sidecar_text(text, "proofs.lean")
+
+    def compose_artifact(self, encoded: Any, sidecar: Any) -> str:
+        """Lean needs declaration-before-use, so a pack is spliced right
+        after the prelude rather than appended. Every pack the corpus
+        uses is pure arithmetic, so nothing in it needs to see the
+        generated definitions; one that does gets Lean's own
+        unknown-identifier error, which names the symbol."""
+        text = encoded.lean_source
+        if not sidecar.text:
+            return text
+        marker = "end VeriPy\n"
+        at = text.find(marker)
+        if at < 0:                      # prelude shape changed
+            return text + sidecar.text
+        cut = at + len(marker)
+        return text[:cut] + sidecar.text + "\n" + text[cut:]
 
     def encode(self, source: str, specs: Any, *, module_name: str,
                proof_lemmas: Any) -> Any:

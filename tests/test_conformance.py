@@ -775,3 +775,55 @@ def test_walrus_in_first_compare_operand_does_not_fire():
 def test_walrus_in_comprehension_still_fires():
     src = "def f(l: list[int]) -> list[int]:\n    return [y := x for x in l]\n"
     assert "X-WALRUS" in _fires(src)
+
+
+def test_admitted_str_methods_do_not_fire():
+    src = (
+        "def f(s: str, xs: list[str], sep: str) -> str:\n"
+        "    a = sep.join(xs)\n"
+        "    b = s.split(sep)\n"
+        "    c = s.find(sep)\n"
+        "    d = s.startswith(sep)\n"
+        "    e = s.endswith(sep)\n"
+        "    g = s.replace(\"a\", \"b\")\n"
+        "    h = s.strip(\" \")\n"
+        "    i = s.lstrip(\"x\")\n"
+        "    j = s.rstrip(\"x\")\n"
+        "    return a\n"
+    )
+    assert "U-METHOD" not in _fires(src)
+
+
+def test_str_noarg_strip_still_fires():
+    src = "def f(s: str) -> str:\n    return s.strip()\n"
+    assert "U-METHOD" in _fires(src)
+
+
+def test_str_noarg_split_still_fires():
+    src = "def f(s: str) -> list[str]:\n    return s.split()\n"
+    assert "U-METHOD" in _fires(src)
+
+
+def test_str_lower_still_fires():
+    src = "def f(s: str) -> str:\n    return s.lower()\n"
+    assert "U-METHOD" in _fires(src)
+
+
+def test_str_startswith_tuple_still_fires():
+    src = "def f(s: str) -> bool:\n    return s.startswith((\"a\", \"b\"))\n"
+    assert "U-METHOD" in _fires(src)
+
+
+def test_str_replace_count_still_fires():
+    src = "def f(s: str) -> str:\n    return s.replace(\"a\", \"b\", 1)\n"
+    assert "U-METHOD" in _fires(src)
+
+
+def test_str_replace_empty_old_still_fires():
+    src = "def f(s: str) -> str:\n    return s.replace(\"\", \"-\")\n"
+    assert "U-METHOD" in _fires(src)
+
+
+def test_str_split_empty_sep_still_fires():
+    src = "def f(s: str) -> list[str]:\n    return s.split(\"\")\n"
+    assert "U-METHOD" in _fires(src)
