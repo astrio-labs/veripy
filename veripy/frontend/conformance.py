@@ -351,31 +351,37 @@ _INT_CALLS = frozenset({"len", "abs", "min", "max", "sum"})
 _SEQISH_ANN = frozenset({"str", "list"})
 
 
-def _list_literal_inner(node: ast.expr, anns: dict[str, str],
-                         inners: dict[str, str]) -> str | None:
-    """Homogeneous list-literal element spelling, or None.
+def _list_literal_chain(node: ast.expr, anns: dict[str, str],
+                         inners: dict[str, str]) -> tuple[str, ...] | None:
+    """Homogeneous list-literal inner chain, or None.
 
-    Enough for Dafny's `xs = [1, 2, 3]` → `seq<int>` so `assert xs[0]`
-    fires. Empty / mixed / nested literals stay unknown."""
+    `[1, 2, 3]` → `('int',)` so `assert xs[0]` fires. `[[1, 2], [3, 4]]`
+    → `('list', 'int')` so `assert xs[0][0]` fires while `assert xs[0]`
+    stays admitted (list emptiness). Empty / mixed stay unknown."""
     if not isinstance(node, ast.List) or not node.elts:
         return None
-    kinds: list[str] = []
+    chains: list[tuple[str, ...]] = []
     for e in node.elts:
         if isinstance(e, ast.Constant) and type(e.value) is bool:
-            kinds.append("bool")
+            chains.append(("bool",))
         elif isinstance(e, ast.Constant) and type(e.value) is str:
-            kinds.append("str")
+            chains.append(("str",))
         elif _looks_int(e, anns, inners):
-            kinds.append("int")
+            chains.append(("int",))
+        elif isinstance(e, ast.List):
+            nested = _list_literal_chain(e, anns, inners)
+            if nested is None:
+                return None
+            chains.append(("list",) + nested)
         elif isinstance(e, ast.Name):
             t = anns.get(e.id)
             if t in ("str", "bool", "list"):
-                kinds.append(t)
+                chains.append((t,))
             else:
                 return None
         else:
             return None
-    uniq = set(kinds)
+    uniq = set(chains)
     return uniq.pop() if len(uniq) == 1 else None
 
 
@@ -631,11 +637,11 @@ class _FunctionScanner:
                 if name not in out and _looks_int(node.value, out, inners):
                     out[name] = "int"
                 elif name not in out:
-                    elem = _list_literal_inner(node.value, out, inners)
-                    if elem is not None:
+                    chain = _list_literal_chain(node.value, out, inners)
+                    if chain is not None:
                         out[name] = "list"
-                        inners[name] = elem
-                        inner_chains[name] = (elem,)
+                        inners[name] = chain[0]
+                        inner_chains[name] = chain
             for child in ast.iter_child_nodes(node):
                 walk(child)
 

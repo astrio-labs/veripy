@@ -668,6 +668,37 @@ def test_assert_inferred_list_name_does_not_fire():
     assert "X-ASSERT" not in _fires(src)
 
 
+def test_assert_inferred_nested_list_int_index_still_fires():
+    src = (
+        "def f() -> int:\n"
+        "    xs = [[1, 2], [3, 4]]\n"
+        "    assert xs[0][0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" in _fires(src)
+
+
+def test_assert_inferred_nested_list_index_does_not_fire():
+    # xs[0] is list; encoder admits list truthiness as emptiness.
+    src = (
+        "def f() -> int:\n"
+        "    xs = [[1, 2], [3, 4]]\n"
+        "    assert xs[0]\n"
+        "    return 0\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
+def test_assert_inferred_nested_list_str_index_does_not_fire():
+    src = (
+        "def f() -> str:\n"
+        "    xs = [[\"a\", \"b\"], [\"c\"]]\n"
+        "    assert xs[0][0]\n"
+        "    return xs[0][0]\n"
+    )
+    assert "X-ASSERT" not in _fires(src)
+
+
 def test_assert_int_walrus_still_fires():
     src = (
         "def f(n: int) -> int:\n"
