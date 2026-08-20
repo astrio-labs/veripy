@@ -20,7 +20,9 @@ rejection):
   (chained), and/or/not, len/min/max/abs, indexing, conditional expressions,
   single-generator list comprehensions (optional `if` filter via PyFlatten),
   eager `all`/`any`/`sum` genexp folds (filters included; all/any →
-  forall/exists, sum → mapped PySum), walrus `:=` in always-evaluated
+  forall/exists, sum → mapped PySum), `sorted(xs)` on `list[int]` as
+  `PySorted` (permutation + order; no `key=`/`reverse=`/`list[str]`),
+  walrus `:=` in always-evaluated
   positions (if/while tests, return, assignment, assert, call args;
   while-test `:=` is re-emitted at continue / loop-end — a bare Dafny
   `while` condition cannot assign), f-strings as concatenation of
@@ -547,7 +549,7 @@ class _Scope:
 
 
 _ENCODED_BUILTINS = frozenset({
-    "len", "min", "max", "abs", "sum", "range", "bool", "all", "any", "old",
+    "len", "min", "max", "abs", "sum", "sorted", "range", "bool", "all", "any", "old",
     "str", "int",
 })
 
@@ -758,6 +760,8 @@ class _MethodEncoder:
                 return "int"
             case ast.Call(func=ast.Name(id="bool")):
                 return "bool"
+            case ast.Call(func=ast.Name(id="sorted")):
+                return "seq<int>"
             case ast.Call(func=ast.Name(id=("all" | "any"))):
                 return "bool"
             case ast.Call(func=ast.Name(id="old"), args=[ast.Name(id=name)]):
@@ -1374,6 +1378,18 @@ class _MethodEncoder:
                              "`xs.append(v)` statements are modeled")
         name = func.id
         args = node.args
+        if name == "sorted":
+            # One positional list[int]; key=/reverse=/str stay rejected
+            # with a rewrite (Dafny seq < is prefix, not lex).
+            if node.keywords or len(args) != 1 \
+                    or self._infer(args[0]) != "seq<int>":
+                raise _err(node, (
+                    "sorted() in this slice takes a list[int] — drop "
+                    "key=/reverse=, or sort a list of ints; for strings "
+                    "write an explicit loop (Dafny seq order is prefix, "
+                    "not lex)"
+                ))
+            return f"PySorted({self.expr(args[0])})"
         if node.keywords:
             # No encoded builtin takes keywords; silently dropping one
             # (e.g. max(a, b, key=abs)) would change the meaning.

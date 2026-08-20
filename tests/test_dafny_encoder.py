@@ -542,6 +542,7 @@ def test_preamble_names_are_exactly_the_globally_visible_declarations():
         "PySlice", "PySeqMax", "PySeqMin", "PySum", "PyFlatten", "PyPow",
         "PyDigit", "PyNatToStr", "PyIntToStr", "PyIsDigits", "PyIsIntStr",
         "PyDigitsToNat", "PyStrToInt",
+        "PyInsert", "PySorted",
         "PyOpt", "PyNone", "PySome",
         "PyExn", "ValueError", "IndexError", "ZeroDivisionError",
         "TypeError", "KeyError",
@@ -2206,3 +2207,43 @@ def test_str_method_keywords_rejected():
 def test_append_statement_still_lowers():
     dfy = _encode(APPEND_OK)
     assert "out := out + [0];" in dfy
+
+
+# --- sorted() on list[int] ------------------------------------------------------
+
+
+def test_sorted_encodes_to_pysorted_in_spec_and_code():
+    src = (
+        "#@ ensures result == sorted(xs)\n"
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs)\n"
+    )
+    assert _encode(src).count("PySorted(xs)") == 2
+
+
+def test_sorted_rejects_key():
+    _expect_encode_error(
+        "#@ ensures result == xs\n"
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs, key=abs)\n",
+        "key=/reverse=",
+    )
+
+
+def test_sorted_rejects_list_str():
+    _expect_encode_error(
+        "#@ ensures result == xs\n"
+        "def f(xs: list[str]) -> list[str]:\n"
+        "    return sorted(xs)\n",
+        "list[int]",
+    )
+
+
+def test_parameter_shadowing_sorted_rejected():
+    src = (
+        "#@ ensures result == 0\n"
+        "def h(sorted: int) -> int:\n"
+        "    return sorted\n"
+    )
+    with pytest.raises(EncodeError, match="shadows a builtin"):
+        _encode(src)

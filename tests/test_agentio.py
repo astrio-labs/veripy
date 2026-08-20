@@ -542,7 +542,7 @@ def test_unsupported_type_and_call_get_distinct_rules(tmp_path):
     call_src.write_text(
         "#@ ensures result >= 0\n"
         "def f(xs: list[int]) -> int:\n"
-        "    return len(sorted(xs))\n")
+        "    return len(reversed(xs))\n")
     call_payload = verify_structured(call_src, out)
     assert call_payload["status"] == "encode-error"
     assert call_payload["failures"][0]["rule"] is not None

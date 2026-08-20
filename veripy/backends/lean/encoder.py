@@ -1911,6 +1911,14 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "Dafny backend admits them with parse VCs; this "
                     "slice has no strings", node.lineno)
             if isinstance(node, ast.Call) \
+                    and isinstance(node.func, ast.Name) \
+                    and node.func.id == "sorted":
+                raise _reject(
+                    "sorted is outside the Lean slice — the Dafny "
+                    "backend admits list[int] sorted as PySorted "
+                    "(permutation + order); this slice has no "
+                    "sequence-sort prelude", node.lineno)
+            if isinstance(node, ast.Call) \
                     and isinstance(node.func, ast.Attribute) \
                     and node.func.attr in _DAFNY_STR_METHODS:
                 raise _reject(
@@ -1953,6 +1961,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                             "str(int)/int(str) are outside the Lean "
                             "slice — the Dafny backend admits them with "
                             "parse VCs; this slice has no strings",
+                            clause.line)
+                    if isinstance(node, ast.Call) \
+                            and isinstance(node.func, ast.Name) \
+                            and node.func.id == "sorted":
+                        raise _reject(
+                            "sorted is outside the Lean slice — the "
+                            "Dafny backend admits list[int] sorted as "
+                            "PySorted (permutation + order); this slice "
+                            "has no sequence-sort prelude",
                             clause.line)
                     if isinstance(node, ast.Call) \
                             and isinstance(node.func, ast.Name) \
