@@ -329,6 +329,39 @@ def test_assert_translation_faithful(tmp_path):
     ]
 
 
+def test_walrus_translation_faithful(tmp_path):
+    src = tmp_path / "walrus.py"
+    src.write_text(
+        "#@ ensures result == n\n"
+        "def ident(n: int) -> int:\n"
+        "    return (x := n)\n"
+        "\n"
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def countdown(n: int) -> int:\n"
+        "    x = n\n"
+        "    s = 0\n"
+        "    while (x := x - 1) >= 0:\n"
+        "        #@ invariant s >= 0\n"
+        "        #@ decreases x + 1\n"
+        "        if x % 2 == 0:\n"
+        "            continue\n"
+        "        s = s + 1\n"
+        "    return s\n"
+        "\n"
+        "#@ ensures result == n or result == 0\n"
+        "def gated(n: int) -> int:\n"
+        "    if (x := n) > 0:\n"
+        "        return x\n"
+        "    return 0\n"
+    )
+    result = difftest_file(src, tmp_path / "out", examples=80)
+    assert result.error is None, result.error
+    assert result.functions and all(f.ok for f in result.functions), [
+        (f.name, f.mismatch, f.error) for f in result.functions
+    ]
+
+
 def test_fstring_translation_faithful(tmp_path):
     src = tmp_path / "greet.py"
     src.write_text(

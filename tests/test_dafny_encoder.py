@@ -1726,6 +1726,119 @@ def test_nested_list_comprehension_still_rejected():
     )
 
 
+# --- walrus `:=` (always-evaluated positions) --------------------------------
+
+
+def test_walrus_in_return_is_assignment_then_the_name():
+    dfy = _encode(
+        "#@ ensures result == n\n"
+        "def f(n: int) -> int:\n"
+        "    return (x := n)\n"
+    )
+    assert "var x := n;" in dfy
+    assert "result := x;" in dfy
+
+
+def test_walrus_in_if_test_assigns_before_the_if():
+    dfy = _encode(
+        "#@ ensures result == n or result == 0\n"
+        "def f(n: int) -> int:\n"
+        "    if (x := n) > 0:\n"
+        "        return x\n"
+        "    return 0\n"
+    )
+    assert "var x := n;" in dfy
+    assert "if (x > 0)" in dfy
+
+
+def test_walrus_in_while_test_rebinds_at_continue_and_loop_end():
+    src = (
+        "#@ requires n >= 0\n"
+        "#@ ensures result >= 0\n"
+        "def countdown(n: int) -> int:\n"
+        "    x = n\n"
+        "    s = 0\n"
+        "    while (x := x - 1) >= 0:\n"
+        "        #@ invariant s >= 0\n"
+        "        if x % 2 == 0:\n"
+        "            continue\n"
+        "        s = s + 1\n"
+        "    return s\n"
+    )
+    dfy = _encode(src)
+    assert "x := (x - 1);" in dfy
+    assert "while (x >= 0)" in dfy
+    lines = dfy.splitlines()
+    cont = next(i for i, ln in enumerate(lines) if ln.strip() == "continue;")
+    assert lines[cont - 1].strip() == "x := (x - 1);"
+    # Initial eval + continue path + fall-through.
+    assert sum(1 for ln in lines if ln.strip() == "x := (x - 1);") >= 3
+
+
+def test_walrus_under_and_rejected():
+    _expect_encode_error(
+        "#@ ensures result == True or result == False\n"
+        "def f(n: int) -> bool:\n"
+        "    return n > 0 and (x := n) > 0\n",
+        "short-circuit",
+    )
+
+
+def test_walrus_in_ifexp_branch_rejected():
+    _expect_encode_error(
+        "#@ ensures result == n or result == 0\n"
+        "def f(n: int) -> int:\n"
+        "    return (x := n) if n > 0 else 0\n",
+        "conditional expression",
+    )
+
+
+def test_walrus_in_later_chained_comparison_rejected():
+    _expect_encode_error(
+        "#@ ensures result == True or result == False\n"
+        "def f(a: int, b: int, c: int) -> bool:\n"
+        "    return a < b < (x := c)\n",
+        "chained comparison",
+    )
+
+
+def test_walrus_in_first_chained_operand_is_admitted():
+    dfy = _encode(
+        "#@ ensures result == True or result == False\n"
+        "def f(a: int, b: int) -> bool:\n"
+        "    return a < (x := b)\n"
+    )
+    assert "var x := b;" in dfy
+    assert "a < x" in dfy
+
+
+def test_walrus_in_comprehension_rejected():
+    _expect_encode_error(
+        "#@ ensures len(result) >= 0\n"
+        "def f(l: list[int]) -> list[int]:\n"
+        "    return [y := x for x in l]\n",
+        "comprehension",
+    )
+
+
+def test_walrus_in_spec_rejected():
+    _expect_encode_error(
+        "#@ ensures result == (n := n)\n"
+        "def f(n: int) -> int:\n"
+        "    return n\n",
+        "spec clause",
+    )
+
+
+def test_walrus_parameter_rebind_rejected():
+    _expect_encode_error(
+        "#@ ensures result == n or result == 0\n"
+        "def f(n: int) -> int:\n"
+        "    return (n := n + 1)\n",
+        "parameter rebinding",
+    )
+
+
 def test_fstring_lowers_to_concatenation():
     dfy = _encode(
         "#@ ensures result == \"hi \" + s\n"

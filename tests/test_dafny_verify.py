@@ -317,6 +317,29 @@ def test_assert_as_vc_verifies(tmp_path, capsys):
     assert "VERIFIED" in capsys.readouterr().out
 
 
+def test_walrus_countdown_verifies(tmp_path, capsys):
+    src = tmp_path / "walrus.py"
+    src.write_text(
+        "#@ ensures result == n\n"
+        "def ident(n: int) -> int:\n"
+        "    return (x := n)\n"
+        "\n"
+        "#@ requires n >= 0\n"
+        "#@ ensures result == n\n"
+        "def count(n: int) -> int:\n"
+        "    x = n\n"
+        "    s = 0\n"
+        "    while (x := x - 1) >= 0:\n"
+        "        #@ invariant s + x + 1 == n\n"
+        "        #@ invariant x >= -1\n"
+        "        #@ decreases x + 1\n"
+        "        s = s + 1\n"
+        "    return s\n"
+    )
+    assert cmd_verify([src], tmp_path / "out", time_limit=30, types=False) == 0
+    assert "VERIFIED" in capsys.readouterr().out
+
+
 def test_fstring_greet_verifies(tmp_path, capsys):
     src = tmp_path / "greet.py"
     src.write_text(

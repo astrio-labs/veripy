@@ -1765,6 +1765,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "assert is outside the Lean slice — the Dafny "
                     "backend admits it as a VC; this slice has no "
                     "proof-hint statements", node.lineno)
+            if isinstance(node, ast.NamedExpr):
+                raise _reject(
+                    "walrus is outside the Lean slice — the Dafny "
+                    "backend admits always-evaluated `:=` as an "
+                    "assignment then the bound name; this slice has no "
+                    "expression-level assignment", node.lineno)
             if isinstance(node, ast.JoinedStr):
                 raise _reject(
                     "f-strings are outside the Lean slice — the Dafny "
