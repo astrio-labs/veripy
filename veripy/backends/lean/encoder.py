@@ -854,6 +854,7 @@ class _LoopShape:
     inv_line: int
     for_line: int
     acc_bool: bool      # Bool accumulator (True/False init, and/or step)
+    acc_list: bool = False   # List accumulator (`[]` init, append step)
 
 
 def _requires_min_len(spec_fn: FunctionSpec,
@@ -1538,9 +1539,14 @@ def _split_loop(fn: ast.FunctionDef,
         # accumulator type an annotation can spell; bool accumulators
         # are recognized by their True/False literal), and the value
         # must be present.
-        if not (isinstance(init_stmt.target, ast.Name)
-                and isinstance(init_stmt.annotation, ast.Name)
-                and init_stmt.annotation.id == "int"
+        ann = init_stmt.annotation
+        ann_ok = ((isinstance(ann, ast.Name) and ann.id == "int")
+                  or (isinstance(ann, ast.Subscript)
+                      and isinstance(ann.value, ast.Name)
+                      and ann.value.id == "list"
+                      and isinstance(ann.slice, ast.Name)
+                      and ann.slice.id == "int"))
+        if not (isinstance(init_stmt.target, ast.Name) and ann_ok
                 and init_stmt.value is not None):
             raise _reject("an annotated accumulator initializer must be "
                           "`name: int = <expr>`", init_stmt.lineno)
@@ -1614,13 +1620,16 @@ def _split_loop(fn: ast.FunctionDef,
             args=[ast.Name(id=acc, ctx=ast.Load()), e_new], keywords=[])
         ast.copy_location(step_expr, e_new)
         ast.fix_missing_locations(step_expr)
+    elif isinstance(init_value, ast.List) and not init_value.elts:
+        pass          # a list accumulator: its body is append statements
     elif len(body) != 1 or not isinstance(body[0], ast.Assign) \
             or len(body[0].targets) != 1 \
             or not isinstance(body[0].targets[0], ast.Name) \
             or body[0].targets[0].id != acc:
         raise _reject(f"the loop body must be a single assignment to the "
                       f"accumulator {acc!r} in this slice", loop.lineno)
-    if step_expr is None:
+    if step_expr is None and not (isinstance(init_value, ast.List)
+                                  and not init_value.elts):
         step_expr = body[0].value
     if index == acc:
         raise _reject("the loop index cannot be the accumulator",
@@ -1639,6 +1648,44 @@ def _split_loop(fn: ast.FunctionDef,
     # 3): step must be `acc and P` / `acc or P`, return the bare
     # accumulator. The pairing with the annotated return type is
     # checked by the caller, which knows it.
+    # A `[]` initializer marks the LIST accumulator shape: the body
+    # appends, and `out.append(v)` is `out ++ [v]` because Python
+    # appends at the END. The accumulator is a fresh local, so the
+    # aliasing question the Dafny backend's ownership rules answer does
+    # not arise here — nothing else can hold a reference to it.
+    acc_list = isinstance(init_value, ast.List) and not init_value.elts
+    if acc_list:
+        appended: list[ast.expr] = []
+        for st in loop.body:
+            if not (isinstance(st, ast.Expr)
+                    and isinstance(st.value, ast.Call)
+                    and isinstance(st.value.func, ast.Attribute)
+                    and st.value.func.attr == "append"
+                    and isinstance(st.value.func.value, ast.Name)
+                    and st.value.func.value.id == acc
+                    and len(st.value.args) == 1
+                    and not st.value.keywords):
+                raise _reject(
+                    f"a list accumulator's body is `{acc}.append(<expr>)` "
+                    f"statements in this slice", getattr(st, "lineno",
+                                                         loop.lineno))
+            appended.append(st.value.args[0])
+        if not appended:
+            raise _reject("the loop body must append at least once",
+                          loop.lineno)
+        for a in appended:
+            for node in ast.walk(a):
+                if isinstance(node, ast.Name) and node.id == acc:
+                    raise _reject(
+                        f"an appended value must not read the "
+                        f"accumulator {acc!r} in this slice", loop.lineno)
+        if not (isinstance(ret_stmt.value, ast.Name)
+                and ret_stmt.value.id == acc):
+            raise _reject("a list-building loop returns the bare "
+                          "accumulator in this slice", ret_stmt.lineno)
+        step_expr = ast.Tuple(elts=appended)      # carried, not evaluated
+        ast.copy_location(step_expr, loop)
+        ast.fix_missing_locations(step_expr)
     acc_bool = isinstance(init_value, ast.Constant) \
         and isinstance(init_value.value, bool)
     if acc_bool:
@@ -1659,6 +1706,7 @@ def _split_loop(fn: ast.FunctionDef,
             raise _reject("a bool loop returns the bare accumulator in "
                           "this slice", ret_stmt.lineno)
     return _LoopShape(index=index, acc=acc, init=init_value,
+                      acc_list=acc_list,
                       bound=it.args[0], step=step_expr,
                       ret=ret_stmt.value, inv=inv_expr, inv_line=inv_line,
                       for_line=loop.lineno, acc_bool=acc_bool)
@@ -1954,12 +2002,14 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                           "loop in this slice — a for-range loop's fuel "
                           "is its range bound", 
                           spec_fn.by_kind("decreases")[0].line)
-        if loop is not None and is_list_ret:
-            raise _reject("loop functions return `int` or `bool` in this "
-                          "slice — a list-returning loop needs the "
-                          "list-building fragment (append), which is "
-                          "not in it yet", fn.lineno)
-        if loop is not None and is_bool != loop.acc_bool:
+        if loop is not None and is_list_ret != loop.acc_list:
+            raise _reject(
+                "a loop function's accumulator must match its return "
+                "type: a `[]`-initialized accumulator built with "
+                "`append` returns `list[int]`, anything else `int` or "
+                "`bool`", fn.lineno)
+        if loop is not None and not loop.acc_list \
+                and is_bool != loop.acc_bool:
             raise _reject(
                 "a loop function's accumulator must match its return "
                 "type in this slice: True/False-initialized accumulators "
@@ -2265,7 +2315,24 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                               scaffold=True, min_len=lc0.min_len,
                               pos_names=lc0.pos_names)
             iv, av = _ident(loop.index), _ident(loop.acc)
-            acc_ty = "Bool" if loop.acc_bool else "Int"
+            acc_ty = ("List Int" if loop.acc_list
+                      else ("Bool" if loop.acc_bool else "Int"))
+            if loop.acc_list:
+                # The accumulator IS a list, so the invariant may take
+                # its length and index it. Registering it in the list
+                # set is what makes `len(out)` and `out[k]` mean
+                # something; scaffold mode already licenses the index,
+                # since an invariant is proof machinery rather than
+                # executed code.
+                acc_lists = lc0.lists | {loop.acc}
+                step_lc = _ListCtx(acc_lists, safe, None,
+                                   min_len=lc0.min_len,
+                                   pos_names=lc0.pos_names,
+                                   nonneg_names=lc0.nonneg_names)
+                inv_lc = _ListCtx(acc_lists, dict(safe), loop.index,
+                                  scaffold=True, min_len=lc0.min_len,
+                                  pos_names=lc0.pos_names,
+                                  nonneg_names=lc0.nonneg_names)
             # The generated fuel and induction binders are plain
             # identifiers, and «m» IS m: a user accumulator named m
             # (max_element!) would collide with them. Freshen against
@@ -2278,7 +2345,19 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             while kvar in used_plain or kvar == fuel:
                 kvar += "'"
             bound_t = _int_expr(loop.bound, names, fn.lineno, lc=lc0)
-            if loop.acc_bool:
+            if loop.acc_list:
+                init_t = "([] : List Int)"
+                # `out.append(v)` is `out ++ [v]`: Python appends at the
+                # END. Several appends in one body chain in order.
+                parts = [_int_expr(a, body_names, loop.for_line,
+                                   lc=step_lc)
+                         for a in loop.step.elts]
+                step_t = av
+                for part in parts:
+                    step_t = f"({step_t} ++ [{part}])"
+                inv_t = _prop_expr(loop.inv, body_names, loop.inv_line,
+                                   lc=inv_lc)
+            elif loop.acc_bool:
                 init_t = "true" if loop.init.value else "false"
                 # Step: `acc and P` / `acc or P` — P bridges into Bool
                 # via decide, mirroring the loop-free predicate path.
@@ -2357,7 +2436,18 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # where A = B is linear but trapped inside the atoms
             # (measured: the succ case leaves exactly that shape,
             # (i+1+k) vs (i+(k+1)) under the take).
-            ladder = ["      all_goals (try omega)",
+            # A list accumulator's invariants talk about `length`, and
+            # appending is `++ [v]`. Gated on the list case: firing
+            # these on an int loop rewrote goals whose hypotheses kept
+            # the old form, which is how the earlier getD lemmas broke
+            # max_element.
+            list_facts = ([
+                "      all_goals (try simp only [List.length_append, "
+                "List.length_cons, List.length_nil])",
+                "      all_goals (try push_cast)",
+            ] if loop.acc_list else [])
+            ladder = [*list_facts,
+                      "      all_goals (try omega)",
                       "      all_goals (try simp_all)",
                       "      all_goals (try (congr 2 <;> omega))",
                       "      all_goals (first | omega | trivial)"]
@@ -2481,6 +2571,24 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "        )",
                 ):
                     emit(tl, loop.inv_line)
+            elif loop.acc_list:
+                # A list accumulator's preservation step is about
+                # length and append, not prefix sums, so it gets its own
+                # discharge rather than falling through to the PySum
+                # rewrite, which cannot match here and errors when it
+                # tries.
+                for tl in (
+                    "        (by",
+                    f"          simp only [{_ident(gen_inv)}] at h ⊢",
+                    "          all_goals (try simp only "
+                    "[List.length_append, List.length_cons, "
+                    "List.length_nil])",
+                    "          all_goals (try push_cast)",
+                    "          all_goals (try omega)",
+                    "          all_goals (try simp_all)",
+                    "          all_goals (first | omega | trivial))",
+                ):
+                    emit(tl, loop.inv_line)
             elif not loop.acc_bool:
                 emit(f"        (by simp only [{_ident(gen_inv)}] at h ⊢; "
                      f"first | omega | (rw [show ({iv} + 1).toNat = "
@@ -2553,7 +2661,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("      all_goals (try (exact hstep))", loop.inv_line)
             for step_line in ladder:
                 emit(step_line, loop.inv_line)
-            ret_t = av if loop.acc_bool \
+            ret_t = av if (loop.acc_bool or loop.acc_list) \
                 else _int_expr(loop.ret, names | {loop.acc}, fn.lineno,
                                lc=lc0)
             emit("", None)
@@ -2687,10 +2795,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # one shared atom for omega.
             targs = " ".join(_ident(_tname(p)) for p in params)
             targsp = (targs + " ") if targs else ""
-            t_init = ("true" if loop.init.value else "false") \
-                if loop.acc_bool \
-                else _int_expr(loop.init, names, fn.lineno,
-                               rename=rename, lc=lc0)
+            if loop.acc_list:
+                t_init = "([] : List Int)"
+            elif loop.acc_bool:
+                t_init = "true" if loop.init.value else "false"
+            else:
+                t_init = _int_expr(loop.init, names, fn.lineno,
+                                   rename=rename, lc=lc0)
             t_bound = _int_expr(loop.bound, names, fn.lineno,
                                 rename=rename, lc=lc0)
             emit("  try dsimp only", first_ensures_line)

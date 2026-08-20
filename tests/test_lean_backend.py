@@ -1751,8 +1751,10 @@ def test_list_returns_and_comprehensions():
                   "    return [(e + y) for e in l]\n")
     assert "List Int" in _encode(with_local).lean_source
 
-    # A list-returning LOOP is refused by naming what is missing, not by
-    # complaining that a list appeared in an integer position.
+    # A list-returning loop whose accumulator is an INTEGER is a real
+    # mismatch, and is now reported as one: list-building loops are
+    # supported, so the old "not in the fragment yet" message would be
+    # wrong.
     loopy = ("#@ requires n >= 0\n#@ ensures len(result) >= 0\n"
              "def f(l: list[int], n: int) -> list[int]:\n"
              "    s = 0\n"
@@ -1760,7 +1762,7 @@ def test_list_returns_and_comprehensions():
              "        #@ invariant s >= 0\n"
              "        s = s + 1\n"
              "    return l\n")
-    with pytest.raises(EncodeError, match="list-building fragment"):
+    with pytest.raises(EncodeError, match="must match its return type"):
         _encode(loopy)
 
 
@@ -2017,6 +2019,72 @@ def test_end_to_end_inferred_measure_still_refuses_non_termination(tmp_path):
                     "    return c\n")
     assert verify_structured(good, tmp_path / "o2",
                              backend="lean")["status"] == "ok"
+
+
+BUILD_LIST = ("#@ ensures len(result) == len(xs)\n"
+              "def bump_all(xs: list[int]) -> list[int]:\n"
+              "    out: list[int] = []\n"
+              "    for i in range(len(xs)):\n"
+              "        #@ invariant len(out) == i\n"
+              "        out.append(xs[i] + 1)\n"
+              "    return out\n")
+
+
+def test_list_building_loops_append_at_the_end():
+    # `out.append(v)` is `out ++ [v]`: Python appends at the END. The
+    # accumulator is a fresh local, so the aliasing question the Dafny
+    # backend's ownership rules answer does not arise — nothing else can
+    # hold a reference to it.
+    enc = _encode(BUILD_LIST)
+    assert "Nat → Int → List Int → List Int" in enc.lean_source
+    assert "(«out» ++ [((«xs».getD («i»).toNat 0) + 1)])" in enc.lean_source
+    # The accumulator is a list, so the invariant may take its length.
+    assert "def «bump_all_inv»" in enc.lean_source
+
+    # Several appends in one body chain in order.
+    two = BUILD_LIST.replace("        out.append(xs[i] + 1)\n",
+                             "        out.append(xs[i])\n"
+                             "        out.append(0)\n").replace(
+                             "len(out) == i", "len(out) == 2 * i")
+    assert "++ [(«xs».getD («i»).toNat 0)]) ++ [0])" in _encode(two).lean_source
+
+
+def test_list_building_rejections():
+    # The body of a `[]` accumulator is append statements only.
+    bad_body = BUILD_LIST.replace("        out.append(xs[i] + 1)\n",
+                                  "        out = out\n")
+    with pytest.raises(EncodeError, match="append"):
+        _encode(bad_body)
+
+    # An appended value must not read the accumulator: that would make
+    # the step depend on the whole list built so far, which this slice
+    # does not model.
+    reads = BUILD_LIST.replace("out.append(xs[i] + 1)",
+                               "out.append(len(out))")
+    with pytest.raises(EncodeError, match="must not read"):
+        _encode(reads)
+
+    # The accumulator and the return type have to agree.
+    mismatch = BUILD_LIST.replace("-> list[int]:", "-> int:")
+    with pytest.raises(EncodeError, match="must match its return type"):
+        _encode(mismatch)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_list_building_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    src = tmp_path / "bump_all.py"
+    src.write_text(BUILD_LIST)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # A wrong length claim still fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(BUILD_LIST.replace("len(result) == len(xs)",
+                                      "len(result) == len(xs) + 1"))
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
 
 
 def test_duplicate_defs_are_refused_not_mispaired():
