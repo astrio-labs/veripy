@@ -197,6 +197,24 @@ def test_bare_int_fstring_still_fires():
     assert "T-FSTRING" in _fires(src)
 
 
+def test_sorted_list_int_does_not_fire():
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs)\n"
+    )
+    assert "U-CALL" not in _fires(src)
+
+
+def test_sorted_reverse_still_fires():
+    src = (
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs, reverse=True)\n"
+    )
+    report = survey_source(src)
+    (fn,) = report.functions
+    assert any(f.rule == "U-CALL" and f.detail == "sorted" for f in fn.fires)
+
+
 def test_aggregate_counts():
     src = (
         "def good(x: int) -> int:\n"

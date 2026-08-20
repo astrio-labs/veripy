@@ -540,6 +540,7 @@ def test_preamble_names_are_exactly_the_globally_visible_declarations():
     assert PREAMBLE_NAMES == {
         "PyMod", "PyFloorDiv", "PyMin", "PyMax", "PyAbs", "PyIndex",
         "PySlice", "PySeqMax", "PySeqMin", "PySum", "PyFlatten", "PyPow",
+        "PyInsert", "PySorted",
         "PyOpt", "PyNone", "PySome",
         "PyExn", "ValueError", "IndexError", "ZeroDivisionError",
         "TypeError", "KeyError",
@@ -1925,3 +1926,43 @@ def test_fstring_format_spec_rejected():
         "    return f\"{s:>10}\"\n",
         "f-string format specs",
     )
+
+
+# --- sorted() on list[int] ------------------------------------------------------
+
+
+def test_sorted_encodes_to_pysorted_in_spec_and_code():
+    src = (
+        "#@ ensures result == sorted(xs)\n"
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs)\n"
+    )
+    assert _encode(src).count("PySorted(xs)") == 2
+
+
+def test_sorted_rejects_key():
+    _expect_encode_error(
+        "#@ ensures result == xs\n"
+        "def f(xs: list[int]) -> list[int]:\n"
+        "    return sorted(xs, key=abs)\n",
+        "key=/reverse=",
+    )
+
+
+def test_sorted_rejects_list_str():
+    _expect_encode_error(
+        "#@ ensures result == xs\n"
+        "def f(xs: list[str]) -> list[str]:\n"
+        "    return sorted(xs)\n",
+        "list[int]",
+    )
+
+
+def test_parameter_shadowing_sorted_rejected():
+    src = (
+        "#@ ensures result == 0\n"
+        "def h(sorted: int) -> int:\n"
+        "    return sorted\n"
+    )
+    with pytest.raises(EncodeError, match="shadows a builtin"):
+        _encode(src)

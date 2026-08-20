@@ -496,6 +496,25 @@ def _fstring_still_outside(node: ast.JoinedStr,
     return False
 
 
+def _sorted_still_outside(node: ast.Call, anns: dict[str, str],
+                          inners: dict[str, str]) -> bool:
+    """True when Dafny still rejects this `sorted()` call.
+
+    Admitted: one positional arg, no keywords, operand annotated
+    `list[int]`. Unannotated `sorted(xs)` stays silent (untyped survey
+    optimism). Keywords, extra args, `str`, `list[str]` / `list[bool]`
+    fire `U-CALL`."""
+    if node.keywords or len(node.args) != 1:
+        return True
+    arg = node.args[0]
+    if not isinstance(arg, ast.Name):
+        return False
+    t = anns.get(arg.id)
+    if t is None:
+        return False
+    return not (t == "list" and inners.get(arg.id) == "int")
+
+
 def _is_mutable_literal(node: ast.expr) -> bool:
     return isinstance(node, (ast.List, ast.Dict, ast.Set, ast.ListComp,
                              ast.DictComp, ast.SetComp)) or (
@@ -880,6 +899,9 @@ class _FunctionScanner:
                 self.fire("F-DYNIMPORT", node)
             elif name in self.scope.forbidden:
                 self.fire(self.scope.forbidden[name], node, detail=name)
+            elif name == "sorted" and _sorted_still_outside(
+                    node, self.ann_types, self.ann_inners):
+                self.fire("U-CALL", node, detail="sorted")
             elif name not in SAFE_BUILTINS and name not in self.scope.names:
                 self.fire("U-CALL", node, detail=name)
         elif isinstance(func, ast.Attribute):
