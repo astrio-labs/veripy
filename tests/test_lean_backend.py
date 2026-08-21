@@ -3113,3 +3113,76 @@ def test_end_to_end_loop_body_assert_is_proved_not_assumed(tmp_path):
                    "    return s\n")
     assert verify_structured(req, tmp_path / "o4",
                              backend="lean")["status"] == "failed"
+
+
+def test_loop_assert_after_the_update_is_refused_not_repositioned():
+    # THE hole this check exists for. Lifting an assert out of the body
+    # is what makes the shape match simple, and it is also what loses
+    # the assert's position relative to the accumulator update. The
+    # obligation is stated with the loop-HEAD binders and discharged
+    # under the loop-HEAD invariant, so it is a claim about the head
+    # state -- true only while the accumulator still holds its head
+    # value.
+    #
+    # Measured before the check existed, both directions wrong:
+    #   s = s + 1; assert s == i        -> `ok`, though CPython RAISES
+    #   s = s + 1; assert s == i + 1    -> `failed`, though it holds
+    # The first certifies a program that does not return at all.
+    after = ("#@ requires n >= 0\n#@ ensures result == n\n"
+             "def f(n: int) -> int:\n    s = 0\n    for i in range(n):\n"
+             "        #@ invariant s == i\n        s = s + 1\n"
+             "        assert s == i\n    return s\n")
+    with pytest.raises(EncodeError, match="after the accumulator"):
+        _encode(after)
+
+    # The runtime-TRUE one is refused too: stating an obligation at the
+    # post-update state is a real extension, and guessing at it is how
+    # the unsound case happened. Refusing is the safe half.
+    after_true = ("#@ requires n >= 0\n#@ ensures result == n\n"
+                  "def f(n: int) -> int:\n    s = 0\n"
+                  "    for i in range(n):\n        #@ invariant s == i\n"
+                  "        s = s + 1\n        assert s == i + 1\n"
+                  "    return s\n")
+    with pytest.raises(EncodeError, match="after the accumulator"):
+        _encode(after_true)
+
+    # A list accumulator is mutated by `append`, which reads the name
+    # rather than storing to it -- a Store-only check would miss it.
+    after_append = (
+        "#@ ensures len(result) == len(xs)\n"
+        "def g(xs: list[int]) -> list[int]:\n    out: list[int] = []\n"
+        "    for i in range(len(xs)):\n"
+        "        #@ invariant len(out) == i\n"
+        "        out.append(xs[i])\n        assert len(out) == i\n"
+        "    return out\n")
+    with pytest.raises(EncodeError, match="after the accumulator"):
+        _encode(after_append)
+
+    # Before the update -- the corpus idiom -- still encodes.
+    before = ("#@ requires n >= 0\n#@ ensures result == n\n"
+              "def f(n: int) -> int:\n    s = 0\n    for i in range(n):\n"
+              "        #@ invariant s == i\n        assert s == i\n"
+              "        s = s + 1\n    return s\n")
+    assert "theorem «f_loop_assert0»" in _encode(before).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_loop_assert_matches_cpython(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # The obligation must be the claim Python evaluates AT THAT POINT.
+    # Pinned against CPython's own answer: this program raises, so no
+    # verdict of `ok` can be right for it.
+    src = ("#@ requires n >= 0\n#@ ensures result == n\n"
+           "def f(n: int) -> int:\n    s = 0\n    for i in range(n):\n"
+           "        #@ invariant s == i\n        s = s + 1\n"
+           "        assert s == i\n    return s\n")
+    ns: dict = {}
+    exec(src.replace("#@ ", "# "), ns)
+    with pytest.raises(AssertionError):
+        ns["f"](3)
+
+    bad = tmp_path / "bad.py"
+    bad.write_text(src)
+    assert verify_structured(bad, tmp_path / "o1",
+                             backend="lean")["status"] != "ok"

@@ -1796,10 +1796,52 @@ def _split_loop(fn: ast.FunctionDef,
     if loop.orelse:
         raise _reject("`for ... else` is outside the fragment", loop.lineno)
     body = [s for s in loop.body]
-    # Asserts are proof obligations, not steps: lift them out before
-    # the shape match so every shape below sees the body it expects,
-    # rather than each shape having to learn to skip them.
-    body_asserts = [s for s in body if isinstance(s, ast.Assert)]
+    # Asserts are proof obligations, not steps, so they are lifted out
+    # before the shape match and every shape below sees the body it
+    # expects. Lifting is exactly what makes POSITION easy to lose,
+    # though: the obligation is stated with the loop-HEAD binders and
+    # discharged under the loop-HEAD invariant, so it is a claim about
+    # the head state. That is the truth only while the accumulator
+    # still holds its head value.
+    #
+    # Measured, before this check existed: `s = s + 1; assert s == i`
+    # was certified `ok` even though CPython raises AssertionError on
+    # it (the head state satisfies s == i), and the runtime-true
+    # `assert s == i + 1` was rejected. Both directions wrong, and the
+    # unsound one certifies a program that does not return at all.
+    #
+    # An assert after the accumulator moves is refused rather than
+    # re-positioned: stating it at the right state is a real
+    # extension, and guessing is how the above happened.
+    def _touches_acc(st: ast.stmt) -> bool:
+        for sub in ast.walk(st):
+            if isinstance(sub, ast.Name) and sub.id == acc \
+                    and isinstance(sub.ctx, ast.Store):
+                return True
+            # `acc.append(v)` reads the name but mutates the object.
+            if isinstance(sub, ast.Call) \
+                    and isinstance(sub.func, ast.Attribute) \
+                    and isinstance(sub.func.value, ast.Name) \
+                    and sub.func.value.id == acc:
+                return True
+        return False
+
+    body_asserts: list[ast.Assert] = []
+    moved = False
+    for st in body:
+        if isinstance(st, ast.Assert):
+            if moved:
+                raise _reject(
+                    f"an `assert` after the accumulator {acc!r} has "
+                    f"been updated is outside this slice — the "
+                    f"obligation is discharged under the loop-head "
+                    f"invariant, which describes the state BEFORE the "
+                    f"update, so proving it there would certify a "
+                    f"different claim than the one Python evaluates; "
+                    f"move the assert above the update", st.lineno)
+            body_asserts.append(st)
+        elif _touches_acc(st):
+            moved = True
     body = [s for s in body if not isinstance(s, ast.Assert)]
     step_expr: ast.expr | None = None
     if len(body) == 1 and isinstance(body[0], ast.If) \
