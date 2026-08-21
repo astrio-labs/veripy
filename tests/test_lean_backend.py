@@ -2539,16 +2539,93 @@ def test_lean_rejects_foreach_unpack_loudly():
         _encode(src)
 
 
-def test_lean_rejects_assert_loudly():
-    src = (
-        "#@ requires n >= 0\n"
-        "#@ ensures result == n\n"
-        "def f(n: int) -> int:\n"
-        "    assert n >= 0\n"
-        "    return n\n"
-    )
-    with pytest.raises(EncodeError, match="assert is outside the Lean slice"):
-        _encode(src)
+def test_assert_is_a_proof_obligation_like_dafny():
+    # Dafny lowers `assert` to a VC. Lean used to refuse it outright,
+    # which made the same fragment mean different things in the two
+    # backends. It is an obligation here now: PROVED, never assumed.
+    src = ("#@ requires n >= 2\n"
+           "#@ ensures result == n + 1\n"
+           "def bump(n: int) -> int:\n"
+           "    assert n > 0\n"
+           "    return n + 1\n")
+    enc = _encode(src)
+    assert "theorem «bump_assert0»" in enc.lean_source
+    # It carries the function's `requires` as hypotheses...
+    assert "(ha0 : («n» ≥ 2))" in enc.lean_source
+    # ...and does not change the value the function computes.
+    assert "def «bump» («n» : Int) : Int :=" in enc.lean_source
+    assert "«n» + 1" in enc.lean_source
+
+    # An assert inside a LOOP says so, rather than reporting a shape
+    # error about the loop body.
+    in_loop = ("#@ requires n >= 0\n"
+               "#@ ensures result == n\n"
+               "def f(n: int) -> int:\n"
+               "    s = 0\n"
+               "    for i in range(n):\n"
+               "        #@ invariant s == i\n"
+               "        assert s >= 0\n"
+               "        s = s + 1\n"
+               "    return s\n")
+    with pytest.raises(EncodeError, match="inside a loop body"):
+        _encode(in_loop)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_assert_must_be_proved(tmp_path):
+    from veripy.agentio import verify_structured
+
+    good = tmp_path / "good.py"
+    good.write_text("#@ requires n >= 2\n"
+                    "#@ ensures result == n + 1\n"
+                    "def bump(n: int) -> int:\n"
+                    "    assert n > 0\n"
+                    "    return n + 1\n")
+    assert verify_structured(good, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # An assert the contract does not support FAILS. If it were assumed
+    # instead of proved, this would pass and quietly strengthen every
+    # later obligation.
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ requires n >= 2\n"
+                   "#@ ensures result == n + 1\n"
+                   "def bump(n: int) -> int:\n"
+                   "    assert n > 5\n"
+                   "    return n + 1\n")
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
+def test_augmented_assignment_desugars():
+    # `x += e` is `x = x + e`, desugared once so every loop shape sees a
+    # single spelling instead of each matcher growing a second case.
+    for op, form in (("+=", "+"), ("-=", "-"), ("*=", "*")):
+        src = (f"#@ requires n >= 0\n"
+               f"#@ ensures result >= 0\n"
+               f"def f(n: int) -> int:\n"
+               f"    s = 1\n"
+               f"    for i in range(n):\n"
+               f"        #@ invariant s >= 0\n"
+               f"        s {op} 1\n"
+               f"    return s\n")
+        try:
+            _encode(src)
+        except EncodeError as exc:      # `-=` can leave s negative
+            assert "invariant" not in str(exc), (op, exc)
+
+    # An operator the fragment does not model names ITSELF, rather than
+    # surfacing as a loop-shape complaint.
+    bad = ("#@ requires n >= 1\n"
+           "#@ ensures result >= 0\n"
+           "def f(n: int) -> int:\n"
+           "    s = 8\n"
+           "    for i in range(n):\n"
+           "        #@ invariant s >= 0\n"
+           "        s //= 2\n"
+           "    return s\n")
+    with pytest.raises(EncodeError, match="augmented assignment"):
+        _encode(bad)
 
 
 def test_lean_rejects_walrus_loudly():

@@ -781,6 +781,10 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
         raise _reject("fall through the end of the function without a "
                       "return", None)
     head, rest = stmts[0], stmts[1:]
+    if isinstance(head, ast.Assert):
+        # An assert does not change the VALUE; it is a proof obligation,
+        # emitted as its own theorem beside the function.
+        return _body_expr(rest, names, params, is_bool, lc, is_list)
     if isinstance(head, ast.Return):
         if head.value is None:
             raise _reject("bare `return` has no value to encode",
@@ -1171,6 +1175,36 @@ def _wrap_guards(guards: list[tuple[ast.expr, ast.expr]], body: str,
     return out
 
 
+_AUG_OPS = (ast.Add, ast.Sub, ast.Mult)
+
+
+def _desugar_aug(st: ast.stmt) -> ast.stmt:
+    """`x += e` is `x = x + e`. Desugaring here means every shape
+    downstream sees one spelling, rather than each loop matcher growing
+    a second case it might get subtly wrong.
+
+    Only the operators the fragment already models are desugared; `x //=
+    e` and friends keep their own refusal, which names the operator."""
+    if not isinstance(st, ast.AugAssign) or not isinstance(st.target,
+                                                           ast.Name):
+        return st
+    if not isinstance(st.op, _AUG_OPS):
+        # Name the operator rather than letting the loop matcher report
+        # a shape error: `s //= 2` is a fine Python statement, and the
+        # honest complaint is about the operator, not the loop.
+        raise _reject(
+            f"augmented assignment `{type(st.op).__name__}` is outside "
+            f"this slice — `+=`, `-=` and `*=` desugar to their plain "
+            f"form", st.lineno)
+    out = ast.Assign(
+        targets=[ast.Name(id=st.target.id, ctx=ast.Store())],
+        value=ast.BinOp(left=ast.Name(id=st.target.id, ctx=ast.Load()),
+                        op=st.op, right=st.value))
+    ast.copy_location(out, st)
+    ast.fix_missing_locations(out)
+    return out
+
+
 def _split_guards(stmts: list[ast.stmt]
                   ) -> tuple[list[tuple[ast.expr, ast.expr]],
                              list[ast.stmt]]:
@@ -1474,7 +1508,7 @@ def _split_while(fn: ast.FunctionDef,
     """Match the while shape, or REJECT loudly. Only called once a
     `while` is known to be present, so returning None would just hand
     the body compiler a worse message."""
-    stmts = [st for st in fn.body
+    stmts = [_desugar_aug(st) for st in fn.body
              if not (isinstance(st, ast.Expr)
                      and isinstance(st.value, ast.Constant))]
     guards, stmts = _split_guards(stmts)
@@ -1545,7 +1579,7 @@ def _split_while(fn: ast.FunctionDef,
         raise _reject("`while ... else` is outside the fragment",
                       loop.lineno)
     steps: list[list[tuple[str, ast.expr]]] = []
-    for st in loop.body:
+    for st in map(_desugar_aug, loop.body):
         if not isinstance(st, ast.Assign) or len(st.targets) != 1:
             raise _reject("the loop body must be assignments to the "
                           "accumulators in this slice",
@@ -1604,7 +1638,7 @@ def _split_loop(fn: ast.FunctionDef,
     A `for` that does not fit the shape is REJECTED (not silently routed
     to the loop-free compiler, which would refuse it with a worse
     message)."""
-    stmts = [s for s in fn.body
+    stmts = [_desugar_aug(s) for s in fn.body
              if not (isinstance(s, ast.Expr)
                      and isinstance(s.value, ast.Constant))]
     guards, stmts = _split_guards(stmts)
@@ -1663,7 +1697,7 @@ def _split_loop(fn: ast.FunctionDef,
                       loop.lineno)
     if loop.orelse:
         raise _reject("`for ... else` is outside the fragment", loop.lineno)
-    body = [s for s in loop.body]
+    body = [_desugar_aug(s) for s in loop.body]
     step_expr: ast.expr | None = None
     if len(body) == 1 and isinstance(body[0], ast.If) \
             and not body[0].orelse and len(body[0].body) == 1 \
@@ -2011,10 +2045,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "Dafny backend admits them; this slice has no "
                     "product types", node.lineno)
             if isinstance(node, ast.Assert):
-                raise _reject(
-                    "assert is outside the Lean slice — the Dafny "
-                    "backend admits it as a VC; this slice has no "
-                    "proof-hint statements", node.lineno)
+                # Loop-free asserts become their own obligation below,
+                # matching Dafny. Inside a loop the obligation would
+                # have to be discharged under the invariant at the right
+                # iteration, which this slice does not build.
+                in_loop = any(
+                    node in ast.walk(st)
+                    for st in ast.walk(fn)
+                    if isinstance(st, (ast.For, ast.While)))
+                if in_loop:
+                    raise _reject(
+                        "an `assert` inside a loop body is outside this "
+                        "slice — its obligation would have to be "
+                        "discharged under the invariant at that "
+                        "iteration; a loop-free `assert` is admitted "
+                        "as a proof obligation", node.lineno)
             if isinstance(node, ast.NamedExpr):
                 raise _reject(
                     "walrus is outside the Lean slice — the Dafny "
@@ -2854,6 +2899,38 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit(f"def {_ident(spec_fn.name)} {binders} : {ret_ty} :=",
                  fn.lineno)
             emit(f"  {body}", fn.lineno)
+
+        # An `assert` is a proof OBLIGATION, exactly as Dafny reads it:
+        # it must be proved, never assumed. Each becomes its own theorem
+        # under the function's `requires`, so a false assert fails on
+        # its own rather than silently strengthening the context.
+        asserts = [st for st in fn.body if isinstance(st, ast.Assert)]
+        for ai, st in enumerate(asserts):
+            _no_old(st.test, st.lineno)
+            _reject_undecidable_quantifier(st.test, names, st.lineno, lc0)
+            a_name = f"{spec_fn.name}_assert{ai}"
+            _check_name(a_name, "generated assert obligation for",
+                        st.lineno, taken)
+            taken.add(a_name)
+            a_hyps = []
+            for hi, (hexpr, hline) in enumerate(
+                    _parse_clause(spec_fn, "requires")):
+                a_hyps.append(f"(ha{hi} : "
+                              f"{_prop_expr(hexpr, names, hline, lc=lc0)})")
+            a_sig = " ".join(x for x in [binders, *a_hyps] if x)
+            emit("", None)
+            emit(f"theorem {_ident(a_name)} {a_sig} :", st.lineno)
+            emit(f"    {_prop_expr(st.test, names, st.lineno, lc=lc0)} "
+                 f":= by", st.lineno)
+            for tl in ("  try unfold VeriPy.PyAbs",
+                       "  try dsimp only",
+                       "  try simp only [decide_eq_true_eq]",
+                       "  repeat' split",
+                       "  all_goals (try intros)",
+                       "  all_goals (try simp_all)",
+                       "  all_goals (first | omega | trivial)"):
+                emit(tl, st.lineno)
+            theorems.append(a_name)
 
         ensures = _parse_clause(spec_fn, "ensures")
         if not ensures:
