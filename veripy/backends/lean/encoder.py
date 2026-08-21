@@ -885,6 +885,13 @@ class _LoopShape:
     # Leading `if COND: return V` guards, in source order. They
     # short-circuit before the loop runs.
     guards: list[tuple[ast.expr, ast.expr]] = field(default_factory=list)
+    # Top-level `assert`s in the loop BODY (P2 slice 18). Dafny reads
+    # one as prove-then-assume, and so does this: each becomes its own
+    # theorem under the invariant at that iteration, then rides into
+    # the preservation step as a hypothesis. The two halves are what
+    # make it a HINT rather than either an unchecked assumption or
+    # dead weight.
+    asserts: list[ast.Assert] = field(default_factory=list)
 
 
 def _requires_min_len(spec_fn: FunctionSpec,
@@ -1208,6 +1215,19 @@ def _collect_asserts(stmts: list[ast.stmt],
                 and isinstance(st.targets[0], ast.Name):
             live[st.targets[0].id] = _SubstExprs(dict(live)).visit(
                 copy.deepcopy(st.value))
+        elif isinstance(st, (ast.For, ast.While)):
+            # A loop REBINDS names, and a name's post-loop value is not
+            # its pre-loop definition. Substituting across the loop
+            # would state a later obligation about the wrong state --
+            # `s = n; while s > 0: s = s - 1; assert s == 0` would
+            # become the false `n = 0`. Dropping them turns that into a
+            # loud `unknown name` rather than a quiet wrong claim.
+            # (The loop shapes reject this arrangement today; the guard
+            # is here so admitting it later cannot go wrong silently.)
+            for sub in ast.walk(st):
+                if isinstance(sub, ast.Name) \
+                        and isinstance(sub.ctx, ast.Store):
+                    live.pop(sub.id, None)
         elif isinstance(st, ast.If):
             cond = _SubstExprs(dict(live)).visit(copy.deepcopy(st.test))
             out.extend(_collect_asserts(st.body, path + ((cond, True),),
@@ -1361,6 +1381,15 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
         return None
     loop, ret_stmt = stmts
     body = list(loop.body)
+    if any(isinstance(s, ast.Assert) for s in body) \
+            and len([s for s in body
+                     if not isinstance(s, ast.Assert)]) == 1:
+        raise _reject(
+            "an `assert` in an early-return search loop is outside this "
+            "slice — that shape is desugared into a SYNTHESIZED bool "
+            "accumulator, so there is no invariant of the user's own "
+            "for the obligation to be discharged under; an assert in a "
+            "plain accumulator loop is admitted", body[0].lineno)
     if len(body) != 1 or not isinstance(body[0], ast.If) \
             or body[0].orelse or len(body[0].body) != 1 \
             or not isinstance(body[0].body[0], ast.Return):
@@ -1767,6 +1796,53 @@ def _split_loop(fn: ast.FunctionDef,
     if loop.orelse:
         raise _reject("`for ... else` is outside the fragment", loop.lineno)
     body = [s for s in loop.body]
+    # Asserts are proof obligations, not steps, so they are lifted out
+    # before the shape match and every shape below sees the body it
+    # expects. Lifting is exactly what makes POSITION easy to lose,
+    # though: the obligation is stated with the loop-HEAD binders and
+    # discharged under the loop-HEAD invariant, so it is a claim about
+    # the head state. That is the truth only while the accumulator
+    # still holds its head value.
+    #
+    # Measured, before this check existed: `s = s + 1; assert s == i`
+    # was certified `ok` even though CPython raises AssertionError on
+    # it (the head state satisfies s == i), and the runtime-true
+    # `assert s == i + 1` was rejected. Both directions wrong, and the
+    # unsound one certifies a program that does not return at all.
+    #
+    # An assert after the accumulator moves is refused rather than
+    # re-positioned: stating it at the right state is a real
+    # extension, and guessing is how the above happened.
+    def _touches_acc(st: ast.stmt) -> bool:
+        for sub in ast.walk(st):
+            if isinstance(sub, ast.Name) and sub.id == acc \
+                    and isinstance(sub.ctx, ast.Store):
+                return True
+            # `acc.append(v)` reads the name but mutates the object.
+            if isinstance(sub, ast.Call) \
+                    and isinstance(sub.func, ast.Attribute) \
+                    and isinstance(sub.func.value, ast.Name) \
+                    and sub.func.value.id == acc:
+                return True
+        return False
+
+    body_asserts: list[ast.Assert] = []
+    moved = False
+    for st in body:
+        if isinstance(st, ast.Assert):
+            if moved:
+                raise _reject(
+                    f"an `assert` after the accumulator {acc!r} has "
+                    f"been updated is outside this slice — the "
+                    f"obligation is discharged under the loop-head "
+                    f"invariant, which describes the state BEFORE the "
+                    f"update, so proving it there would certify a "
+                    f"different claim than the one Python evaluates; "
+                    f"move the assert above the update", st.lineno)
+            body_asserts.append(st)
+        elif _touches_acc(st):
+            moved = True
+    body = [s for s in body if not isinstance(s, ast.Assert)]
     step_expr: ast.expr | None = None
     if len(body) == 1 and isinstance(body[0], ast.If) \
             and not body[0].orelse and len(body[0].body) == 1 \
@@ -1850,7 +1926,7 @@ def _split_loop(fn: ast.FunctionDef,
     acc_list = isinstance(init_value, ast.List) and not init_value.elts
     if acc_list:
         appended: list[ast.expr] = []
-        for st in loop.body:
+        for st in body:
             if not (isinstance(st, ast.Expr)
                     and isinstance(st.value, ast.Call)
                     and isinstance(st.value.func, ast.Attribute)
@@ -1904,7 +1980,8 @@ def _split_loop(fn: ast.FunctionDef,
                       guards=guards,
                       bound=it.args[0], step=step_expr,
                       ret=ret_stmt.value, inv=inv_expr, inv_line=inv_line,
-                      for_line=loop.lineno, acc_bool=acc_bool)
+                      for_line=loop.lineno, acc_bool=acc_bool,
+                      asserts=body_asserts)
 
 
 def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
@@ -2121,20 +2198,29 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "product types", node.lineno)
             if isinstance(node, ast.Assert):
                 # Loop-free asserts become their own obligation below,
-                # matching Dafny. Inside a loop the obligation would
-                # have to be discharged under the invariant at the right
-                # iteration, which this slice does not build.
+                # matching Dafny; a `for`-body assert becomes one under
+                # the invariant at that iteration (slice 18) and the
+                # shape analysis picks it up. What stays out is the
+                # assert whose obligation this slice cannot POSITION:
+                # under a branch inside the body its claim holds only
+                # on that path, and the preservation proof has no
+                # hypothesis for the path taken.
+                at_for_top = any(
+                    node in st.body for st in ast.walk(fn)
+                    if isinstance(st, ast.For))
                 in_loop = any(
                     node in ast.walk(st)
                     for st in ast.walk(fn)
                     if isinstance(st, (ast.For, ast.While)))
-                if in_loop:
+                if in_loop and not at_for_top:
                     raise _reject(
-                        "an `assert` inside a loop body is outside this "
-                        "slice — its obligation would have to be "
-                        "discharged under the invariant at that "
-                        "iteration; a loop-free `assert` is admitted "
-                        "as a proof obligation", node.lineno)
+                        "an `assert` nested inside a loop body's branch "
+                        "(or in a `while` body) is outside this slice — "
+                        "its obligation would have to be discharged "
+                        "under the path taken through that iteration, "
+                        "which the preservation proof does not carry; "
+                        "an assert at the TOP LEVEL of a `for` body is "
+                        "admitted", node.lineno)
             if isinstance(node, ast.NamedExpr):
                 raise _reject(
                     "walrus is outside the Lean slice — the Dafny "
@@ -2700,6 +2786,60 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                  loop.inv_line)
             emit(f"  {inv_t}", loop.inv_line)
             emit("", None)
+            # An `assert` in the loop body, read exactly as Dafny
+            # reads it: PROVE, then assume. The proof is its own
+            # theorem under the invariant at that iteration plus the
+            # index bounds that hold wherever the body runs; the
+            # assumption is a `have` in the preservation step below.
+            # Only the proved form is ever assumed, so the hint cannot
+            # smuggle in a fact the prover has not earned.
+            #
+            # Like the induction theorem itself, this carries the
+            # invariant and the bounds but NOT the function's
+            # `requires` -- there is nothing at the injection site to
+            # discharge them with. Honest incompleteness: an assert
+            # that needs a precondition is refused, not assumed.
+            assert_facts: list[str] = []
+            # Dafny proves `assert A; assert B` with A IN CONTEXT for
+            # B, so each obligation here carries the ones before it.
+            # Sound because every one of them is discharged by its own
+            # theorem under the same hypotheses -- a false A fails on
+            # its own and takes the file with it, so it can never be
+            # the thing that lets B through.
+            prior: list[tuple[str, str]] = []
+            for si, sst in enumerate(loop.asserts):
+                a_name = f"{fname}_loop_assert{si}"
+                _check_name(a_name, "generated declaration for",
+                            sst.lineno, taken)
+                taken.add(a_name)
+                _no_old(sst.test, sst.lineno)
+                _reject_undecidable_quantifier(sst.test, body_names,
+                                               sst.lineno, step_lc)
+                claim_t = _prop_expr(sst.test, body_names, sst.lineno,
+                                     lc=step_lc)
+                emit(f"theorem {_ident(a_name)} {binders} "
+                     f"({iv} : Int) ({av} : {acc_ty})", sst.lineno)
+                hyps = (f"(hinv : {_ident(gen_inv)} {argsp}{iv} {av}) "
+                        f"(hlo : 0 ≤ {iv}) (hhi : {iv} < {bound_t})"
+                        + "".join(f" ({hn} : {hc})" for hn, hc in prior))
+                emit(f"    {hyps} :", sst.lineno)
+                emit(f"    {claim_t} := by", sst.lineno)
+                for tl in ("  simp only [" + _ident(gen_inv)
+                           + "] at hinv",
+                           "  try simp only [decide_eq_true_eq] at *",
+                           "  repeat' split",
+                           "  all_goals (try intros)",
+                           "  all_goals (try simp_all)",
+                           "  all_goals (try omega)",
+                           "  all_goals (first | omega | trivial)"):
+                    emit(tl, sst.lineno)
+                emit("", None)
+                theorems.append(a_name)
+                assert_facts.append(
+                    f"      have hla{si} := {_ident(a_name)} "
+                    f"{argsp}{iv} {av} h hi (by omega)"
+                    + "".join(f" {hn}" for hn, _ in prior))
+                prior.append((f"hla{si}", claim_t))
             # The induction theorem: its inductive step IS the
             # invariant-preservation VC (omega for linear invariants).
             # The loop application is one opaque atom to omega, so the
@@ -2779,6 +2919,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit(f"      intro {iv} {av} h hi hb", loop.inv_line)
             emit(f"      simp only [{_ident(gen_loop)}]", loop.inv_line)
             for fact in div_facts:
+                emit(fact, loop.inv_line)
+            # Before anything unfolds `h`: the obligation theorem wants
+            # the invariant in its FOLDED form, and the surrounding
+            # `simp only [...] at *` further down would have rewritten
+            # it out from under the application.
+            for fact in assert_facts:
                 emit(fact, loop.inv_line)
             # The inner `by` is the invariant-preservation VC. Linear
             # invariants close on omega alone; take-slice invariants
