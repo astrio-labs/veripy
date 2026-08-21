@@ -275,10 +275,22 @@ discards the context that made the obligation correct.
 > carry.**
 
 Refusing what cannot be reconstructed is the half that separates
-incompleteness from certifying a crash. Concretely, `_collect_asserts`
-must walk the same control-flow shape `_body_expr` compiles; anywhere
-the two disagree about what guards a statement is a bug by
-construction.
+incompleteness from certifying a crash. It takes a different concrete
+form on each path, and the two are **not** interchangeable:
+
+- **Loop-free bodies.** `_collect_asserts` must walk the same
+  control-flow shape `_body_expr` compiles. Anywhere the two disagree
+  about what guards a statement is a bug by construction — that is
+  where the implicit-else and local-substitution findings came from.
+- **Loop bodies.** Neither of those helpers goes near a loop body:
+  `_collect_asserts` steps *over* `For`/`While` (dropping only the
+  names they rebind) and `_body_expr` has no `For` branch at all. The
+  lift lives in `_split_loop`, and `_touches_acc` is what keeps it
+  honest — an assert may be lifted only from a position where the
+  accumulator still holds its loop-head value, because that is the
+  state the obligation is stated in. **This is the guard to preserve
+  when loop-assert lifting is extended**; it is the one that catches
+  the crash case above.
 
 ### Next, by measured value
 
