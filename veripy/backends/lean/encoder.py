@@ -781,6 +781,10 @@ def _body_expr(stmts: list[ast.stmt], names: set[str],
         raise _reject("fall through the end of the function without a "
                       "return", None)
     head, rest = stmts[0], stmts[1:]
+    if isinstance(head, ast.Assert):
+        # An assert does not change the VALUE; it is a proof obligation,
+        # emitted as its own theorem beside the function.
+        return _body_expr(rest, names, params, is_bool, lc, is_list)
     if isinstance(head, ast.Return):
         if head.value is None:
             raise _reject("bare `return` has no value to encode",
@@ -1168,6 +1172,105 @@ def _wrap_guards(guards: list[tuple[ast.expr, ast.expr]], body: str,
         else:
             val_t = _int_expr(value, names, line, lc=lc)
         out = f"(if {cond_t} then {val_t} else {out})"
+    return out
+
+
+_AUG_OPS = (ast.Add, ast.Sub, ast.Mult)
+
+
+def _collect_asserts(stmts: list[ast.stmt],
+                     path: tuple[tuple[ast.expr, bool], ...] = (),
+                     subst: dict[str, ast.expr] | None = None
+                     ) -> list[tuple[ast.Assert, ast.expr,
+                                     tuple[tuple[ast.expr, bool], ...]]]:
+    """Every `assert` in a loop-free body, as (statement, claim, path).
+
+    An assert is a claim about the state at ONE POINT in the body, and
+    lifting it into a standalone theorem has to carry every way its
+    meaning depends on that position. Four ways, each learned the hard
+    way. The PATH CONDITION, because `if n > 0: assert P` owes P only
+    when the branch is taken -- including the IMPLICIT else, since an
+    `if` without `else` that returns makes everything after it the else
+    branch. The NESTING, because reading only the top level dropped a
+    nested obligation entirely. And the LOCALS: an obligation is a
+    theorem over the function's parameters, so a local has no meaning
+    in it -- `s = n + 1; assert s > 0` is the claim `n + 1 > 0`, and
+    the local's definition is substituted in rather than its name
+    carried out of scope."""
+    out: list[tuple[ast.Assert, ast.expr,
+                    tuple[tuple[ast.expr, bool], ...]]] = []
+    live = dict(subst or {})
+    for idx, st in enumerate(stmts):
+        if isinstance(st, ast.Assert):
+            claim = _SubstExprs(dict(live)).visit(copy.deepcopy(st.test))
+            out.append((st, claim, path))
+        elif isinstance(st, ast.Assign) and len(st.targets) == 1 \
+                and isinstance(st.targets[0], ast.Name):
+            live[st.targets[0].id] = _SubstExprs(dict(live)).visit(
+                copy.deepcopy(st.value))
+        elif isinstance(st, ast.If):
+            cond = _SubstExprs(dict(live)).visit(copy.deepcopy(st.test))
+            out.extend(_collect_asserts(st.body, path + ((cond, True),),
+                                        live))
+            out.extend(_collect_asserts(st.orelse,
+                                        path + ((cond, False),), live))
+            if not st.orelse and _always_returns(st.body):
+                # `_body_expr` compiles what FOLLOWS an `if` without
+                # `else` as that `if`'s else branch, so those
+                # statements run only when the test is false. Reading
+                # on at this level instead owes the assert
+                # unconditionally, which rejects a correct function.
+                out.extend(_collect_asserts(stmts[idx + 1:],
+                                            path + ((cond, False),),
+                                            live))
+                break
+    return out
+
+
+class _AugAssignRewriter(ast.NodeTransformer):
+    """Rewrite every `x += e` to `x = x + e`, module-wide."""
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> ast.stmt:
+        self.generic_visit(node)
+        if not isinstance(node.target, ast.Name):
+            return node
+        if not isinstance(node.op, _AUG_OPS):
+            raise _reject(
+                f"augmented assignment `{type(node.op).__name__}` is "
+                f"outside this slice — `+=`, `-=` and `*=` desugar to "
+                f"their plain form", node.lineno)
+        out = ast.Assign(
+            targets=[ast.Name(id=node.target.id, ctx=ast.Store())],
+            value=ast.BinOp(left=ast.Name(id=node.target.id,
+                                          ctx=ast.Load()),
+                            op=node.op, right=node.value))
+        return ast.copy_location(out, node)
+
+
+def _desugar_aug(st: ast.stmt) -> ast.stmt:
+    """`x += e` is `x = x + e`. Desugaring here means every shape
+    downstream sees one spelling, rather than each loop matcher growing
+    a second case it might get subtly wrong.
+
+    Only the operators the fragment already models are desugared; `x //=
+    e` and friends keep their own refusal, which names the operator."""
+    if not isinstance(st, ast.AugAssign) or not isinstance(st.target,
+                                                           ast.Name):
+        return st
+    if not isinstance(st.op, _AUG_OPS):
+        # Name the operator rather than letting the loop matcher report
+        # a shape error: `s //= 2` is a fine Python statement, and the
+        # honest complaint is about the operator, not the loop.
+        raise _reject(
+            f"augmented assignment `{type(st.op).__name__}` is outside "
+            f"this slice — `+=`, `-=` and `*=` desugar to their plain "
+            f"form", st.lineno)
+    out = ast.Assign(
+        targets=[ast.Name(id=st.target.id, ctx=ast.Store())],
+        value=ast.BinOp(left=ast.Name(id=st.target.id, ctx=ast.Load()),
+                        op=st.op, right=st.value))
+    ast.copy_location(out, st)
+    ast.fix_missing_locations(out)
     return out
 
 
@@ -1813,6 +1916,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # Proof sidecars are live (P3). `proof_lemmas` is the set of names
     # the pack declares, already whitelist-validated by the loader.
     module = ast.parse(source)
+    # `x += e` is `x = x + e`. Rewriting the whole module once means
+    # every path downstream sees a single spelling; desugaring at
+    # individual sites left the operator accepted inside a loop body and
+    # refused in loop-free code, for no reason a reader could see.
+    module = _AugAssignRewriter().visit(module)
+    ast.fix_missing_locations(module)
     # Module level admits ONLY function definitions and a docstring.
     # Anything else — an assignment (`abs = ...`), an import binding
     # (`import numpy as abs`), a class — could rebind a name call sites
@@ -2011,10 +2120,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "Dafny backend admits them; this slice has no "
                     "product types", node.lineno)
             if isinstance(node, ast.Assert):
-                raise _reject(
-                    "assert is outside the Lean slice — the Dafny "
-                    "backend admits it as a VC; this slice has no "
-                    "proof-hint statements", node.lineno)
+                # Loop-free asserts become their own obligation below,
+                # matching Dafny. Inside a loop the obligation would
+                # have to be discharged under the invariant at the right
+                # iteration, which this slice does not build.
+                in_loop = any(
+                    node in ast.walk(st)
+                    for st in ast.walk(fn)
+                    if isinstance(st, (ast.For, ast.While)))
+                if in_loop:
+                    raise _reject(
+                        "an `assert` inside a loop body is outside this "
+                        "slice — its obligation would have to be "
+                        "discharged under the invariant at that "
+                        "iteration; a loop-free `assert` is admitted "
+                        "as a proof obligation", node.lineno)
             if isinstance(node, ast.NamedExpr):
                 raise _reject(
                     "walrus is outside the Lean slice — the Dafny "
@@ -2854,6 +2974,47 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit(f"def {_ident(spec_fn.name)} {binders} : {ret_ty} :=",
                  fn.lineno)
             emit(f"  {body}", fn.lineno)
+
+        # An `assert` is a proof OBLIGATION, exactly as Dafny reads it:
+        # it must be proved, never assumed. Each becomes its own theorem
+        # under the function's `requires`, so a false assert fails on
+        # its own rather than silently strengthening the context.
+        asserts = _collect_asserts(list(fn.body))
+        for ai, (st, claim, path) in enumerate(asserts):
+            _no_old(st.test, st.lineno)
+            _reject_undecidable_quantifier(claim, names, st.lineno, lc0)
+            a_name = f"{spec_fn.name}_assert{ai}"
+            _check_name(a_name, "generated assert obligation for",
+                        st.lineno, taken)
+            taken.add(a_name)
+            a_hyps = []
+            for hi, (hexpr, hline) in enumerate(
+                    _parse_clause(spec_fn, "requires")):
+                a_hyps.append(f"(ha{hi} : "
+                              f"{_prop_expr(hexpr, names, hline, lc=lc0)})")
+            # The branch conditions that reach this assert become
+            # hypotheses: an assert under `if n > 0` owes its claim only
+            # when that branch is taken.
+            for pi_, (pcond, on_true) in enumerate(path):
+                _reject_undecidable_quantifier(pcond, names, st.lineno,
+                                               lc0)
+                pt = _prop_expr(pcond, names, st.lineno, lc=lc0)
+                a_hyps.append(f"(hp{pi_} : "
+                              + (pt if on_true else f"(¬{pt})") + ")")
+            a_sig = " ".join(x for x in [binders, *a_hyps] if x)
+            emit("", None)
+            emit(f"theorem {_ident(a_name)} {a_sig} :", st.lineno)
+            emit(f"    {_prop_expr(claim, names, st.lineno, lc=lc0)} "
+                 f":= by", st.lineno)
+            for tl in ("  try unfold VeriPy.PyAbs",
+                       "  try dsimp only",
+                       "  try simp only [decide_eq_true_eq]",
+                       "  repeat' split",
+                       "  all_goals (try intros)",
+                       "  all_goals (try simp_all)",
+                       "  all_goals (first | omega | trivial)"):
+                emit(tl, st.lineno)
+            theorems.append(a_name)
 
         ensures = _parse_clause(spec_fn, "ensures")
         if not ensures:

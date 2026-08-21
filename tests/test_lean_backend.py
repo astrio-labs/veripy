@@ -2539,16 +2539,239 @@ def test_lean_rejects_foreach_unpack_loudly():
         _encode(src)
 
 
-def test_lean_rejects_assert_loudly():
-    src = (
-        "#@ requires n >= 0\n"
-        "#@ ensures result == n\n"
-        "def f(n: int) -> int:\n"
-        "    assert n >= 0\n"
-        "    return n\n"
-    )
-    with pytest.raises(EncodeError, match="assert is outside the Lean slice"):
-        _encode(src)
+def test_assert_is_a_proof_obligation_like_dafny():
+    # Dafny lowers `assert` to a VC. Lean used to refuse it outright,
+    # which made the same fragment mean different things in the two
+    # backends. It is an obligation here now: PROVED, never assumed.
+    src = ("#@ requires n >= 2\n"
+           "#@ ensures result == n + 1\n"
+           "def bump(n: int) -> int:\n"
+           "    assert n > 0\n"
+           "    return n + 1\n")
+    enc = _encode(src)
+    assert "theorem «bump_assert0»" in enc.lean_source
+    # It carries the function's `requires` as hypotheses...
+    assert "(ha0 : («n» ≥ 2))" in enc.lean_source
+    # ...and does not change the value the function computes.
+    assert "def «bump» («n» : Int) : Int :=" in enc.lean_source
+    assert "«n» + 1" in enc.lean_source
+
+    # An assert inside a LOOP says so, rather than reporting a shape
+    # error about the loop body.
+    in_loop = ("#@ requires n >= 0\n"
+               "#@ ensures result == n\n"
+               "def f(n: int) -> int:\n"
+               "    s = 0\n"
+               "    for i in range(n):\n"
+               "        #@ invariant s == i\n"
+               "        assert s >= 0\n"
+               "        s = s + 1\n"
+               "    return s\n")
+    with pytest.raises(EncodeError, match="inside a loop body"):
+        _encode(in_loop)
+
+
+def test_nested_asserts_keep_their_obligation_and_their_path():
+    # Collecting only top-level asserts DROPPED a nested one's
+    # obligation, so a function containing an assert that cannot hold
+    # still verified — the exact hole "proved, never assumed" exists to
+    # prevent.
+    nested = ("#@ requires n >= 2\n"
+              "#@ ensures result >= 0\n"
+              "def f(n: int) -> int:\n"
+              "    if n > 0:\n"
+              "        assert n > 100\n"
+              "        return n\n"
+              "    return 0\n")
+    enc = _encode(nested)
+    assert "theorem «f_assert0»" in enc.lean_source
+    # The PATH matters as much as the assert: this one owes its claim
+    # only when the branch is taken, so the condition is a hypothesis.
+    assert "(hp0 : («n» > 0))" in enc.lean_source
+
+    # An else-branch assert carries the NEGATED condition.
+    els = ("#@ requires n >= 2\n"
+           "#@ ensures result >= 0\n"
+           "def f(n: int) -> int:\n"
+           "    if n > 100:\n"
+           "        return n\n"
+           "    else:\n"
+           "        assert n <= 100\n"
+           "        return 0\n")
+    assert "(hp0 : (¬(«n» > 100)))" in _encode(els).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_nested_assert_obligations(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # A nested assert that cannot hold must FAIL...
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ requires n >= 2\n"
+                   "#@ ensures result >= 0\n"
+                   "def f(n: int) -> int:\n"
+                   "    if n > 0:\n"
+                   "        assert n > 100\n"
+                   "        return n\n"
+                   "    return 0\n")
+    assert verify_structured(bad, tmp_path / "o1",
+                             backend="lean")["status"] == "failed"
+
+    # ...while one that is true only UNDER ITS BRANCH must pass.
+    # Demanding it unconditionally would fail a perfectly true spec,
+    # which is the way over-correcting here would show up.
+    good = tmp_path / "good.py"
+    good.write_text("#@ requires n >= 2\n"
+                    "#@ ensures result >= 0\n"
+                    "def g(n: int) -> int:\n"
+                    "    if n > 10:\n"
+                    "        assert n > 5\n"
+                    "        return n\n"
+                    "    return 0\n")
+    assert verify_structured(good, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+
+def test_assert_obligations_substitute_locals():
+    # An obligation is a theorem over the function's PARAMETERS, so a
+    # local has no meaning inside it. `s = n + 1; assert s > 0` is the
+    # claim `n + 1 > 0`; carrying the local's name out of scope instead
+    # failed with "unknown name".
+    src = ("#@ requires n >= 0\n"
+           "#@ ensures result >= 1\n"
+           "def f(n: int) -> int:\n"
+           "    s = n + 1\n"
+           "    assert s > 0\n"
+           "    return s\n")
+    assert "((«n» + 1) > 0)" in _encode(src).lean_source
+
+    # Chained locals resolve through each other.
+    chained = ("#@ requires n >= 0\n"
+               "#@ ensures result >= 2\n"
+               "def f(n: int) -> int:\n"
+               "    a = n + 1\n"
+               "    b = a + 1\n"
+               "    assert b > 1\n"
+               "    return b\n")
+    assert "(((«n» + 1) + 1) > 1)" in _encode(chained).lean_source
+
+    # A local reached through a branch is substituted into the PATH
+    # condition as well as the claim.
+    branch = ("#@ requires n >= 0\n"
+              "#@ ensures result >= 0\n"
+              "def f(n: int) -> int:\n"
+              "    s = n + 5\n"
+              "    if s > 3:\n"
+              "        assert s > 2\n"
+              "        return s\n"
+              "    return 0\n")
+    assert "(hp0 : ((«n» + 5) > 3))" in _encode(branch).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_local_assert_still_must_be_proved(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # Substituting the local must not make a FALSE assert provable.
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ requires n >= 0\n"
+                   "#@ ensures result >= 1\n"
+                   "def f(n: int) -> int:\n"
+                   "    s = n + 1\n"
+                   "    assert s > 50\n"
+                   "    return s\n")
+    assert verify_structured(bad, tmp_path / "o1",
+                             backend="lean")["status"] == "failed"
+
+    good = tmp_path / "good.py"
+    good.write_text("#@ requires n >= 0\n"
+                    "#@ ensures result >= 1\n"
+                    "def f(n: int) -> int:\n"
+                    "    s = n + 1\n"
+                    "    assert s > 0\n"
+                    "    return s\n")
+    assert verify_structured(good, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+
+def test_augmented_assignment_reaches_every_path():
+    # Desugaring at individual statement-reading sites left `+=`
+    # accepted inside a loop body and refused three lines earlier, for
+    # no reason a reader could see. It happens once, module-wide, now.
+    loop_free = ("#@ requires n >= 0\n"
+                 "#@ ensures result >= 0\n"
+                 "def g(n: int) -> int:\n"
+                 "    s = n\n"
+                 "    s += 1\n"
+                 "    return s\n")
+    assert "«s» + 1" in _encode(loop_free).lean_source
+
+    nested_in_if = ("#@ requires n >= 0\n"
+                    "#@ ensures result >= 0\n"
+                    "def h(n: int) -> int:\n"
+                    "    s = n\n"
+                    "    if n > 0:\n"
+                    "        s += 1\n"
+                    "        return s\n"
+                    "    return s\n")
+    assert "«s» + 1" in _encode(nested_in_if).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_assert_must_be_proved(tmp_path):
+    from veripy.agentio import verify_structured
+
+    good = tmp_path / "good.py"
+    good.write_text("#@ requires n >= 2\n"
+                    "#@ ensures result == n + 1\n"
+                    "def bump(n: int) -> int:\n"
+                    "    assert n > 0\n"
+                    "    return n + 1\n")
+    assert verify_structured(good, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # An assert the contract does not support FAILS. If it were assumed
+    # instead of proved, this would pass and quietly strengthen every
+    # later obligation.
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ requires n >= 2\n"
+                   "#@ ensures result == n + 1\n"
+                   "def bump(n: int) -> int:\n"
+                   "    assert n > 5\n"
+                   "    return n + 1\n")
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
+def test_augmented_assignment_desugars():
+    # `x += e` is `x = x + e`, desugared once so every loop shape sees a
+    # single spelling instead of each matcher growing a second case.
+    for op, form in (("+=", "+"), ("-=", "-"), ("*=", "*")):
+        src = (f"#@ requires n >= 0\n"
+               f"#@ ensures result >= 0\n"
+               f"def f(n: int) -> int:\n"
+               f"    s = 1\n"
+               f"    for i in range(n):\n"
+               f"        #@ invariant s >= 0\n"
+               f"        s {op} 1\n"
+               f"    return s\n")
+        try:
+            _encode(src)
+        except EncodeError as exc:      # `-=` can leave s negative
+            assert "invariant" not in str(exc), (op, exc)
+
+    # An operator the fragment does not model names ITSELF, rather than
+    # surfacing as a loop-shape complaint.
+    bad = ("#@ requires n >= 1\n"
+           "#@ ensures result >= 0\n"
+           "def f(n: int) -> int:\n"
+           "    s = 8\n"
+           "    for i in range(n):\n"
+           "        #@ invariant s >= 0\n"
+           "        s //= 2\n"
+           "    return s\n")
+    with pytest.raises(EncodeError, match="augmented assignment"):
+        _encode(bad)
 
 
 def test_lean_rejects_walrus_loudly():
@@ -2664,3 +2887,111 @@ def test_lean_rejects_int_str_in_spec_loudly():
     )
     with pytest.raises(EncodeError, match="str\\(int\\)/int\\(str\\) are outside the Lean slice"):
         _encode(src)
+
+
+def test_assert_obligations_carry_the_implicit_else():
+    # `_body_expr` compiles what FOLLOWS an `if` without `else` whose
+    # body returns as that `if`'s ELSE branch. `_collect_asserts` read
+    # straight on instead, so a trailing assert was emitted with no
+    # branch hypothesis at all -- an unconditional theorem, which Lean
+    # rightly rejects even though the assert holds whenever it runs.
+    trailing = ("#@ ensures result >= 0\n"
+                "def f(n: int) -> int:\n"
+                "    if n < 0:\n"
+                "        return 0\n"
+                "    assert n >= 0\n"
+                "    return n\n")
+    assert "(hp0 : (¬(«n» < 0)))" in _encode(trailing).lean_source
+
+    # Chained guards accumulate: the clamp shape owes its claim only
+    # under BOTH negations.
+    chained = ("#@ requires lo <= hi\n"
+               "#@ ensures lo <= result <= hi\n"
+               "def clamp(x: int, lo: int, hi: int) -> int:\n"
+               "    if x < lo:\n"
+               "        return lo\n"
+               "    if x > hi:\n"
+               "        return hi\n"
+               "    assert lo <= x <= hi\n"
+               "    return x\n")
+    src = _encode(chained).lean_source
+    assert "(hp0 : (¬(«x» < «lo»)))" in src
+    assert "(hp1 : (¬(«x» > «hi»)))" in src
+
+    # Composes with local substitution: the local's DEFINITION reaches
+    # the negated path condition, not its name.
+    local = ("#@ ensures result >= 0\n"
+             "def g(n: int) -> int:\n"
+             "    s = n + 1\n"
+             "    if s < 0:\n"
+             "        return 0\n"
+             "    assert s >= 0\n"
+             "    return s\n")
+    assert "(hp0 : (¬((«n» + 1) < 0)))" in _encode(local).lean_source
+
+
+def test_branch_guarded_assert_does_not_break_the_next_one():
+    # The path-condition loop bound its flag to `taken`, shadowing the
+    # emitted-name set of the same name. One branch-guarded assert
+    # turned that set into a bool, and the NEXT assert crashed the
+    # encoder on a name check -- a tool-error on a valid program.
+    two = ("#@ ensures result >= 0\n"
+           "def two(n: int) -> int:\n"
+           "    if n > 0:\n"
+           "        assert n > 0\n"
+           "        return n\n"
+           "    assert n <= 0\n"
+           "    return 0\n")
+    src = _encode(two).lean_source
+    assert "(hp0 : («n» > 0))" in src        # taken branch
+    assert "(hp0 : (¬(«n» > 0)))" in src     # implicit else
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_implicit_else_asserts_verify(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # Supplying the missing hypothesis WEAKENS each obligation, so the
+    # thing to pin is that a false assert still fails -- in the taken
+    # branch and in the implicit else alike.
+    good = tmp_path / "good.py"
+    good.write_text("#@ ensures result >= 0\n"
+                    "def f(n: int) -> int:\n"
+                    "    if n < 0:\n"
+                    "        return 0\n"
+                    "    assert n >= 0\n"
+                    "    return n\n")
+    assert verify_structured(good, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ ensures result >= 0\n"
+                   "def f(n: int) -> int:\n"
+                   "    if n < 0:\n"
+                   "        return 0\n"
+                   "    assert n > 5\n"
+                   "    return n\n")
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+    both = tmp_path / "both.py"
+    both.write_text("#@ ensures result >= 0\n"
+                    "def two(n: int) -> int:\n"
+                    "    if n > 0:\n"
+                    "        assert n > 0\n"
+                    "        return n\n"
+                    "    assert n <= 0\n"
+                    "    return 0\n")
+    assert verify_structured(both, tmp_path / "o3",
+                             backend="lean")["status"] == "ok"
+
+    badelse = tmp_path / "badelse.py"
+    badelse.write_text("#@ ensures result >= 0\n"
+                       "def two(n: int) -> int:\n"
+                       "    if n > 0:\n"
+                       "        assert n > 0\n"
+                       "        return n\n"
+                       "    assert n < -3\n"
+                       "    return 0\n")
+    assert verify_structured(badelse, tmp_path / "o4",
+                             backend="lean")["status"] == "failed"
