@@ -2556,19 +2556,23 @@ def test_assert_is_a_proof_obligation_like_dafny():
     assert "def «bump» («n» : Int) : Int :=" in enc.lean_source
     assert "«n» + 1" in enc.lean_source
 
-    # An assert inside a LOOP says so, rather than reporting a shape
-    # error about the loop body.
-    in_loop = ("#@ requires n >= 0\n"
-               "#@ ensures result == n\n"
-               "def f(n: int) -> int:\n"
-               "    s = 0\n"
-               "    for i in range(n):\n"
-               "        #@ invariant s == i\n"
-               "        assert s >= 0\n"
-               "        s = s + 1\n"
-               "    return s\n")
-    with pytest.raises(EncodeError, match="inside a loop body"):
-        _encode(in_loop)
+    # An assert at the top level of a `for` body is admitted too
+    # (slice 18) -- its obligation is discharged under the invariant at
+    # that iteration. What stays out is the assert this slice cannot
+    # POSITION: nested under a branch, where the claim holds only on
+    # one path through the body.
+    nested_in_loop = ("#@ requires n >= 0\n"
+                      "#@ ensures result == n\n"
+                      "def f(n: int) -> int:\n"
+                      "    s = 0\n"
+                      "    for i in range(n):\n"
+                      "        #@ invariant s == i\n"
+                      "        if s > 0:\n"
+                      "            assert s >= 0\n"
+                      "        s = s + 1\n"
+                      "    return s\n")
+    with pytest.raises(EncodeError, match="nested inside a loop body"):
+        _encode(nested_in_loop)
 
 
 def test_nested_asserts_keep_their_obligation_and_their_path():
@@ -2994,4 +2998,118 @@ def test_end_to_end_implicit_else_asserts_verify(tmp_path):
                        "    assert n < -3\n"
                        "    return 0\n")
     assert verify_structured(badelse, tmp_path / "o4",
+                             backend="lean")["status"] == "failed"
+
+
+def test_loop_body_assert_is_an_obligation_under_the_invariant():
+    # Dafny reads `assert` in a loop body as prove-then-assume. Both
+    # halves are needed: the obligation alone is dead weight, and the
+    # assumption alone is a hole. So the claim gets its own theorem
+    # under the invariant AT THAT ITERATION plus the bounds that hold
+    # wherever the body runs, and the proved form -- only ever the
+    # proved form -- rides into the preservation step.
+    src = ("#@ requires n >= 0\n"
+           "#@ ensures result == n\n"
+           "def f(n: int) -> int:\n"
+           "    s = 0\n"
+           "    for i in range(n):\n"
+           "        #@ invariant s == i\n"
+           "        assert s >= 0\n"
+           "        s = s + 1\n"
+           "    return s\n")
+    out = _encode(src).lean_source
+    assert "theorem «f_loop_assert0»" in out
+    assert "(hinv : «f_inv» «n» «i» «s») (hlo : 0 ≤ «i») " \
+           "(hhi : «i» < «n»)" in out
+    # The hint must be taken BEFORE the invariant is unfolded, or the
+    # application no longer typechecks against `h`.
+    # Split inside the loop theorem: the PRELUDE has a `| succ` of its
+    # own (PySum_take_succ), which an unanchored split lands in.
+    succ = out.split("theorem «f_loop_inv»")[1].split("| succ")[1]
+    assert succ.index("have hla0 := «f_loop_assert0»") \
+        < succ.index("simp only [«f_inv»]")
+
+
+def test_loop_assert_boundaries_are_the_ones_this_slice_can_position():
+    # Under a branch inside the body, the claim holds only on that
+    # path, and the preservation proof carries no hypothesis for the
+    # path taken -- so assuming it would be a hole.
+    nested = ("#@ requires n >= 0\n#@ ensures result == n\n"
+              "def f(n: int) -> int:\n    s = 0\n"
+              "    for i in range(n):\n        #@ invariant s == i\n"
+              "        if s > 0:\n            assert s >= 0\n"
+              "        s = s + 1\n    return s\n")
+    with pytest.raises(EncodeError, match="nested inside a loop body"):
+        _encode(nested)
+
+    # An early-return search loop is desugared into a SYNTHESIZED bool
+    # accumulator, so there is no invariant of the user's own to
+    # discharge the obligation under.
+    early = ("#@ ensures result == (exists k in range(len(xs)) :: xs[k] < t)\n"
+             "def any_below(xs: list[int], t: int) -> bool:\n"
+             "    for i in range(len(xs)):\n"
+             "        #@ invariant forall k in range(i) :: xs[k] >= t\n"
+             "        assert t == t\n"
+             "        if xs[i] < t:\n"
+             "            return True\n"
+             "    return False\n")
+    with pytest.raises(EncodeError, match="early-return search loop"):
+        _encode(early)
+
+    # A `while` body keeps the old refusal: its preservation step is a
+    # different proof, and this slice wires only the `for` path.
+    wh = ("#@ requires n >= 0\n#@ ensures result >= 0\n"
+          "def f(n: int) -> int:\n    s = n\n"
+          "    while s > 0:\n        #@ invariant s >= 0\n"
+          "        #@ decreases s\n        assert s >= 0\n"
+          "        s = s - 1\n    return s\n")
+    with pytest.raises(EncodeError, match="`while` body"):
+        _encode(wh)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_loop_body_assert_is_proved_not_assumed(tmp_path):
+    from veripy.agentio import verify_structured
+
+    ok = tmp_path / "ok.py"
+    ok.write_text("#@ requires n >= 0\n#@ ensures result == n\n"
+                  "def f(n: int) -> int:\n    s = 0\n"
+                  "    for i in range(n):\n        #@ invariant s == i\n"
+                  "        assert s >= 0\n        s = s + 1\n"
+                  "    return s\n")
+    assert verify_structured(ok, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The whole point: an assert the invariant does not support FAILS,
+    # rather than being assumed into the preservation step.
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ requires n >= 0\n#@ ensures result == n\n"
+                   "def f(n: int) -> int:\n    s = 0\n"
+                   "    for i in range(n):\n        #@ invariant s == i\n"
+                   "        assert s >= 5\n        s = s + 1\n"
+                   "    return s\n")
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+    # The index bounds ARE available: they hold wherever the body runs.
+    bound = tmp_path / "bound.py"
+    bound.write_text("#@ requires n >= 0\n#@ ensures result == n\n"
+                     "def f(n: int) -> int:\n    s = 0\n"
+                     "    for i in range(n):\n        #@ invariant s == i\n"
+                     "        assert i < n\n        s = s + 1\n"
+                     "    return s\n")
+    assert verify_structured(bound, tmp_path / "o3",
+                             backend="lean")["status"] == "ok"
+
+    # The function's `requires` are NOT -- the induction theorem does
+    # not carry them, so there is nothing at the injection site to
+    # discharge them with. Honest incompleteness, pinned so it cannot
+    # silently become an assumption instead.
+    req = tmp_path / "req.py"
+    req.write_text("#@ requires n >= 7\n#@ ensures result == n\n"
+                   "def f(n: int) -> int:\n    s = 0\n"
+                   "    for i in range(n):\n        #@ invariant s == i\n"
+                   "        assert n >= 7\n        s = s + 1\n"
+                   "    return s\n")
+    assert verify_structured(req, tmp_path / "o4",
                              backend="lean")["status"] == "failed"

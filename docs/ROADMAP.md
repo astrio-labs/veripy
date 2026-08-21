@@ -77,9 +77,16 @@ count is visible. Classes, `async`, and IEEE float stay refused.
       still rejected — Dafny cannot assign in an expression, and
       hoisting those would ignore short-circuit)
 - [x] `assert` as a VC, uniformly
-      (Dafny already lowered it; survey no longer counts a bare `assert`
-      as a miss, Lean rejects it loudly naming Dafny. Non-literal
-      messages still rejected — they have side effects.)
+      (both backends lower it now: Dafny always did, and Lean makes each
+      assert its own theorem — proved, never assumed. Loop-free asserts
+      carry their path conditions and nesting; an assert at the top
+      level of a `for` body is discharged under the invariant at that
+      iteration and then rides into the preservation step, Dafny's
+      prove-then-assume. Still rejected by Lean: an assert nested under
+      a branch inside a loop body, one in a `while` body, and one in an
+      early-return search loop — each is a position whose obligation
+      this slice cannot place. Non-literal messages still rejected —
+      they have side effects.)
 
 ### Tier 2 preamble (the real volume — `U-METHOD`)
 
