@@ -1179,25 +1179,37 @@ _AUG_OPS = (ast.Add, ast.Sub, ast.Mult)
 
 
 def _collect_asserts(stmts: list[ast.stmt],
-                     path: tuple[tuple[ast.expr, bool], ...] = ()
-                     ) -> list[tuple[ast.Assert,
+                     path: tuple[tuple[ast.expr, bool], ...] = (),
+                     subst: dict[str, ast.expr] | None = None
+                     ) -> list[tuple[ast.Assert, ast.expr,
                                      tuple[tuple[ast.expr, bool], ...]]]:
-    """Every `assert` in a loop-free body, with the PATH CONDITION that
-    reaches it.
+    """Every `assert` in a loop-free body, as (statement, claim, path).
 
-    Reading only the top level dropped a nested assert's obligation
-    entirely, so a function containing one that cannot hold still
-    verified. The path matters as much as the assert: `if n > 0: assert
-    P` owes P only when the branch is taken, and demanding it
-    unconditionally would fail specs that are perfectly true."""
-    out: list[tuple[ast.Assert, tuple[tuple[ast.expr, bool], ...]]] = []
+    Three things have to travel with it, and each was learned the hard
+    way. The PATH CONDITION, because `if n > 0: assert P` owes P only
+    when the branch is taken. The NESTING, because reading only the top
+    level dropped a nested obligation entirely. And the LOCALS: an
+    obligation is a theorem over the function's parameters, so a local
+    has no meaning in it — `s = n + 1; assert s > 0` is the claim
+    `n + 1 > 0`, and the local's definition is substituted in rather
+    than its name carried out of scope."""
+    out: list[tuple[ast.Assert, ast.expr,
+                    tuple[tuple[ast.expr, bool], ...]]] = []
+    live = dict(subst or {})
     for st in stmts:
         if isinstance(st, ast.Assert):
-            out.append((st, path))
+            claim = _SubstExprs(dict(live)).visit(copy.deepcopy(st.test))
+            out.append((st, claim, path))
+        elif isinstance(st, ast.Assign) and len(st.targets) == 1 \
+                and isinstance(st.targets[0], ast.Name):
+            live[st.targets[0].id] = _SubstExprs(dict(live)).visit(
+                copy.deepcopy(st.value))
         elif isinstance(st, ast.If):
-            out.extend(_collect_asserts(st.body, path + ((st.test, True),)))
+            cond = _SubstExprs(dict(live)).visit(copy.deepcopy(st.test))
+            out.extend(_collect_asserts(st.body, path + ((cond, True),),
+                                        live))
             out.extend(_collect_asserts(st.orelse,
-                                        path + ((st.test, False),)))
+                                        path + ((cond, False),), live))
     return out
 
 
@@ -2954,9 +2966,9 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # under the function's `requires`, so a false assert fails on
         # its own rather than silently strengthening the context.
         asserts = _collect_asserts(list(fn.body))
-        for ai, (st, path) in enumerate(asserts):
+        for ai, (st, claim, path) in enumerate(asserts):
             _no_old(st.test, st.lineno)
-            _reject_undecidable_quantifier(st.test, names, st.lineno, lc0)
+            _reject_undecidable_quantifier(claim, names, st.lineno, lc0)
             a_name = f"{spec_fn.name}_assert{ai}"
             _check_name(a_name, "generated assert obligation for",
                         st.lineno, taken)
@@ -2978,7 +2990,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             a_sig = " ".join(x for x in [binders, *a_hyps] if x)
             emit("", None)
             emit(f"theorem {_ident(a_name)} {a_sig} :", st.lineno)
-            emit(f"    {_prop_expr(st.test, names, st.lineno, lc=lc0)} "
+            emit(f"    {_prop_expr(claim, names, st.lineno, lc=lc0)} "
                  f":= by", st.lineno)
             for tl in ("  try unfold VeriPy.PyAbs",
                        "  try dsimp only",

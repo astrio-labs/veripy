@@ -2632,6 +2632,68 @@ def test_end_to_end_nested_assert_obligations(tmp_path):
                              backend="lean")["status"] == "ok"
 
 
+def test_assert_obligations_substitute_locals():
+    # An obligation is a theorem over the function's PARAMETERS, so a
+    # local has no meaning inside it. `s = n + 1; assert s > 0` is the
+    # claim `n + 1 > 0`; carrying the local's name out of scope instead
+    # failed with "unknown name".
+    src = ("#@ requires n >= 0\n"
+           "#@ ensures result >= 1\n"
+           "def f(n: int) -> int:\n"
+           "    s = n + 1\n"
+           "    assert s > 0\n"
+           "    return s\n")
+    assert "((«n» + 1) > 0)" in _encode(src).lean_source
+
+    # Chained locals resolve through each other.
+    chained = ("#@ requires n >= 0\n"
+               "#@ ensures result >= 2\n"
+               "def f(n: int) -> int:\n"
+               "    a = n + 1\n"
+               "    b = a + 1\n"
+               "    assert b > 1\n"
+               "    return b\n")
+    assert "(((«n» + 1) + 1) > 1)" in _encode(chained).lean_source
+
+    # A local reached through a branch is substituted into the PATH
+    # condition as well as the claim.
+    branch = ("#@ requires n >= 0\n"
+              "#@ ensures result >= 0\n"
+              "def f(n: int) -> int:\n"
+              "    s = n + 5\n"
+              "    if s > 3:\n"
+              "        assert s > 2\n"
+              "        return s\n"
+              "    return 0\n")
+    assert "(hp0 : ((«n» + 5) > 3))" in _encode(branch).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_local_assert_still_must_be_proved(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # Substituting the local must not make a FALSE assert provable.
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ requires n >= 0\n"
+                   "#@ ensures result >= 1\n"
+                   "def f(n: int) -> int:\n"
+                   "    s = n + 1\n"
+                   "    assert s > 50\n"
+                   "    return s\n")
+    assert verify_structured(bad, tmp_path / "o1",
+                             backend="lean")["status"] == "failed"
+
+    good = tmp_path / "good.py"
+    good.write_text("#@ requires n >= 0\n"
+                    "#@ ensures result >= 1\n"
+                    "def f(n: int) -> int:\n"
+                    "    s = n + 1\n"
+                    "    assert s > 0\n"
+                    "    return s\n")
+    assert verify_structured(good, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+
 def test_augmented_assignment_reaches_every_path():
     # Desugaring at individual statement-reading sites left `+=`
     # accepted inside a loop body and refused three lines earlier, for
