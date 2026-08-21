@@ -2087,6 +2087,66 @@ def test_end_to_end_list_building_verifies(tmp_path):
                              backend="lean")["status"] == "failed"
 
 
+GUARDED = ("#@ ensures result >= 0\n"
+           "def count_from(n: int) -> int:\n"
+           "    if n < 0:\n"
+           "        return 0\n"
+           "    c = 0\n"
+           "    for i in range(n):\n"
+           "        #@ invariant c == i\n"
+           "        c = c + 1\n"
+           "    return c\n")
+
+
+def test_loop_guards_short_circuit_before_the_loop():
+    # `if COND: return V` ahead of a loop is ordinary Python that the
+    # loop shapes would otherwise refuse. It compiles to
+    # `if COND then V else <the loop's value>`.
+    enc = _encode(GUARDED)
+    assert "(if («n» < 0) then 0 else let «c» :=" in enc.lean_source
+    # The theorem SPLITS before establishing the loop's facts: `0 <= n`
+    # holds only in the branch the guard did not take, so instantiating
+    # the loop lemma first would fail on the other one.
+    body = enc.lean_source[enc.lean_source.index("theorem «count_from_spec»"):]
+    assert body.index("repeat' split") < body.index("have hi0")
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_guarded_loop_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    src = tmp_path / "count_from.py"
+    src.write_text(GUARDED)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # A false spec still fails honestly through the guard.
+    bad = tmp_path / "bad.py"
+    bad.write_text(GUARDED.replace("result >= 0", "result >= 1"))
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
+def test_proof_targets_are_checked_after_the_shape():
+    # Checking `#@ proof` targets FIRST masked the real blocker: a task
+    # whose shape this slice does not cover reported "unknown lemma",
+    # which reads as "go write the pack" when the honest answer is "the
+    # fragment does not reach this yet". The shape speaks first now.
+    unsupported = ("#@ requires n >= 0\n"
+                   "#@ ensures result >= 0\n"
+                   "def f(n: int) -> int:\n"
+                   "    c = 0\n"
+                   "    while c < n:\n"
+                   "        #@ invariant c >= 0\n"
+                   "        #@ proof SomeLemma(c)\n"
+                   "        if c > 100:\n"
+                   "            return c\n"
+                   "        c = c + 1\n"
+                   "    return c\n")
+    with pytest.raises(EncodeError, match="assignments to the accumulators"):
+        _encode(unsupported)
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against

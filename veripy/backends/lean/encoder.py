@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import ast
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ...frontend.parse import FunctionSpec, ModuleSpecs
 # The shared encode-failure type (its neutral home arrives when the
@@ -871,6 +871,9 @@ class _LoopShape:
     for_line: int
     acc_bool: bool      # Bool accumulator (True/False init, and/or step)
     acc_list: bool = False   # List accumulator (`[]` init, append step)
+    # Leading `if COND: return V` guards, in source order. They
+    # short-circuit before the loop runs.
+    guards: list[tuple[ast.expr, ast.expr]] = field(default_factory=list)
 
 
 def _requires_min_len(spec_fn: FunctionSpec,
@@ -1126,6 +1129,52 @@ def _divmod_sites(fn: ast.FunctionDef,
     return sites
 
 
+def _wrap_guards(guards: list[tuple[ast.expr, ast.expr]], body: str,
+                 names: set[str], line: int, lc: "_ListCtx",
+                 is_bool: bool) -> str:
+    """Wrap a loop's value in its leading guards, innermost last.
+
+    `if COND: return V` short-circuits before the loop runs, so it is
+    `if COND then V else <rest>`. The generated proof needs nothing new:
+    `repeat' split` in the cocktail already peels conditionals, and the
+    loop facts are established before the split, so both branches see
+    them."""
+    out = body
+    for cond, value in reversed(guards):
+        _no_old(cond, line)
+        _no_old(value, line)
+        cond_t = _prop_expr(cond, names, line, lc=lc)
+        val_t = (_bool_expr(value, names, line, lc) if is_bool
+                 else _int_expr(value, names, line, lc=lc))
+        out = f"(if {cond_t} then {val_t} else {out})"
+    return out
+
+
+def _split_guards(stmts: list[ast.stmt]
+                  ) -> tuple[list[tuple[ast.expr, ast.expr]],
+                             list[ast.stmt]]:
+    """Leading `if COND: return V` guards, and the statements after
+    them.
+
+    A guard short-circuits before the loop ever runs, so it compiles to
+    an `if COND then V else <the rest>` wrapped around the loop's value.
+    `is_prime` opens with `if n < 2: return False` and `intersperse`
+    with `if not numbers: return []`, and both are ordinary Python that
+    the loop shapes would otherwise refuse."""
+    guards: list[tuple[ast.expr, ast.expr]] = []
+    i = 0
+    while i < len(stmts):
+        st = stmts[i]
+        if not (isinstance(st, ast.If) and not st.orelse
+                and len(st.body) == 1
+                and isinstance(st.body[0], ast.Return)
+                and st.body[0].value is not None):
+            break
+        guards.append((st.test, st.body[0].value))
+        i += 1
+    return guards, stmts[i:]
+
+
 def _loop_invariants(spec_fn: FunctionSpec,
                      loop: ast.For | ast.While) -> tuple[ast.expr, int]:
     """Collect every `#@ invariant` at the loop HEAD and conjoin them
@@ -1292,6 +1341,7 @@ class _WhileShape:
     meas: ast.expr
     meas_line: int
     while_line: int
+    guards: list[tuple[ast.expr, ast.expr]] = field(default_factory=list)
 
 
 def _proj(k: int, n: int) -> str:
@@ -1406,6 +1456,7 @@ def _split_while(fn: ast.FunctionDef,
     stmts = [st for st in fn.body
              if not (isinstance(st, ast.Expr)
                      and isinstance(st.value, ast.Constant))]
+    guards, stmts = _split_guards(stmts)
     whiles = [st for st in stmts if isinstance(st, ast.While)]
     if len(whiles) != 1 or any(isinstance(n, ast.While)
                                for st in stmts if st is not whiles[0]
@@ -1519,7 +1570,8 @@ def _split_while(fn: ast.FunctionDef,
                      + [(v, loop.lineno) for g in steps for _, v in g]
                      + [(ret_stmt.value, ret_stmt.lineno)]):
         _no_old(expr, ln)
-    return _WhileShape(accs=accs, inits=inits, cond=loop.test, steps=steps,
+    return _WhileShape(guards=guards,
+                       accs=accs, inits=inits, cond=loop.test, steps=steps,
                        ret=ret_stmt.value, inv=inv_expr, inv_line=inv_line,
                        meas=meas_expr, meas_line=meas_line,
                        while_line=loop.lineno)
@@ -1534,6 +1586,7 @@ def _split_loop(fn: ast.FunctionDef,
     stmts = [s for s in fn.body
              if not (isinstance(s, ast.Expr)
                      and isinstance(s.value, ast.Constant))]
+    guards, stmts = _split_guards(stmts)
     fors = [s for s in stmts if isinstance(s, ast.For)]
     if not fors:
         return None
@@ -1541,6 +1594,7 @@ def _split_loop(fn: ast.FunctionDef,
         raise _reject("one loop per function in this slice", fors[1].lineno)
     early = _early_return_loop(stmts, fn, spec_fn)
     if early is not None:
+        early.guards = guards
         return early
     if len(stmts) != 3 or not isinstance(stmts[0], (ast.Assign,
                                                     ast.AnnAssign)) \
@@ -1723,6 +1777,7 @@ def _split_loop(fn: ast.FunctionDef,
                           "this slice", ret_stmt.lineno)
     return _LoopShape(index=index, acc=acc, init=init_value,
                       acc_list=acc_list,
+                      guards=guards,
                       bound=it.args[0], step=step_expr,
                       ret=ret_stmt.value, inv=inv_expr, inv_line=inv_line,
                       for_line=loop.lineno, acc_bool=acc_bool)
@@ -1807,24 +1862,6 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             taken.add(f"{spec_fn.name}_spec")
 
     for spec_fn in specs.functions:
-        for clause in spec_fn.by_kind("proof"):
-            text = clause.desugared if clause.desugared is not None \
-                else clause.raw
-            try:
-                call = ast.parse(text, mode="eval").body
-            except SyntaxError as exc:
-                raise _reject(f"cannot parse proof clause: {exc.msg}",
-                              clause.line)
-            if not (isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Name)):
-                raise _reject("a `#@ proof` clause names a lemma and its "
-                              "arguments, as `Lemma(a, b)`", clause.line)
-            if call.func.id not in proof_lemmas:
-                raise _reject(
-                    f"unknown lemma {call.func.id!r} — a `#@ proof` "
-                    f"target must be declared in the sidecar "
-                    f"(<stem>.proofs.lean); this one declares "
-                    f"{sorted(proof_lemmas) or 'nothing'}", clause.line)
         fn = by_name.get(spec_fn.name)
         if fn is None:
             raise _reject(f"spec for unknown function {spec_fn.name!r}",
@@ -2056,6 +2093,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
 
         binders = " ".join(f"({_ident(p)} : {ptypes[p]})" for p in params)
         loop = _split_loop(fn, spec_fn)
+
         wloop = None
         if loop is None and any(isinstance(n, ast.While)
                                 for n in ast.walk(fn)):
@@ -2067,6 +2105,28 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 raise _reject("`while` functions return `int` in this "
                               "slice (integer measures and "
                               "accumulators)", fn.lineno)
+        # Only NOW check `#@ proof` targets. Checking earlier masked the
+        # real blocker: a task whose shape this slice does not cover
+        # reported "unknown lemma", which reads as "write the pack" when
+        # the honest answer is "the fragment does not reach this yet".
+        for clause in spec_fn.by_kind("proof"):
+            text = clause.desugared if clause.desugared is not None \
+                else clause.raw
+            try:
+                call = ast.parse(text, mode="eval").body
+            except SyntaxError as exc:
+                raise _reject(f"cannot parse proof clause: {exc.msg}",
+                              clause.line)
+            if not (isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)):
+                raise _reject("a `#@ proof` clause names a lemma and its "
+                              "arguments, as `Lemma(a, b)`", clause.line)
+            if call.func.id not in proof_lemmas:
+                raise _reject(
+                    f"unknown lemma {call.func.id!r} — a `#@ proof` "
+                    f"target must be declared in the sidecar "
+                    f"(<stem>.proofs.lean); this one declares "
+                    f"{sorted(proof_lemmas) or 'nothing'}", clause.line)
         if loop is None and wloop is None \
                 and spec_fn.by_kind("invariant"):
             # No loop claims it, so it would be silently dropped — the
@@ -2744,8 +2804,10 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("", None)
             emit(f"def {_ident(spec_fn.name)} {binders} : {acc_ty} :=",
                  fn.lineno)
-            emit(f"  let {av} := {_ident(gen_loop)} {argsp}"
-                 f"({bound_t}).toNat 0 {init_t}; {ret_t}", fn.lineno)
+            body_t = (f"let {av} := {_ident(gen_loop)} {argsp}"
+                      f"({bound_t}).toNat 0 {init_t}; {ret_t}")
+            emit("  " + _wrap_guards(loop.guards, body_t, names,
+                                     fn.lineno, lc0, is_bool), fn.lineno)
         else:
             body = _body_expr([s for s in fn.body
                                if not (isinstance(s, ast.Expr)
@@ -2834,6 +2896,17 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # to the first ensures clause so a `postcondition` failure points
         # at the contract, not at Lean plumbing.
         emit(f"  unfold {_ident(spec_fn.name)}", first_ensures_line)
+        # A GUARDED loop must split before its facts are established:
+        # `0 <= n` holds only in the branch the guard did not take, so
+        # instantiating the loop lemma first fails on the other one.
+        # Splitting first puts each branch in its own goal, and every
+        # setup line is then attempted per-goal and skipped where it
+        # does not apply.
+        guarded = bool((loop.guards if loop is not None else [])
+                       or (wloop.guards if wloop is not None else []))
+        if guarded:
+            emit("  try dsimp only", first_ensures_line)
+            emit("  repeat' split", first_ensures_line)
         if wloop is not None:
             targs = " ".join(_ident(_tname(pn)) for pn in params)
             targsp = (targs + " ") if targs else ""
@@ -2882,6 +2955,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             t_bound = _int_expr(loop.bound, names, fn.lineno,
                                 rename=rename, lc=lc0)
             emit("  try dsimp only", first_ensures_line)
+            # With a guard the goal has already split, and the loop's
+            # facts hold only in the branch the guard did not take, so
+            # each is attempted per-goal and skipped where it does not
+            # apply.
+            gp = "all_goals (try (" if guarded else ""
+            gs = "))" if guarded else ""
             # hi0's simp_all carries PySum's equation lemmas: the
             # invariant at entry typically needs `PySum (take 0) = 0`
             # (take_zero, then the nil equation) — inert for loop-free
@@ -2908,19 +2987,20 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                            *("  " + x for x in b)):
                     emit(tl, first_ensures_line)
             else:
-                emit(f"  have hi0 : {_ident(f'{spec_fn.name}_inv')} "
+                emit(f"  {gp}have hi0 : {_ident(f'{spec_fn.name}_inv')} "
                      f"{targsp}0 {t_init} := by "
                      f"simp only [{_ident(f'{spec_fn.name}_inv')}]; "
                      f"all_goals (try push_cast); all_goals (try omega); "
                      f"all_goals (try simp_all [VeriPy.PySum]); "
                      f"all_goals (try intros); "
-                     f"all_goals (first | omega | trivial)",
+                     f"all_goals (first | omega | trivial){gs}",
                      first_ensures_line)
-            emit(f"  have hfin := {_ident(f'{spec_fn.name}_loop_inv')} "
+            emit(f"  {gp}have hfin := {_ident(f'{spec_fn.name}_loop_inv')} "
                  f"{targsp}({t_bound}).toNat 0 {t_init} hi0 (by omega) "
-                 f"(by omega)",
+                 f"(by omega){gs}",
                  first_ensures_line)
-            emit(f"  simp only [{_ident(f'{spec_fn.name}_inv')}] at hfin",
+            emit(f"  all_goals (try (simp only "
+                 f"[{_ident(f'{spec_fn.name}_inv')}] at hfin))",
                  first_ensures_line)
             # Guarded like every other generated step: an invariant
             # that never mentions the loop index leaves no `↑bound.toNat`
