@@ -2800,6 +2800,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # discharge them with. Honest incompleteness: an assert
             # that needs a precondition is refused, not assumed.
             assert_facts: list[str] = []
+            # Dafny proves `assert A; assert B` with A IN CONTEXT for
+            # B, so each obligation here carries the ones before it.
+            # Sound because every one of them is discharged by its own
+            # theorem under the same hypotheses -- a false A fails on
+            # its own and takes the file with it, so it can never be
+            # the thing that lets B through.
+            prior: list[tuple[str, str]] = []
             for si, sst in enumerate(loop.asserts):
                 a_name = f"{fname}_loop_assert{si}"
                 _check_name(a_name, "generated declaration for",
@@ -2812,9 +2819,10 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                      lc=step_lc)
                 emit(f"theorem {_ident(a_name)} {binders} "
                      f"({iv} : Int) ({av} : {acc_ty})", sst.lineno)
-                emit(f"    (hinv : {_ident(gen_inv)} {argsp}{iv} {av}) "
-                     f"(hlo : 0 ≤ {iv}) (hhi : {iv} < {bound_t}) :",
-                     sst.lineno)
+                hyps = (f"(hinv : {_ident(gen_inv)} {argsp}{iv} {av}) "
+                        f"(hlo : 0 ≤ {iv}) (hhi : {iv} < {bound_t})"
+                        + "".join(f" ({hn} : {hc})" for hn, hc in prior))
+                emit(f"    {hyps} :", sst.lineno)
                 emit(f"    {claim_t} := by", sst.lineno)
                 for tl in ("  simp only [" + _ident(gen_inv)
                            + "] at hinv",
@@ -2829,7 +2837,9 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 theorems.append(a_name)
                 assert_facts.append(
                     f"      have hla{si} := {_ident(a_name)} "
-                    f"{argsp}{iv} {av} h hi (by omega)")
+                    f"{argsp}{iv} {av} h hi (by omega)"
+                    + "".join(f" {hn}" for hn, _ in prior))
+                prior.append((f"hla{si}", claim_t))
             # The induction theorem: its inductive step IS the
             # invariant-preservation VC (omega for linear invariants).
             # The loop application is one opaque atom to omega, so the

@@ -3186,3 +3186,59 @@ def test_end_to_end_loop_assert_matches_cpython(tmp_path):
     bad.write_text(src)
     assert verify_structured(bad, tmp_path / "o1",
                              backend="lean")["status"] != "ok"
+
+
+def test_earlier_loop_asserts_are_in_context_for_later_ones():
+    # Dafny proves `assert A; assert B` with A IN CONTEXT for B. Each
+    # obligation here carried only the invariant and the bounds, so the
+    # sequence was a set -- the same claims, but not Dafny's reading of
+    # them. Sound either way; this is about matching the semantics by
+    # construction rather than by coincidence.
+    src = ("#@ requires n >= 0\n#@ ensures result == n\n"
+           "def f(n: int) -> int:\n    s = 0\n    for i in range(n):\n"
+           "        #@ invariant s == i\n        assert s >= 0\n"
+           "        assert s == i\n        assert s + 1 > 0\n"
+           "        s = s + 1\n    return s\n")
+    out = _encode(src).lean_source
+    # The first owes nothing to anyone; each later one carries the
+    # claims proved before it, in order.
+    assert "(hhi : «i» < «n») :\n    («s» ≥ 0)" in out
+    assert "(hhi : «i» < «n») (hla0 : («s» ≥ 0)) :" in out
+    assert "(hla0 : («s» ≥ 0)) (hla1 : («s» = «i»)) :" in out
+    # ...and the preservation step derives them in the same order, so
+    # each `have` is in scope for the next.
+    assert "have hla1 := «f_loop_assert1» «n» «i» «s» h hi " \
+           "(by omega) hla0" in out
+    assert "have hla2 := «f_loop_assert2» «n» «i» «s» h hi " \
+           "(by omega) hla0 hla1" in out
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_chaining_cannot_launder_a_false_assert(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # The risk chaining introduces: a FALSE claim becoming the thing
+    # that lets a later one through. It cannot -- every hypothesis is
+    # discharged by its own theorem under the same hypotheses, so a
+    # false one fails there and takes the file with it.
+    launder = tmp_path / "launder.py"
+    launder.write_text("#@ requires n >= 0\n#@ ensures result == n\n"
+                       "def f(n: int) -> int:\n    s = 0\n"
+                       "    for i in range(n):\n"
+                       "        #@ invariant s == i\n"
+                       "        assert s >= 5\n"        # false
+                       "        assert s >= 4\n"        # follows from it
+                       "        s = s + 1\n    return s\n")
+    assert verify_structured(launder, tmp_path / "o1",
+                             backend="lean")["status"] == "failed"
+
+    chained = tmp_path / "chained.py"
+    chained.write_text("#@ requires n >= 0\n#@ ensures result == n\n"
+                       "def f(n: int) -> int:\n    s = 0\n"
+                       "    for i in range(n):\n"
+                       "        #@ invariant s == i\n"
+                       "        assert s >= 0\n        assert s == i\n"
+                       "        assert s + 1 > 0\n"
+                       "        s = s + 1\n    return s\n")
+    assert verify_structured(chained, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
