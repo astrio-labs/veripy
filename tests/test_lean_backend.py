@@ -2111,6 +2111,26 @@ def test_loop_guards_short_circuit_before_the_loop():
     assert body.index("repeat' split") < body.index("have hi0")
 
 
+def test_guard_conditions_must_be_decidable():
+    # A guard becomes a Lean `if`, which is a DECIDABLE position, and
+    # `all`/`any` over Int has no Decidable instance. Emitting it failed
+    # ELABORATION, and that surfaced as a prover verdict — so an
+    # unsupported input looked like a false spec, which is the worst
+    # way for this to be wrong.
+    src = ("#@ requires n >= 0\n"
+           "#@ ensures result >= 0\n"
+           "def f(xs: list[int], n: int) -> int:\n"
+           "    if all(xs[k] >= 0 for k in range(len(xs))):\n"
+           "        return 0\n"
+           "    c = 0\n"
+           "    for i in range(n):\n"
+           "        #@ invariant c == i\n"
+           "        c = c + 1\n"
+           "    return c\n")
+    with pytest.raises(EncodeError, match="cannot be decided"):
+        _encode(src)
+
+
 def test_guards_reach_every_loop_shape():
     # A guard recorded but not EMITTED is the worst kind of bug here:
     # the Lean function would run the loop where Python returns early,

@@ -1150,6 +1150,12 @@ def _wrap_guards(guards: list[tuple[ast.expr, ast.expr]], body: str,
     for cond, value in reversed(guards):
         _no_old(cond, line)
         _no_old(value, line)
+        # A guard becomes a Lean `if`, which is a DECIDABLE position.
+        # An `all`/`any` over Int has no Decidable instance, so emitting
+        # it fails elaboration — and the failure surfaces as a prover
+        # verdict, making an unsupported input look like a false spec.
+        # The refusal has to happen here.
+        _reject_undecidable_quantifier(cond, names, line, lc)
         cond_t = _prop_expr(cond, names, line, lc=lc)
         # The guard returns the FUNCTION's type, so a list-returning
         # function's guard yields a list — `if not numbers: return []`
