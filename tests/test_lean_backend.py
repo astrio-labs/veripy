@@ -2571,6 +2571,90 @@ def test_assert_is_a_proof_obligation_like_dafny():
         _encode(in_loop)
 
 
+def test_nested_asserts_keep_their_obligation_and_their_path():
+    # Collecting only top-level asserts DROPPED a nested one's
+    # obligation, so a function containing an assert that cannot hold
+    # still verified — the exact hole "proved, never assumed" exists to
+    # prevent.
+    nested = ("#@ requires n >= 2\n"
+              "#@ ensures result >= 0\n"
+              "def f(n: int) -> int:\n"
+              "    if n > 0:\n"
+              "        assert n > 100\n"
+              "        return n\n"
+              "    return 0\n")
+    enc = _encode(nested)
+    assert "theorem «f_assert0»" in enc.lean_source
+    # The PATH matters as much as the assert: this one owes its claim
+    # only when the branch is taken, so the condition is a hypothesis.
+    assert "(hp0 : («n» > 0))" in enc.lean_source
+
+    # An else-branch assert carries the NEGATED condition.
+    els = ("#@ requires n >= 2\n"
+           "#@ ensures result >= 0\n"
+           "def f(n: int) -> int:\n"
+           "    if n > 100:\n"
+           "        return n\n"
+           "    else:\n"
+           "        assert n <= 100\n"
+           "        return 0\n")
+    assert "(hp0 : (¬(«n» > 100)))" in _encode(els).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_nested_assert_obligations(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # A nested assert that cannot hold must FAIL...
+    bad = tmp_path / "bad.py"
+    bad.write_text("#@ requires n >= 2\n"
+                   "#@ ensures result >= 0\n"
+                   "def f(n: int) -> int:\n"
+                   "    if n > 0:\n"
+                   "        assert n > 100\n"
+                   "        return n\n"
+                   "    return 0\n")
+    assert verify_structured(bad, tmp_path / "o1",
+                             backend="lean")["status"] == "failed"
+
+    # ...while one that is true only UNDER ITS BRANCH must pass.
+    # Demanding it unconditionally would fail a perfectly true spec,
+    # which is the way over-correcting here would show up.
+    good = tmp_path / "good.py"
+    good.write_text("#@ requires n >= 2\n"
+                    "#@ ensures result >= 0\n"
+                    "def g(n: int) -> int:\n"
+                    "    if n > 10:\n"
+                    "        assert n > 5\n"
+                    "        return n\n"
+                    "    return 0\n")
+    assert verify_structured(good, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+
+def test_augmented_assignment_reaches_every_path():
+    # Desugaring at individual statement-reading sites left `+=`
+    # accepted inside a loop body and refused three lines earlier, for
+    # no reason a reader could see. It happens once, module-wide, now.
+    loop_free = ("#@ requires n >= 0\n"
+                 "#@ ensures result >= 0\n"
+                 "def g(n: int) -> int:\n"
+                 "    s = n\n"
+                 "    s += 1\n"
+                 "    return s\n")
+    assert "«s» + 1" in _encode(loop_free).lean_source
+
+    nested_in_if = ("#@ requires n >= 0\n"
+                    "#@ ensures result >= 0\n"
+                    "def h(n: int) -> int:\n"
+                    "    s = n\n"
+                    "    if n > 0:\n"
+                    "        s += 1\n"
+                    "        return s\n"
+                    "    return s\n")
+    assert "«s» + 1" in _encode(nested_in_if).lean_source
+
+
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_assert_must_be_proved(tmp_path):
     from veripy.agentio import verify_structured

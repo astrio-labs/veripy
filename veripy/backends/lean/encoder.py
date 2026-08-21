@@ -1178,6 +1178,49 @@ def _wrap_guards(guards: list[tuple[ast.expr, ast.expr]], body: str,
 _AUG_OPS = (ast.Add, ast.Sub, ast.Mult)
 
 
+def _collect_asserts(stmts: list[ast.stmt],
+                     path: tuple[tuple[ast.expr, bool], ...] = ()
+                     ) -> list[tuple[ast.Assert,
+                                     tuple[tuple[ast.expr, bool], ...]]]:
+    """Every `assert` in a loop-free body, with the PATH CONDITION that
+    reaches it.
+
+    Reading only the top level dropped a nested assert's obligation
+    entirely, so a function containing one that cannot hold still
+    verified. The path matters as much as the assert: `if n > 0: assert
+    P` owes P only when the branch is taken, and demanding it
+    unconditionally would fail specs that are perfectly true."""
+    out: list[tuple[ast.Assert, tuple[tuple[ast.expr, bool], ...]]] = []
+    for st in stmts:
+        if isinstance(st, ast.Assert):
+            out.append((st, path))
+        elif isinstance(st, ast.If):
+            out.extend(_collect_asserts(st.body, path + ((st.test, True),)))
+            out.extend(_collect_asserts(st.orelse,
+                                        path + ((st.test, False),)))
+    return out
+
+
+class _AugAssignRewriter(ast.NodeTransformer):
+    """Rewrite every `x += e` to `x = x + e`, module-wide."""
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> ast.stmt:
+        self.generic_visit(node)
+        if not isinstance(node.target, ast.Name):
+            return node
+        if not isinstance(node.op, _AUG_OPS):
+            raise _reject(
+                f"augmented assignment `{type(node.op).__name__}` is "
+                f"outside this slice — `+=`, `-=` and `*=` desugar to "
+                f"their plain form", node.lineno)
+        out = ast.Assign(
+            targets=[ast.Name(id=node.target.id, ctx=ast.Store())],
+            value=ast.BinOp(left=ast.Name(id=node.target.id,
+                                          ctx=ast.Load()),
+                            op=node.op, right=node.value))
+        return ast.copy_location(out, node)
+
+
 def _desugar_aug(st: ast.stmt) -> ast.stmt:
     """`x += e` is `x = x + e`. Desugaring here means every shape
     downstream sees one spelling, rather than each loop matcher growing
@@ -1508,7 +1551,7 @@ def _split_while(fn: ast.FunctionDef,
     """Match the while shape, or REJECT loudly. Only called once a
     `while` is known to be present, so returning None would just hand
     the body compiler a worse message."""
-    stmts = [_desugar_aug(st) for st in fn.body
+    stmts = [st for st in fn.body
              if not (isinstance(st, ast.Expr)
                      and isinstance(st.value, ast.Constant))]
     guards, stmts = _split_guards(stmts)
@@ -1579,7 +1622,7 @@ def _split_while(fn: ast.FunctionDef,
         raise _reject("`while ... else` is outside the fragment",
                       loop.lineno)
     steps: list[list[tuple[str, ast.expr]]] = []
-    for st in map(_desugar_aug, loop.body):
+    for st in loop.body:
         if not isinstance(st, ast.Assign) or len(st.targets) != 1:
             raise _reject("the loop body must be assignments to the "
                           "accumulators in this slice",
@@ -1638,7 +1681,7 @@ def _split_loop(fn: ast.FunctionDef,
     A `for` that does not fit the shape is REJECTED (not silently routed
     to the loop-free compiler, which would refuse it with a worse
     message)."""
-    stmts = [_desugar_aug(s) for s in fn.body
+    stmts = [s for s in fn.body
              if not (isinstance(s, ast.Expr)
                      and isinstance(s.value, ast.Constant))]
     guards, stmts = _split_guards(stmts)
@@ -1697,7 +1740,7 @@ def _split_loop(fn: ast.FunctionDef,
                       loop.lineno)
     if loop.orelse:
         raise _reject("`for ... else` is outside the fragment", loop.lineno)
-    body = [_desugar_aug(s) for s in loop.body]
+    body = [s for s in loop.body]
     step_expr: ast.expr | None = None
     if len(body) == 1 and isinstance(body[0], ast.If) \
             and not body[0].orelse and len(body[0].body) == 1 \
@@ -1847,6 +1890,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # Proof sidecars are live (P3). `proof_lemmas` is the set of names
     # the pack declares, already whitelist-validated by the loader.
     module = ast.parse(source)
+    # `x += e` is `x = x + e`. Rewriting the whole module once means
+    # every path downstream sees a single spelling; desugaring at
+    # individual sites left the operator accepted inside a loop body and
+    # refused in loop-free code, for no reason a reader could see.
+    module = _AugAssignRewriter().visit(module)
+    ast.fix_missing_locations(module)
     # Module level admits ONLY function definitions and a docstring.
     # Anything else — an assignment (`abs = ...`), an import binding
     # (`import numpy as abs`), a class — could rebind a name call sites
@@ -2904,8 +2953,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # it must be proved, never assumed. Each becomes its own theorem
         # under the function's `requires`, so a false assert fails on
         # its own rather than silently strengthening the context.
-        asserts = [st for st in fn.body if isinstance(st, ast.Assert)]
-        for ai, st in enumerate(asserts):
+        asserts = _collect_asserts(list(fn.body))
+        for ai, (st, path) in enumerate(asserts):
             _no_old(st.test, st.lineno)
             _reject_undecidable_quantifier(st.test, names, st.lineno, lc0)
             a_name = f"{spec_fn.name}_assert{ai}"
@@ -2917,6 +2966,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     _parse_clause(spec_fn, "requires")):
                 a_hyps.append(f"(ha{hi} : "
                               f"{_prop_expr(hexpr, names, hline, lc=lc0)})")
+            # The branch conditions that reach this assert become
+            # hypotheses: an assert under `if n > 0` owes its claim only
+            # when that branch is taken.
+            for pi_, (pcond, taken) in enumerate(path):
+                _reject_undecidable_quantifier(pcond, names, st.lineno,
+                                               lc0)
+                pt = _prop_expr(pcond, names, st.lineno, lc=lc0)
+                a_hyps.append(f"(hp{pi_} : "
+                              + (pt if taken else f"(¬{pt})") + ")")
             a_sig = " ".join(x for x in [binders, *a_hyps] if x)
             emit("", None)
             emit(f"theorem {_ident(a_name)} {a_sig} :", st.lineno)
