@@ -740,6 +740,13 @@ def _list_expr(e: ast.expr, names: set[str], line: int,
     and stay out of this slice."""
     if isinstance(e, ast.Name) and e.id in lc.lists:
         return _ident(e.id)
+    if isinstance(e, ast.List):
+        # A literal list, `[]` above all: it is what a guard returns in
+        # `if not numbers: return []`.
+        if not e.elts:
+            return "([] : List Int)"
+        items = ", ".join(_int_expr(x, names, line, lc=lc) for x in e.elts)
+        return f"([{items}] : List Int)"
     if isinstance(e, ast.ListComp):
         if len(e.generators) != 1:
             raise _reject("only one comprehension generator in this "
@@ -1131,7 +1138,7 @@ def _divmod_sites(fn: ast.FunctionDef,
 
 def _wrap_guards(guards: list[tuple[ast.expr, ast.expr]], body: str,
                  names: set[str], line: int, lc: "_ListCtx",
-                 is_bool: bool) -> str:
+                 is_bool: bool, is_list: bool = False) -> str:
     """Wrap a loop's value in its leading guards, innermost last.
 
     `if COND: return V` short-circuits before the loop runs, so it is
@@ -1144,8 +1151,16 @@ def _wrap_guards(guards: list[tuple[ast.expr, ast.expr]], body: str,
         _no_old(cond, line)
         _no_old(value, line)
         cond_t = _prop_expr(cond, names, line, lc=lc)
-        val_t = (_bool_expr(value, names, line, lc) if is_bool
-                 else _int_expr(value, names, line, lc=lc))
+        # The guard returns the FUNCTION's type, so a list-returning
+        # function's guard yields a list — `if not numbers: return []`
+        # is the opening line of intersperse. Sending it through the
+        # integer encoder rejected a valid expression.
+        if is_list:
+            val_t = _list_expr(value, names, line, lc)
+        elif is_bool:
+            val_t = _bool_expr(value, names, line, lc)
+        else:
+            val_t = _int_expr(value, names, line, lc=lc)
         out = f"(if {cond_t} then {val_t} else {out})"
     return out
 
@@ -2401,9 +2416,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             if nacc == 1:
                 ret_t = _int_expr(wloop.ret, body_names, fn.lineno,
                                   lc=lc0)
-                emit(f"  let {avs[0]} := {init_call}; {ret_t}",
-                     fn.lineno)
+                # The guards MUST wrap the loop's value here too.
+                # Recording them in the shape and then emitting the bare
+                # loop modelled a different program from the one Python
+                # runs: the guard's early return simply vanished.
+                emit("  " + _wrap_guards(
+                    wloop.guards,
+                    f"let {avs[0]} := {init_call}; {ret_t}",
+                    names, fn.lineno, lc0, is_bool, is_list_ret),
+                    fn.lineno)
             else:
+                if wloop.guards:
+                    raise _reject(
+                        "a guard before a multi-accumulator `while` is "
+                        "outside this slice — the guard would have to "
+                        "wrap a multi-line `let` chain", fn.lineno)
                 emit(f"  let {pvar} := {init_call}", fn.lineno)
                 for k, a in enumerate(avs):
                     emit(f"  let {a} := {pvar}{_proj(k, nacc)}",
@@ -2807,7 +2834,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             body_t = (f"let {av} := {_ident(gen_loop)} {argsp}"
                       f"({bound_t}).toNat 0 {init_t}; {ret_t}")
             emit("  " + _wrap_guards(loop.guards, body_t, names,
-                                     fn.lineno, lc0, is_bool), fn.lineno)
+                                     fn.lineno, lc0, is_bool,
+                                     is_list_ret), fn.lineno)
         else:
             body = _body_expr([s for s in fn.body
                                if not (isinstance(s, ast.Expr)
@@ -2917,22 +2945,28 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             gi, gm = f"{spec_fn.name}_inv", f"{spec_fn.name}_meas"
             gc, gt = f"{spec_fn.name}_cond", f"{spec_fn.name}_loop_inv"
             emit("  try dsimp only", first_ensures_line)
-            emit(f"  have hi0 : {_ident(gi)} {targsp}{w_inits} := by "
+            # Same per-branch treatment the for path gets: with a guard
+            # the goal has already split, and these facts hold only in
+            # the branch the guard did not take.
+            wgp = "all_goals (try (" if guarded else ""
+            wgs = "))" if guarded else ""
+            emit(f"  {wgp}have hi0 : {_ident(gi)} {targsp}{w_inits} := by "
                  f"simp only [{_ident(gi)}]; all_goals (try push_cast); "
                  f"all_goals (try omega); all_goals (try simp_all); "
                  f"all_goals (try intros); "
-                 f"all_goals (first | omega | trivial)",
+                 f"all_goals (first | omega | trivial){wgs}",
                  first_ensures_line)
             # The fuel is the measure at entry, so the fuel-bound
             # obligation is exactly "the measure starts non-negative".
-            emit(f"  have hfin := {_ident(gt)} {targsp}"
+            emit(f"  {wgp}have hfin := {_ident(gt)} {targsp}"
                  f"({_ident(gm)} {targsp}{w_inits}).toNat {w_inits} hi0 "
-                 f"(by simp only [{_ident(gm)}]; omega)",
+                 f"(by simp only [{_ident(gm)}]; omega){wgs}",
                  first_ensures_line)
-            emit("  obtain ⟨hinv, hcond⟩ := hfin", first_ensures_line)
-            emit(f"  simp only [{_ident(gi)}, {_ident(gc)}, "
-                 f"decide_eq_false_iff_not] at hinv hcond",
+            emit(f"  {wgp}obtain ⟨hinv, hcond⟩ := hfin{wgs}",
                  first_ensures_line)
+            emit(f"  all_goals (try (simp only [{_ident(gi)}, "
+                 f"{_ident(gc)}, decide_eq_false_iff_not] "
+                 f"at hinv hcond))", first_ensures_line)
         elif loop is not None:
             # Bring the invariant through the loop: instantiate the
             # induction theorem at (fuel = bound.toNat, i = 0,

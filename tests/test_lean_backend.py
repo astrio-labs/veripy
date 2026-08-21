@@ -2111,6 +2111,68 @@ def test_loop_guards_short_circuit_before_the_loop():
     assert body.index("repeat' split") < body.index("have hi0")
 
 
+def test_guards_reach_every_loop_shape():
+    # A guard recorded but not EMITTED is the worst kind of bug here:
+    # the Lean function would run the loop where Python returns early,
+    # so the two are different programs and nothing would say so. The
+    # while emitter dropped its guards until this was caught.
+    wguard = ("#@ ensures result >= -1\n"
+              "def f(n: int) -> int:\n"
+              "    if n < 0:\n"
+              "        return -1\n"
+              "    c = 0\n"
+              "    while c < n:\n"
+              "        #@ invariant 0 <= c <= n\n"
+              "        c = c + 1\n"
+              "    return c\n")
+    assert "if («n» < 0) then (-1)" in _encode(wguard).lean_source
+
+    # A guard returns the FUNCTION's type, so a list-returning
+    # function's guard yields a list. `if not numbers: return []` opens
+    # intersperse.
+    lguard = ("#@ ensures len(result) >= 0\n"
+              "def build(xs: list[int]) -> list[int]:\n"
+              "    if len(xs) == 0:\n"
+              "        return []\n"
+              "    out: list[int] = []\n"
+              "    for i in range(len(xs)):\n"
+              "        #@ invariant len(out) == i\n"
+              "        out.append(xs[i])\n"
+              "    return out\n")
+    assert "then ([] : List Int)" in _encode(lguard).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_guards_on_every_shape_verify(tmp_path):
+    from veripy.agentio import verify_structured
+
+    wguard = ("#@ ensures result >= -1\n"
+              "def f(n: int) -> int:\n"
+              "    if n < 0:\n"
+              "        return -1\n"
+              "    c = 0\n"
+              "    while c < n:\n"
+              "        #@ invariant 0 <= c <= n\n"
+              "        c = c + 1\n"
+              "    return c\n")
+    w = tmp_path / "w.py"; w.write_text(wguard)
+    assert verify_structured(w, tmp_path / "ow",
+                             backend="lean")["status"] == "ok"
+
+    lguard = ("#@ ensures len(result) >= 0\n"
+              "def build(xs: list[int]) -> list[int]:\n"
+              "    if len(xs) == 0:\n"
+              "        return []\n"
+              "    out: list[int] = []\n"
+              "    for i in range(len(xs)):\n"
+              "        #@ invariant len(out) == i\n"
+              "        out.append(xs[i])\n"
+              "    return out\n")
+    l = tmp_path / "l.py"; l.write_text(lguard)
+    assert verify_structured(l, tmp_path / "ol",
+                             backend="lean")["status"] == "ok"
+
+
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_guarded_loop_verifies(tmp_path):
     from veripy.agentio import verify_structured
