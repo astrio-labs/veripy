@@ -2087,6 +2087,148 @@ def test_end_to_end_list_building_verifies(tmp_path):
                              backend="lean")["status"] == "failed"
 
 
+GUARDED = ("#@ ensures result >= 0\n"
+           "def count_from(n: int) -> int:\n"
+           "    if n < 0:\n"
+           "        return 0\n"
+           "    c = 0\n"
+           "    for i in range(n):\n"
+           "        #@ invariant c == i\n"
+           "        c = c + 1\n"
+           "    return c\n")
+
+
+def test_loop_guards_short_circuit_before_the_loop():
+    # `if COND: return V` ahead of a loop is ordinary Python that the
+    # loop shapes would otherwise refuse. It compiles to
+    # `if COND then V else <the loop's value>`.
+    enc = _encode(GUARDED)
+    assert "(if («n» < 0) then 0 else let «c» :=" in enc.lean_source
+    # The theorem SPLITS before establishing the loop's facts: `0 <= n`
+    # holds only in the branch the guard did not take, so instantiating
+    # the loop lemma first would fail on the other one.
+    body = enc.lean_source[enc.lean_source.index("theorem «count_from_spec»"):]
+    assert body.index("repeat' split") < body.index("have hi0")
+
+
+def test_guard_conditions_must_be_decidable():
+    # A guard becomes a Lean `if`, which is a DECIDABLE position, and
+    # `all`/`any` over Int has no Decidable instance. Emitting it failed
+    # ELABORATION, and that surfaced as a prover verdict — so an
+    # unsupported input looked like a false spec, which is the worst
+    # way for this to be wrong.
+    src = ("#@ requires n >= 0\n"
+           "#@ ensures result >= 0\n"
+           "def f(xs: list[int], n: int) -> int:\n"
+           "    if all(xs[k] >= 0 for k in range(len(xs))):\n"
+           "        return 0\n"
+           "    c = 0\n"
+           "    for i in range(n):\n"
+           "        #@ invariant c == i\n"
+           "        c = c + 1\n"
+           "    return c\n")
+    with pytest.raises(EncodeError, match="cannot be decided"):
+        _encode(src)
+
+
+def test_guards_reach_every_loop_shape():
+    # A guard recorded but not EMITTED is the worst kind of bug here:
+    # the Lean function would run the loop where Python returns early,
+    # so the two are different programs and nothing would say so. The
+    # while emitter dropped its guards until this was caught.
+    wguard = ("#@ ensures result >= -1\n"
+              "def f(n: int) -> int:\n"
+              "    if n < 0:\n"
+              "        return -1\n"
+              "    c = 0\n"
+              "    while c < n:\n"
+              "        #@ invariant 0 <= c <= n\n"
+              "        c = c + 1\n"
+              "    return c\n")
+    assert "if («n» < 0) then (-1)" in _encode(wguard).lean_source
+
+    # A guard returns the FUNCTION's type, so a list-returning
+    # function's guard yields a list. `if not numbers: return []` opens
+    # intersperse.
+    lguard = ("#@ ensures len(result) >= 0\n"
+              "def build(xs: list[int]) -> list[int]:\n"
+              "    if len(xs) == 0:\n"
+              "        return []\n"
+              "    out: list[int] = []\n"
+              "    for i in range(len(xs)):\n"
+              "        #@ invariant len(out) == i\n"
+              "        out.append(xs[i])\n"
+              "    return out\n")
+    assert "then ([] : List Int)" in _encode(lguard).lean_source
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_guards_on_every_shape_verify(tmp_path):
+    from veripy.agentio import verify_structured
+
+    wguard = ("#@ ensures result >= -1\n"
+              "def f(n: int) -> int:\n"
+              "    if n < 0:\n"
+              "        return -1\n"
+              "    c = 0\n"
+              "    while c < n:\n"
+              "        #@ invariant 0 <= c <= n\n"
+              "        c = c + 1\n"
+              "    return c\n")
+    w = tmp_path / "w.py"; w.write_text(wguard)
+    assert verify_structured(w, tmp_path / "ow",
+                             backend="lean")["status"] == "ok"
+
+    lguard = ("#@ ensures len(result) >= 0\n"
+              "def build(xs: list[int]) -> list[int]:\n"
+              "    if len(xs) == 0:\n"
+              "        return []\n"
+              "    out: list[int] = []\n"
+              "    for i in range(len(xs)):\n"
+              "        #@ invariant len(out) == i\n"
+              "        out.append(xs[i])\n"
+              "    return out\n")
+    l = tmp_path / "l.py"; l.write_text(lguard)
+    assert verify_structured(l, tmp_path / "ol",
+                             backend="lean")["status"] == "ok"
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_guarded_loop_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    src = tmp_path / "count_from.py"
+    src.write_text(GUARDED)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # A false spec still fails honestly through the guard.
+    bad = tmp_path / "bad.py"
+    bad.write_text(GUARDED.replace("result >= 0", "result >= 1"))
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
+def test_proof_targets_are_checked_after_the_shape():
+    # Checking `#@ proof` targets FIRST masked the real blocker: a task
+    # whose shape this slice does not cover reported "unknown lemma",
+    # which reads as "go write the pack" when the honest answer is "the
+    # fragment does not reach this yet". The shape speaks first now.
+    unsupported = ("#@ requires n >= 0\n"
+                   "#@ ensures result >= 0\n"
+                   "def f(n: int) -> int:\n"
+                   "    c = 0\n"
+                   "    while c < n:\n"
+                   "        #@ invariant c >= 0\n"
+                   "        #@ proof SomeLemma(c)\n"
+                   "        if c > 100:\n"
+                   "            return c\n"
+                   "        c = c + 1\n"
+                   "    return c\n")
+    with pytest.raises(EncodeError, match="assignments to the accumulators"):
+        _encode(unsupported)
+
+
 def test_duplicate_defs_are_refused_not_mispaired():
     # Specs attach to the FIRST def, the name map keeps the LAST (and
     # CPython runs the last) — encoding would prove one body against
