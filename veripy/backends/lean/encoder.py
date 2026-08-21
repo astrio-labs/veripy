@@ -1185,18 +1185,22 @@ def _collect_asserts(stmts: list[ast.stmt],
                                      tuple[tuple[ast.expr, bool], ...]]]:
     """Every `assert` in a loop-free body, as (statement, claim, path).
 
-    Three things have to travel with it, and each was learned the hard
+    An assert is a claim about the state at ONE POINT in the body, and
+    lifting it into a standalone theorem has to carry every way its
+    meaning depends on that position. Four ways, each learned the hard
     way. The PATH CONDITION, because `if n > 0: assert P` owes P only
-    when the branch is taken. The NESTING, because reading only the top
-    level dropped a nested obligation entirely. And the LOCALS: an
-    obligation is a theorem over the function's parameters, so a local
-    has no meaning in it — `s = n + 1; assert s > 0` is the claim
-    `n + 1 > 0`, and the local's definition is substituted in rather
-    than its name carried out of scope."""
+    when the branch is taken -- including the IMPLICIT else, since an
+    `if` without `else` that returns makes everything after it the else
+    branch. The NESTING, because reading only the top level dropped a
+    nested obligation entirely. And the LOCALS: an obligation is a
+    theorem over the function's parameters, so a local has no meaning
+    in it -- `s = n + 1; assert s > 0` is the claim `n + 1 > 0`, and
+    the local's definition is substituted in rather than its name
+    carried out of scope."""
     out: list[tuple[ast.Assert, ast.expr,
                     tuple[tuple[ast.expr, bool], ...]]] = []
     live = dict(subst or {})
-    for st in stmts:
+    for idx, st in enumerate(stmts):
         if isinstance(st, ast.Assert):
             claim = _SubstExprs(dict(live)).visit(copy.deepcopy(st.test))
             out.append((st, claim, path))
@@ -1210,6 +1214,16 @@ def _collect_asserts(stmts: list[ast.stmt],
                                         live))
             out.extend(_collect_asserts(st.orelse,
                                         path + ((cond, False),), live))
+            if not st.orelse and _always_returns(st.body):
+                # `_body_expr` compiles what FOLLOWS an `if` without
+                # `else` as that `if`'s else branch, so those
+                # statements run only when the test is false. Reading
+                # on at this level instead owes the assert
+                # unconditionally, which rejects a correct function.
+                out.extend(_collect_asserts(stmts[idx + 1:],
+                                            path + ((cond, False),),
+                                            live))
+                break
     return out
 
 
@@ -2981,12 +2995,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # The branch conditions that reach this assert become
             # hypotheses: an assert under `if n > 0` owes its claim only
             # when that branch is taken.
-            for pi_, (pcond, taken) in enumerate(path):
+            for pi_, (pcond, on_true) in enumerate(path):
                 _reject_undecidable_quantifier(pcond, names, st.lineno,
                                                lc0)
                 pt = _prop_expr(pcond, names, st.lineno, lc=lc0)
                 a_hyps.append(f"(hp{pi_} : "
-                              + (pt if taken else f"(¬{pt})") + ")")
+                              + (pt if on_true else f"(¬{pt})") + ")")
             a_sig = " ".join(x for x in [binders, *a_hyps] if x)
             emit("", None)
             emit(f"theorem {_ident(a_name)} {a_sig} :", st.lineno)
