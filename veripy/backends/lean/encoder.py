@@ -3459,8 +3459,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             wbr = "".join(h + "; " for h in wbr_h) + (
                 f"all_goals (try simp only [{', '.join(wbr_n)}] at *); "
                 if wbr_n else "")
+            # The initial invariant instantiates at literal init
+            # values, which surfaces closed prelude terms (`PyPow 2 0`)
+            # and small literal residues (`PyMod 1 p`). Evaluate the
+            # first with the prelude's own equations; for the second,
+            # this is SPEC context, so the requires are in scope and
+            # `(by omega)` can discharge the variable divisor's
+            # positivity and the literal's range -- exactly what the
+            # induction theorem could not do. Both guarded: a shape
+            # without such residues skips them.
             emit(f"  {wgp}have hi0 : {_ident(gi)} {targsp}{w_inits} := by "
-                 f"simp only [{_ident(gi)}]; {wbr}all_goals (try push_cast); "
+                 f"simp only [{_ident(gi)}]; {wbr}"
+                 f"all_goals (try simp only [VeriPy.PyPow_zero]); "
+                 f"all_goals (try (rw [VeriPy.PyMod_pos _ _ (by omega), "
+                 f"Int.emod_eq_of_lt (by omega) (by omega)])); "
+                 f"all_goals (try push_cast); "
                  f"all_goals (try omega); all_goals (try simp_all); "
                  f"all_goals (try intros); "
                  f"all_goals (first | omega | trivial){wgs}",
@@ -3663,7 +3676,18 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     for ei, ep in enumerate(earlier_posts):
                         emit(f"  have hpost{ei} : {ep} := by",
                              first_ensures_line)
-                        for tl in ("    try unfold VeriPy.PyAbs",
+                        # The helper's statement names the FUNCTION,
+                        # but the loop facts (hinv, hcond) talk about
+                        # the loop application -- so the sub-proof must
+                        # unfold the function exactly as the main
+                        # endgame does, or simp_all has a folded
+                        # application on one side and projections on
+                        # the other and closes neither (measured on
+                        # gcd: `1 <= greatest_common_divisor a b` with
+                        # x > 0 sitting unusable in hinv).
+                        for tl in (f"    try unfold "
+                                   f"{_ident(spec_fn.name)}",
+                                   "    try unfold VeriPy.PyAbs",
                                    "    try dsimp only",
                                    "    try simp only [decide_eq_true_eq]",
                                    "    repeat' split",
