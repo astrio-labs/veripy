@@ -23,4 +23,5 @@ def greatest_common_divisor(a: int, b: int) -> int:
         #@ decreases y
         #@ proof EuclidStepAll(x, y, max(a, b) + 1)
         x, y = y, x % y
+    assert y == 0
     return x
