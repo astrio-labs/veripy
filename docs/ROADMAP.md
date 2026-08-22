@@ -217,7 +217,7 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 | | |
 |---|---|
 | contact corpus under Lean | **6/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`) |
-| prelude | `lean-0.6` |
+| prelude | `lean-0.7` (`PyMod_self`, `PyMod_zero_left` added for the quantified-invariant endgame) |
 | slices landed | P2 1–20, P3 (sidecar channel) |
 | `.proofs.lean` packs in existence | **3** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr` — all kernel-checked, clean axiom footprints) |
 
