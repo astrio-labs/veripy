@@ -1073,8 +1073,13 @@ def test_while_loops_emit_measure_machinery():
     # Concluding `cond = false` is what separates a loop that EXITED
     # from one that merely ran out of fuel.
     assert "= false := by" in enc.lean_source
-    # The fuel at entry is the measure at entry.
-    assert "(«countup_meas» «n» (0)).toNat (0)" in enc.lean_source
+    # The fuel at entry is the measure at entry PLUS ONE. `decreases` is
+    # a termination measure, not an iteration count: `while i <= n` runs
+    # once more after the measure hits 0. This test used to assert the
+    # measure itself and passed, because COUNTUP is `while c < n` --
+    # the one shape where the two happen to coincide. See
+    # test_while_fuel_matches_cpython_on_both_loop_shapes.
+    assert "((«countup_meas» «n» (0)).toNat + 1) (0)" in enc.lean_source
 
 
 def test_while_shape_rejections():
@@ -3242,3 +3247,72 @@ def test_chaining_cannot_launder_a_false_assert(tmp_path):
                        "        s = s + 1\n    return s\n")
     assert verify_structured(chained, tmp_path / "o2",
                              backend="lean")["status"] == "ok"
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_while_fuel_matches_cpython_on_both_loop_shapes(tmp_path):
+    # Fuel came from the `#@ decreases` clause, but Dafny's `decreases`
+    # is a TERMINATION MEASURE, not an iteration count. For `while i <=
+    # n` the loop still runs when `n - i` reaches 0, so the count is
+    # `n - i + 1` and the generated Lean ran one iteration short -- it
+    # computed sum_to_n(n-1). A definition that is not the Python
+    # program is the worst failure this backend has, because every
+    # theorem above it is then about the wrong function.
+    #
+    # It hid because the only `while` exercised was `while c < n`, the
+    # one shape where measure and count coincide. So both shapes here.
+    import re
+    import subprocess
+
+    STRICT = ("#@ requires n >= 0\n#@ ensures result == n\n"
+              "def countup(n: int) -> int:\n    c = 0\n"
+              "    while c < n:\n        #@ invariant 0 <= c <= n\n"
+              "        #@ decreases n - c\n        c = c + 1\n"
+              "    return c\n")
+    NONSTRICT = ("#@ requires n >= 0\n#@ ensures result >= 0\n"
+                 "def upto(n: int) -> int:\n    c = 0\n"
+                 "    while c <= n:\n        #@ invariant 0 <= c <= n + 1\n"
+                 "        #@ decreases n - c\n        c = c + 1\n"
+                 "    return c\n")
+
+    def _countup(n): 
+        c = 0
+        while c < n:
+            c += 1
+        return c
+
+    def _upto(n):
+        c = 0
+        while c <= n:
+            c += 1
+        return c
+
+    def _probe(src: str, name: str, ref, downgrade: bool) -> int:
+        text = _encode(src).lean_source
+        if downgrade:
+            # Exactly the old encoding, BOTH halves of it: fuel = the
+            # measure itself at the call sites, and the theorem's
+            # fuel-bound hypothesis non-strict. Reverting only the call
+            # sites leaves an inconsistent hybrid that fails for an
+            # unrelated reason, which says nothing about the bug.
+            text = re.sub(r"< \((\w+'*) : Int\) →",
+                          r"≤ (\1 : Int) →", text)
+            text = text.replace(").toNat + 1) ", ").toNat) ")
+        text = "\n".join(l for l in text.splitlines()
+                         if not l.startswith("#print"))
+        for n in (0, 1, 2, 3, 5):
+            text += f"\nexample : «{name}» ({n} : Int) = ({ref(n)}) := by rfl"
+        path = tmp_path / f"{name}_{downgrade}.lean"
+        path.write_text(text + "\n")
+        out = subprocess.run([str(find_lean()), str(path)],
+                             capture_output=True, text=True)
+        return out.stdout.count("error") + out.stderr.count("error")
+
+    # Shipped encoder: both shapes compute what CPython computes.
+    assert _probe(STRICT, "countup", _countup, False) == 0
+    assert _probe(NONSTRICT, "upto", _upto, False) == 0
+
+    # TEETH, and the explanation of the miss in one pair of lines: with
+    # the old fuel the `<=` shape breaks and the `<` shape does not.
+    assert _probe(NONSTRICT, "upto", _upto, True) > 0
+    assert _probe(STRICT, "countup", _countup, True) == 0

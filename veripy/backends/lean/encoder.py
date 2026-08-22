@@ -1147,6 +1147,47 @@ def _divmod_sites(fn: ast.FunctionDef,
     return sites
 
 
+
+def _const_div_bridges(fn: ast.FunctionDef,
+                       spec_fn: FunctionSpec) -> tuple[list[str], list[str]]:
+    """Bridge `//` and `%` by a CONSTANT positive divisor to Lean's own
+    `/` and `%`, which omega reasons about natively. Without this every
+    floor-division goal is an opaque atom -- `0 = PyFloorDiv 0 2` does
+    not close, and neither does anything downstream of it.
+
+    One `have` per distinct divisor, QUANTIFIED over the dividend, so a
+    single rewrite reaches every occurrence whatever shape the dividend
+    has. Per-site rewriting with an exact term is what does not work
+    here: the occurrence that matters is usually one the surrounding
+    tactics have already reshaped, and the spelled-out term no longer
+    matches it.
+
+    Returns (have lines, hypothesis names).
+    """
+    div_c: set[int] = set()
+    mod_c: set[int] = set()
+    for _num, den, is_mod in _divmod_sites(fn, spec_fn):
+        # `isinstance(True, int)` holds in Python, and `x // True` is a
+        # different thing from `x // 1` to a reader, so bools are out.
+        if isinstance(den, ast.Constant) and not isinstance(den.value, bool) \
+                and isinstance(den.value, int) and den.value > 0:
+            (mod_c if is_mod else div_c).add(den.value)
+    haves: list[str] = []
+    names: list[str] = []
+    for c in sorted(div_c):
+        nm = f"hfdb{c}"
+        haves.append(f"have {nm} : ∀ a : Int, VeriPy.PyFloorDiv a {c} "
+                     f"= a / {c} := fun a => VeriPy.PyFloorDiv_pos a {c} "
+                     f"(by omega)")
+        names.append(nm)
+    for c in sorted(mod_c):
+        nm = f"hmdb{c}"
+        haves.append(f"have {nm} : ∀ a : Int, VeriPy.PyMod a {c} "
+                     f"= a % {c} := fun a => VeriPy.PyMod_pos a {c} "
+                     f"(by omega)")
+        names.append(nm)
+    return haves, names
+
 def _wrap_guards(guards: list[tuple[ast.expr, ast.expr]], body: str,
                  names: set[str], line: int, lc: "_ListCtx",
                  is_bool: bool, is_list: bool = False) -> str:
@@ -2512,8 +2553,16 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                              for k in range(nacc))
             emit(f"theorem {_ident(gen_thm)} {binders} : "
                  f"∀ ({fuel} : Nat) ({avlist} : Int),", wloop.inv_line)
+            # STRICT. `decreases` is Dafny's TERMINATION MEASURE, not
+            # an iteration count: `while i <= n` still runs when the
+            # measure `n - i` reaches 0, so the count is `n - i + 1`.
+            # Reading the measure as the count made the generated Lean
+            # run one iteration short -- a definition that computed
+            # sum_to_n(n-1), measured against CPython. With `<`, the
+            # zero-fuel case reads "the measure went below its floor",
+            # which is exactly the loop having exited.
             emit(f"    {_ident(gen_inv)} {argsp}{avlist} → "
-                 f"{_ident(gen_meas)} {argsp}{avlist} ≤ ({fuel} : Int) →",
+                 f"{_ident(gen_meas)} {argsp}{avlist} < ({fuel} : Int) →",
                  wloop.inv_line)
             emit(f"    {_ident(gen_inv)} {argsp}{projs} ∧",
                  wloop.inv_line)
@@ -2547,6 +2596,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     f"      have hwp{wpi} := {wcall.func.id} "
                     f"{wargs}".rstrip())
             wdiv_facts: list[str] = []
+            _wbh, _wbn = _const_div_bridges(fn, spec_fn)
+            for _wb in _wbh:
+                wdiv_facts.append(f"      {_wb}")
+            if _wbn:
+                wdiv_facts.append(
+                    f"      all_goals (try simp only "
+                    f"[{', '.join(_wbn)}] at *)")
             wsites: list[tuple[ast.expr, ast.expr]] = []
             for expr in ([wloop.cond, wloop.meas]
                          + [v for g in wloop.steps for _, v in g]):
@@ -2621,9 +2677,9 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit(f"def {_ident(spec_fn.name)} {binders} : Int :=",
                  fn.lineno)
             init_call = (f"{_ident(gen_loop)} {argsp}"
-                         f"({_ident(gen_meas)} {argsp}"
+                         f"(({_ident(gen_meas)} {argsp}"
                          + " ".join(f"({t})" for t in init_ts)
-                         + ").toNat "
+                         + ").toNat + 1) "
                          + " ".join(f"({t})" for t in init_ts))
             if nacc == 1:
                 ret_t = _int_expr(wloop.ret, body_names, fn.lineno,
@@ -3263,8 +3319,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # the branch the guard did not take.
             wgp = "all_goals (try (" if guarded else ""
             wgs = "))" if guarded else ""
+            wbr_h, wbr_n = _const_div_bridges(fn, spec_fn)
+            wbr = "".join(h + "; " for h in wbr_h) + (
+                f"all_goals (try simp only [{', '.join(wbr_n)}] at *); "
+                if wbr_n else "")
             emit(f"  {wgp}have hi0 : {_ident(gi)} {targsp}{w_inits} := by "
-                 f"simp only [{_ident(gi)}]; all_goals (try push_cast); "
+                 f"simp only [{_ident(gi)}]; {wbr}all_goals (try push_cast); "
                  f"all_goals (try omega); all_goals (try simp_all); "
                  f"all_goals (try intros); "
                  f"all_goals (first | omega | trivial){wgs}",
@@ -3272,14 +3332,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # The fuel is the measure at entry, so the fuel-bound
             # obligation is exactly "the measure starts non-negative".
             emit(f"  {wgp}have hfin := {_ident(gt)} {targsp}"
-                 f"({_ident(gm)} {targsp}{w_inits}).toNat {w_inits} hi0 "
-                 f"(by simp only [{_ident(gm)}]; omega){wgs}",
+                 f"(({_ident(gm)} {targsp}{w_inits}).toNat + 1) {w_inits} "
+                 f"hi0 (by simp only [{_ident(gm)}]; omega){wgs}",
                  first_ensures_line)
             emit(f"  {wgp}obtain ⟨hinv, hcond⟩ := hfin{wgs}",
                  first_ensures_line)
             emit(f"  all_goals (try (simp only [{_ident(gi)}, "
                  f"{_ident(gc)}, decide_eq_false_iff_not] "
                  f"at hinv hcond))", first_ensures_line)
+            # The bridges again, now that hinv carries the invariant in
+            # unfolded form: that is where the floor divisions surface.
+            for wb in wbr_h:
+                emit(f"  {wb}", first_ensures_line)
+            if wbr_n:
+                emit(f"  all_goals (try simp only "
+                     f"[{', '.join(wbr_n)}] at *)", first_ensures_line)
         elif loop is not None:
             # Bring the invariant through the loop: instantiate the
             # induction theorem at (fuel = bound.toNat, i = 0,
