@@ -1542,6 +1542,14 @@ class _WhileShape:
     meas_line: int
     while_line: int
     guards: list[tuple[ast.expr, ast.expr]] = field(default_factory=list)
+    # `assert` statements between the loop and the return (P2 slice
+    # 20). Each is a theorem under the invariant AND the negated
+    # condition -- the exit state -- and the proved claim is then
+    # substituted into the spec proof. That substitution is what lets
+    # the endgame collapse a nonlinear atom like `(i-1)*i` once the
+    # exit value of `i` is known: omega cannot multiply, but it can
+    # use an equality to rewrite the atom away.
+    post_asserts: list[ast.Assert] = field(default_factory=list)
 
 
 def _proj(k: int, n: int) -> str:
@@ -1666,12 +1674,15 @@ def _split_while(fn: ast.FunctionDef,
     loop = whiles[0]
     idx = stmts.index(loop)
     inits_stmts, rest = stmts[:idx], stmts[idx + 1:]
-    if not inits_stmts or len(rest) != 1 \
-            or not isinstance(rest[0], ast.Return):
+    if not inits_stmts or not rest \
+            or not isinstance(rest[-1], ast.Return) \
+            or not all(isinstance(x, ast.Assert) for x in rest[:-1]):
         raise _reject("a `while` function must be `acc = init` (one or "
-                      "more) then `while ...: ...` then `return expr` in "
-                      "this slice", loop.lineno)
-    ret_stmt = rest[0]
+                      "more) then `while ...: ...` then optional "
+                      "`assert`s then `return expr` in this slice",
+                      loop.lineno)
+    post_asserts = [x for x in rest[:-1] if isinstance(x, ast.Assert)]
+    ret_stmt = rest[-1]
     accs: list[str] = []
     inits: list[ast.expr] = []
     for st in inits_stmts:
@@ -1770,7 +1781,7 @@ def _split_while(fn: ast.FunctionDef,
                      + [(v, loop.lineno) for g in steps for _, v in g]
                      + [(ret_stmt.value, ret_stmt.lineno)]):
         _no_old(expr, ln)
-    return _WhileShape(guards=guards,
+    return _WhileShape(guards=guards, post_asserts=post_asserts,
                        accs=accs, inits=inits, cond=loop.test, steps=steps,
                        ret=ret_stmt.value, inv=inv_expr, inv_line=inv_line,
                        meas=meas_expr, meas_line=meas_line,
@@ -2681,6 +2692,62 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("        simp only [Bool.not_eq_true] at hc",
                  wloop.inv_line)
             emit("        exact ⟨h, hc⟩", wloop.inv_line)
+            # A post-loop `assert` is a claim about the EXIT state:
+            # its theorem carries the invariant and the NEGATED
+            # condition, which together are everything the loop
+            # guarantees on exit. It also carries the `requires` --
+            # unlike the induction theorem, it is instantiated in the
+            # spec proof, where those are in context to discharge.
+            # Positivity for the claim's own divisors comes from the
+            # invariant only (cond_lc): the condition is FALSE here,
+            # so its facts must not license anything.
+            pa_prior: list[str] = []
+            for pk, past in enumerate(wloop.post_asserts):
+                pa_name = f"{fname}_post_assert{pk}"
+                _check_name(pa_name, "generated declaration for",
+                            past.lineno, taken)
+                taken.add(pa_name)
+                _no_old(past.test, past.lineno)
+                _reject_undecidable_quantifier(past.test, body_names,
+                                               past.lineno, cond_lc)
+                pa_claim = _prop_expr(past.test, body_names,
+                                      past.lineno, lc=cond_lc)
+                pa_hyps = []
+                for qi, (qexpr, qline) in enumerate(
+                        _parse_clause(spec_fn, "requires")):
+                    pa_hyps.append(f"(hq{qi} : "
+                                   f"{_prop_expr(qexpr, names, qline, lc=lc0)})")
+                pa_hyps.append(f"(hinv : {_ident(gen_inv)} "
+                               f"{argsp}{avlist})")
+                pa_hyps.append(f"(hcond : {_ident(gen_cond)} "
+                               f"{argsp}{avlist} = false)")
+                # Dafny proves `assert A; assert B` with A in context
+                # for B (the slice-18 lesson, applied at authoring time
+                # rather than after review). Sound for the same reason:
+                # each claim is discharged by its own theorem, so a
+                # false A fails there and takes the file with it.
+                pa_hyps.extend(f"(hpp{j} : {c})"
+                               for j, c in enumerate(pa_prior))
+                emit("", None)
+                emit(f"theorem {_ident(pa_name)} {binders} "
+                     f"({avlist} : Int)", past.lineno)
+                emit(f"    {' '.join(pa_hyps)} :", past.lineno)
+                emit(f"    {pa_claim} := by", past.lineno)
+                emit(f"  simp only [{_ident(gen_inv)}, "
+                     f"{_ident(gen_cond)}, decide_eq_false_iff_not] "
+                     f"at hinv hcond", past.lineno)
+                for _wb in _wbh:
+                    emit(f"  {_wb}", past.lineno)
+                if _wbn:
+                    emit(f"  all_goals (try simp only "
+                         f"[{', '.join(_wbn)}] at *)", past.lineno)
+                for tl in ("  all_goals (try push_cast)",
+                           "  all_goals (try omega)",
+                           "  all_goals (try simp_all)",
+                           "  all_goals (first | omega | trivial)"):
+                    emit(tl, past.lineno)
+                theorems.append(pa_name)
+                pa_prior.append(pa_claim)
             emit("", None)
             emit(f"def {_ident(spec_fn.name)} {binders} : Int :=",
                  fn.lineno)
@@ -3245,7 +3312,12 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # it must be proved, never assumed. Each becomes its own theorem
         # under the function's `requires`, so a false assert fails on
         # its own rather than silently strengthening the context.
-        asserts = _collect_asserts(list(fn.body))
+        # A while function's only reachable asserts are POST-loop ones
+        # (pre-loop and in-body are shape-rejected), and those belong
+        # to the while path: their claims mention accumulators, which
+        # this collector's parameter-only context cannot name.
+        asserts = [] if wloop is not None \
+            else _collect_asserts(list(fn.body))
         for ai, (st, claim, path) in enumerate(asserts):
             _no_old(st.test, st.lineno)
             _reject_undecidable_quantifier(claim, names, st.lineno, lc0)
@@ -3401,6 +3473,22 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                  first_ensures_line)
             emit(f"  {wgp}obtain ⟨hinv, hcond⟩ := hfin{wgs}",
                  first_ensures_line)
+            # Post-loop asserts instantiate BEFORE the unfolding simp:
+            # the obligation theorem wants hinv/hcond in FOLDED form,
+            # and the accumulator arguments are left as `_` for Lean
+            # to infer from hinv's own type (the projection terms are
+            # long, and spelling them re-derives what unification
+            # already knows).
+            nreq = len(_parse_clause(spec_fn, "requires"))
+            for pk in range(len(wloop.post_asserts)):
+                pa = _ident(f"{spec_fn.name}_post_assert{pk}")
+                pa_args = " ".join(
+                    ["_" for _ in wloop.accs]
+                    + [f"h{qi}" for qi in range(nreq)]
+                    + ["hinv", "hcond"]
+                    + [f"hpa{j}" for j in range(pk)])
+                emit(f"  {wgp}have hpa{pk} := {pa} {targsp}{pa_args}{wgs}",
+                     first_ensures_line)
             emit(f"  all_goals (try (simp only [{_ident(gi)}, "
                  f"{_ident(gc)}, decide_eq_false_iff_not] "
                  f"at hinv hcond))", first_ensures_line)
@@ -3411,6 +3499,18 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             if wbr_n:
                 emit(f"  all_goals (try simp only "
                      f"[{', '.join(wbr_n)}] at *)", first_ensures_line)
+            # The proved exit equalities REWRITE the projection terms.
+            # This is the payoff: `hpa : i_final = n + 1` turns the
+            # nonlinear atom `(i_final - 1) * i_final` into
+            # `(n + 1 - 1) * (n + 1)`, and add_sub_cancel then matches
+            # it to the spec's own `n * (n + 1)` -- omega cannot
+            # multiply, but it can use what a rewrite already did.
+            for pk in range(len(wloop.post_asserts)):
+                emit(f"  all_goals (try simp only [hpa{pk}] at *)",
+                     first_ensures_line)
+            if wloop.post_asserts:
+                emit("  all_goals (try simp only [Int.add_sub_cancel] "
+                     "at *)", first_ensures_line)
         elif loop is not None:
             # Bring the invariant through the loop: instantiate the
             # induction theorem at (fuel = bound.toNat, i = 0,
