@@ -197,6 +197,117 @@ Dafny would accept a construct and Lean cannot, Lean must fail loudly.
 
 ---
 
+## Lean track
+
+A shallow functional embedding: each admitted function becomes a Lean
+definition, each clause a theorem, and every artifact ends with
+`#print axioms` so a proof leaning on anything outside
+`{propext, Quot.sound, Classical.choice}` is reported as
+`axiom-footprint` rather than counted. `sorry` and `admit` are the
+same axiom underneath, and the check catches both **transitively**.
+
+Loops compile to fuel recursion on `Nat` (structurally terminating, so
+no `termination_by`); the invariant becomes a generated `Prop` and the
+induction theorem's inductive step **is** the preservation VC.
+
+### Where it actually stands
+
+Measured on the contact corpus, not estimated — re-run before quoting:
+
+| | |
+|---|---|
+| contact corpus under Lean | **3/22** (`he_35`, `he_42`, `he_52`) |
+| prelude | `lean-0.6` |
+| slices landed | P2 1–18, P3 (sidecar channel) |
+| `.proofs.lean` packs in existence | **0** — the channel is open, nothing has gone through it |
+
+Per-task first blockers (clearing one reveals the next, so this is a
+work list and not a countdown):
+
+| blocker | tasks |
+|---|---|
+| `str` parameters | `he_48`, `mbpp_247`, `mbpp_885`, `mbpp_97` |
+| pack stage (`#@ proof` target undeclared) | `he_13`, `he_49`, `he_60` |
+| nested loops | `he_40`, `he_43` |
+| DP / indexed assignment — **cut by decision** | `mbpp_402`, `mbpp_620` |
+| multi-statement `for` body | `he_3`, `he_9`, `mbpp_sum_squares` |
+| filtered comprehension | `he_30` |
+| loop not over `range` | `he_31` |
+| `sorted` | `he_34` |
+| two loops in one function | `mbpp_149` |
+
+The five tasks that report *"a loop function must be exactly `acc =
+init; for ...: ...; return expr`"* are **five different causes sharing
+one message**, two of them the cut DP tasks. Read the source before
+grouping them.
+
+### Semantics measured the hard way
+
+Each of these was believed otherwise until it was checked:
+
+- Python `//` and `%` are `Int.fdiv`/`Int.fmod`, **not** ediv/emod.
+  `emod` agrees only for positive divisors, so a positive-divisor test
+  suite never catches it. The differential suite pins all four sign
+  combinations.
+- Core Lean has **no `ring`**. Polynomial identities are proved by
+  rewriting to normal form and letting omega treat `i * i` as an atom.
+- The fuel model needs a **stronger measure than Dafny's `decreases`**:
+  `while i <= n` needs `n - i + 1`, not `n - i`.
+- Tuple assignment is simultaneous; consecutive statements are
+  sequential. Opposite semantics, both modelled.
+
+### The recurring bug, and the rule that catches it
+
+Six findings in the encoder have had one root cause, and the fifth and
+sixth landed on code written in response to the one before. The last
+one **certified a program CPython crashes on**: `s = s + 1; assert s
+== i` verified `ok`, and the runtime-true `assert s == i + 1` was
+rejected.
+
+The mechanism is always a *convenience lift* — moving a construct out
+of its context so downstream code stays simple — and the lift is what
+discards the context that made the obligation correct.
+
+> **When a construct is lifted out of its context, it carries its full
+> context — the path that reaches it, the locals bound at it, the
+> mutations that precede it, the nesting it sits in, and whether its
+> position is decidable — or the lift REFUSES the contexts it cannot
+> carry.**
+
+Refusing what cannot be reconstructed is the half that separates
+incompleteness from certifying a crash. It takes a different concrete
+form on each path, and the two are **not** interchangeable:
+
+- **Loop-free bodies.** `_collect_asserts` must walk the same
+  control-flow shape `_body_expr` compiles. Anywhere the two disagree
+  about what guards a statement is a bug by construction — that is
+  where the implicit-else and local-substitution findings came from.
+- **Loop bodies.** Neither of those helpers goes near a loop body:
+  `_collect_asserts` steps *over* `For`/`While` (dropping only the
+  names they rebind) and `_body_expr` has no `For` branch at all. The
+  lift lives in `_split_loop`, and `_touches_acc` is what keeps it
+  honest — an assert may be lifted only from a position where the
+  accumulator still holds its loop-head value, because that is the
+  state the obligation is stated in. **This is the guard to preserve
+  when loop-assert lifting is extended**; it is the one that catches
+  the crash case above.
+
+### Next, by measured value
+
+1. `str` parameters — the largest reachable cluster (4 tasks)
+2. Lemma packs for the three pack-stage tasks — the only ones where a
+   single piece of work moves the count. Packs are **author-written**
+   and derived independently of the Dafny decomposition (Lean's
+   automation differs enough that mirroring would misstate difficulty);
+   engine packs are scored by the prover, never by similarity to ours.
+3. List-slice / mapped-`PySum` equality — what makes slice 18's
+   `assert`-as-hint actually pay off (`he_3`, `he_9`,
+   `mbpp_sum_squares` all state slice-extension facts)
+4. Nested loops (2 tasks)
+5. P4: `--backend lean` through the exams, then triple adjudication
+
+---
+
 ## Backend watchpoints
 
 Dafny-first is a decision with tripwires, not a dogma. Re-open if:
