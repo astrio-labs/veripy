@@ -3525,11 +3525,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 emit("  all_goals (try simp only [Int.add_sub_cancel] "
                      "at *)", first_ensures_line)
             # A QUANTIFIED invariant conjunct (the gcd divisor-set
-            # class) needs structured handling, measured twice over:
-            # omega DIVERGES -- natively, past heartbeat caps -- when
-            # the ∀ sits inside the conjunction it is handed, yet
-            # tolerates the same ∀ as a standalone hypothesis; and the
-            # ladder cannot instantiate a quantifier at the terms the
+            # class) needs structured handling: omega FAILS on the ∀
+            # buried inside the conjunction it is handed (measured on
+            # the real task -- fast failure, not divergence; an
+            # earlier "omega diverges natively" reading of this was a
+            # scratch-tooling artifact, a case-insensitive-filesystem
+            # self-cat that fed lean a 58GB file), and the ladder
+            # cannot instantiate a quantifier at the terms the
             # ensures actually needs. So: destructure the invariant so
             # every conjunct stands alone, then instantiate each ∀ at
             # the RESULT (ensures mention it) and at the goal's own
@@ -3729,6 +3731,96 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("  all_goals (try simp only [Int.toNat_natCast, "
                  "Int.zero_add, List.take_length] at hfin)",
                  first_ensures_line)
+            # The prefix-range search endgame (is_prime class): an
+            # early-return loop over range(start, bound) whose spec
+            # quantifies a WIDER range. hfin's iff covers the loop's
+            # own window, so each ensures implication is proved by
+            # reading the loop result off its antecedent: the ∀-post
+            # extends past the window index by the `#@ proof` gap
+            # facts, and the ∃-post transports the witness the failed
+            # search produced. One atomic `try`: any shape mismatch
+            # rolls the whole script back to the generic path. Coded
+            # against the measured pre-simp goal of exactly this
+            # posts pattern (bool-implication, ∀-spec, ∃-spec).
+            if loop.acc_bool and loop.start is not None:
+                b_str = (f"(({t_start}) + ((((({t_bound}) - "
+                         f"({t_start}))).toNat : Int)))")
+                gap_haves = []
+                for gi_, gclause in enumerate(spec_fn.by_kind("proof")):
+                    gtext = (gclause.desugared
+                             if gclause.desugared is not None
+                             else gclause.raw)
+                    try:
+                        gcall = ast.parse(gtext, mode="eval").body
+                        gargs = " ".join(
+                            "(" + _int_expr(a, names, gclause.line,
+                                            rename=rename, lc=lc0) + ")"
+                            for a in gcall.args)
+                    except (SyntaxError, EncodeError):
+                        continue
+                    gap_haves.append(
+                        f"first | (have hgap{gi_} := "
+                        f"{gcall.func.id} {gargs} (by omega)) | "
+                        f"(have hgap{gi_} := {gcall.func.id} {gargs})")
+                app_b = (f"{_ident(f'{spec_fn.name}_loop')} "
+                         f"{targsp}{hfin_fuel} {hfin_i} {t_init}")
+                # The frontend desugars `A ==> B` to `(not A) or B`,
+                # so every post is an ∨-goal in BOTH guard branches --
+                # never an implication (measured: intro failed with
+                # "no additional binders"). Each conjunct therefore
+                # case-splits on the loop result with Classical.em.
+                script = [
+                    "  all_goals (try (",
+                    "    refine ⟨?_, ?_, ?_⟩",
+                    "    · first",
+                    "        | (right",
+                    "           omega)",
+                    "        | (left",
+                    "           simp)",
+                    f"    · rcases Classical.em ({app_b} = true) "
+                    "with hres_ | hres_",
+                    "      · right",
+                    "        have hall_ := hfin.mp hres_",
+                    "        intro k_ hk_",
+                    f"        by_cases hlt_ : k_ < {b_str}",
+                    "        · first | (exact hall_ k_ ⟨hk_.1, hlt_⟩) "
+                    "| (exact hall_ k_ hk_.1 hlt_)",
+                ]
+                lead = "        · "
+                for gh in (gap_haves or ["skip"]):
+                    script.append(lead + gh)
+                    lead = "          "
+                script += [
+                    f"          have hke_ : k_ = ({t_bound}) "
+                    ":= by omega",
+                    "          rw [hke_]",
+                    "          omega",
+                    "      · left",
+                    "        exact hres_",
+                    f"    · rcases Classical.em ({app_b} = true) "
+                    "with hres_ | hres_",
+                    "      · left",
+                    "        intro hc_",
+                    "        exact hc_.1 hres_",
+                    "      · right",
+                    "        have hnotall_ := fun hall_ => "
+                    "hres_ (hfin.mpr hall_)",
+                    "        obtain ⟨j_, hj_⟩ := "
+                    "Classical.not_forall.mp hnotall_",
+                    "        first",
+                    "          | (obtain ⟨hjb_, hjp_⟩ := "
+                    "Classical.not_imp.mp hj_",
+                    "             exact ⟨j_, ⟨hjb_.1, by omega⟩, "
+                    "Decidable.not_not.mp hjp_⟩)",
+                    "          | (obtain ⟨hj2_, hjr_⟩ := "
+                    "Classical.not_imp.mp hj_",
+                    "             obtain ⟨hjB_, hjp_⟩ := "
+                    "Classical.not_imp.mp hjr_",
+                    "             exact ⟨j_, ⟨hj2_, by omega⟩, "
+                    "Decidable.not_not.mp hjp_⟩)))",
+                ]
+                for tl in script:
+                    emit(tl, first_ensures_line)
             # After normalization hfin often IS the ensures goal
             # (measured on the contains class, whose ∃-postcondition no
             # fixed script could otherwise witness — the invariant

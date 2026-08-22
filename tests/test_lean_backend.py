@@ -3578,9 +3578,11 @@ def test_end_to_end_sum_to_n_proves_with_pack_and_exit_assert(tmp_path):
 
 def test_quantified_invariant_endgame_structure():
     # The gcd class: a quantified invariant conjunct must be
-    # DESTRUCTURED (omega diverges natively -- past heartbeat caps --
-    # on a ∀ buried inside the conjunction it is handed, yet tolerates
-    # the same ∀ standing alone), then instantiated at the RESULT and
+    # DESTRUCTURED (omega fails on a ∀ buried inside the conjunction
+    # it is handed -- fast failure, measured on the real task; the
+    # earlier "diverges natively" reading was a scratch-tooling
+    # artifact -- yet tolerates the same ∀ standing alone), then
+    # instantiated at the RESULT and
     # at the goal's own binder, in the projection language the
     # unfolded goal speaks -- instantiating at the folded application
     # hands omega a second, unrelated atom and the guarded step
@@ -3647,5 +3649,71 @@ def test_end_to_end_gcd_proves_and_unsound_variants_fail(tmp_path):
         bad = tmp_path / f"bad{k}.py"
         bad.write_text(base.replace(frm, to))
         (tmp_path / f"bad{k}.proofs.lean").write_text(pack.read_text())
+        assert verify_structured(bad, tmp_path / f"ob{k}",
+                                 backend="lean")["status"] == "failed", k
+
+
+def test_prefix_range_search_endgame_structure():
+    # The is_prime class: an early-return search over range(start,
+    # bound) whose spec quantifies a WIDER range. The frontend
+    # desugars `A ==> B` to `(not A) or B`, so every post is an
+    # ∨-goal in both guard branches (measured: intro failed with "no
+    # additional binders" on the implication reading). Each conjunct
+    # therefore case-splits on the loop result with Classical.em; the
+    # ∀-post extends past the loop window by the `#@ proof` gap
+    # facts, and the ∃-post transports the witness the failed search
+    # produced.
+    src = ("#@ ensures result ==> n >= 2\n"
+           "#@ ensures result ==> forall k in range(2, n) :: "
+           "n % k != 0\n"
+           "#@ ensures not result and n >= 2 ==> "
+           "exists k in range(2, n) :: n % k == 0\n"
+           "def is_prime(n: int) -> bool:\n"
+           "    if n < 2:\n"
+           "        return False\n"
+           "    for k in range(2, n - 1):\n"
+           "        #@ invariant forall j in range(2, k) :: "
+           "n % j != 0\n"
+           "        if n % k == 0:\n"
+           "            return False\n"
+           "    return True\n")
+    out = _encode(src).lean_source
+    assert "rcases Classical.em" in out
+    assert "Classical.not_forall.mp hnotall_" in out
+    assert "by_cases hlt_ : k_ <" in out
+    assert "have hke_ : k_ = ((«n» - 1))" in out
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_is_prime_proves_and_variants_fail(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/he_humaneval_31.py")
+    packl = Path("examples/contact/he_humaneval_31.proofs.lean")
+    good = tmp_path / "isp.py"
+    shutil.copy(src, good)
+    shutil.copy(packl, tmp_path / "isp.proofs.lean")
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    base = src.read_text()
+    # The gap lemma covers exactly ONE missing index. A spec widened
+    # past it (n % n = 0 makes it FALSE), an inverted completeness
+    # claim, and a loop whose gap is TWO indices must all fail --
+    # the last one is the incompleteness direction: the machinery
+    # must never let one lemma silently cover two gaps.
+    for k, (frm, to) in enumerate((
+            ("forall k in range(2, n) :: n % k != 0",
+             "forall k in range(2, n + 1) :: n % k != 0"),
+            ("not result and n >= 2 ==> exists k in range(2, n) :: "
+             "n % k == 0",
+             "not result and n >= 2 ==> forall k in range(2, n) :: "
+             "n % k == 0"),
+            ("for k in range(2, n - 1):",
+             "for k in range(2, n - 2):"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        (tmp_path / f"bad{k}.proofs.lean").write_text(packl.read_text())
         assert verify_structured(bad, tmp_path / f"ob{k}",
                                  backend="lean")["status"] == "failed", k
