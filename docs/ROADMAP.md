@@ -216,10 +216,19 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 
 | | |
 |---|---|
-| contact corpus under Lean | **3/22** (`he_35`, `he_42`, `he_52`) |
+| contact corpus under Lean | **5/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`) |
 | prelude | `lean-0.6` |
-| slices landed | P2 1–19, P3 (sidecar channel) |
-| `.proofs.lean` packs in existence | **1** (`he_60`: `GaussStep`, hypothesis-free, clean axiom footprint) |
+| slices landed | P2 1–20, P3 (sidecar channel) |
+| `.proofs.lean` packs in existence | **3** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr` — all kernel-checked, clean axiom footprints) |
+
+`he_60` is the first while-loop task with a nonlinear postcondition
+proved end to end, and it took the full chain: the pack, the
+floor-division bridge, the corrected fuel, and a post-loop
+`assert i == n + 1` stating the exit value (slice 20) — proved from
+the invariant plus the negated condition, then substituted into the
+spec proof so the atom `(i-1)*i` collapses to `n*(n+1)`. The assert
+is a runtime check in CPython and a VC in Dafny, so the source stays
+one program with three readings.
 
 Per-task first blockers (clearing one reveals the next, so this is a
 work list and not a countdown):
@@ -227,8 +236,8 @@ work list and not a countdown):
 | blocker | tasks |
 |---|---|
 | `str` parameters | `he_48` |
-| pack stage (`#@ proof` target undeclared) | `he_13`, `he_49` |
-| reaches the prover, fails the last step | `he_60` (exit value of the `while`: `n < i` and `i ≤ n+1` must collapse the atom `(i-1)*i`), `he_31` (endgame `max` normalization, then the source's own `range(2, n-1)` loop vs `range(2, n)` spec gap — needs a variable-divisor pack lemma and `#@ proof` support on the `for` path) |
+| spec endgame after a passing preservation VC | `he_13` (the pack proves and the induction goes through; the exit-state `∀`-instantiations in the ensures remain) |
+| reaches the prover, fails the last step | `he_31` (endgame `max` normalization, then the source's own `range(2, n-1)` loop vs `range(2, n)` spec gap — needs a variable-divisor pack lemma and `#@ proof` support on the `for` path) |
 | nested loops | `he_40`, `he_43` |
 | DP / indexed assignment — **cut by decision** | `mbpp_402`, `mbpp_620`, `mbpp_247` (2-D table), `mbpp_149` (dp array) |
 | multi-statement `for` body | `he_3`, `he_9`, `mbpp_sum_squares` |

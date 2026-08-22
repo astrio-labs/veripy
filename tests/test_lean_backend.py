@@ -3484,3 +3484,93 @@ def test_symbolic_start_does_not_license_the_index_as_divisor():
              "        s = s + 1\n"
              "    return s\n")
     assert "def «h_loop»" in _encode(plain).lean_source
+
+
+def test_post_loop_asserts_state_the_exit_state():
+    # A post-loop assert's theorem carries the invariant AND the
+    # negated condition -- everything the loop guarantees on exit --
+    # plus the `requires`, which ARE dischargeable here because the
+    # obligation is instantiated in the spec proof, not the induction.
+    # Earlier claims chain into later ones, the slice-18 lesson applied
+    # at authoring time.
+    src = ("#@ requires n >= 0\n#@ ensures result == n\n"
+           "def countup(n: int) -> int:\n    c = 0\n"
+           "    while c < n:\n        #@ invariant 0 <= c <= n\n"
+           "        #@ decreases n - c\n        c = c + 1\n"
+           "    assert c == n\n"
+           "    assert c >= n\n"
+           "    return c\n")
+    out = _encode(src).lean_source
+    assert "theorem «countup_post_assert0»" in out
+    assert "(hinv : «countup_inv» «n» «c») " \
+           "(hcond : «countup_cond» «n» «c» = false)" in out
+    # The second carries the first's claim...
+    assert "(hpp0 : («c» = «n»))" in out
+    # ...the spec proof instantiates with `_` for the accumulators
+    # (unification reads them off hinv) and passes the chain...
+    assert "have hpa1 := «countup_post_assert1» «n» _ h0 hinv hcond " \
+           "hpa0" in out
+    # ...and the proved exit equalities are substituted, with the
+    # add_sub_cancel normalizer that collapses (n + 1 - 1).
+    assert "all_goals (try simp only [hpa0] at *)" in out
+    assert "Int.add_sub_cancel" in out
+
+
+def test_post_loop_assert_boundaries():
+    # In-body asserts keep their `while` rejection; a post-loop assert
+    # mentioning a name that is neither a parameter nor an accumulator
+    # is refused at translation.
+    unknown = ("#@ requires n >= 0\n#@ ensures result == n\n"
+               "def f(n: int) -> int:\n    c = 0\n"
+               "    while c < n:\n        #@ invariant 0 <= c <= n\n"
+               "        #@ decreases n - c\n        c = c + 1\n"
+               "    assert q == n\n"
+               "    return c\n")
+    with pytest.raises(EncodeError, match="unknown name"):
+        _encode(unknown)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_post_loop_assert_proved_not_assumed(tmp_path):
+    from veripy.agentio import verify_structured
+
+    HEAD = ("#@ requires n >= 0\n#@ ensures result == n\n"
+            "def countup(n: int) -> int:\n    c = 0\n"
+            "    while c < n:\n        #@ invariant 0 <= c <= n\n"
+            "        #@ decreases n - c\n        c = c + 1\n")
+    ok = tmp_path / "ok.py"
+    ok.write_text(HEAD + "    assert c == n\n    return c\n")
+    assert verify_structured(ok, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # Prove-then-assume: a FALSE exit claim fails on its own theorem.
+    bad = tmp_path / "bad.py"
+    bad.write_text(HEAD + "    assert c == n + 5\n    return c\n")
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+    # Chaining cannot launder: a false first claim fails even though
+    # the second follows from it.
+    launder = tmp_path / "launder.py"
+    launder.write_text(HEAD + "    assert c >= n + 5\n"
+                       "    assert c >= n + 4\n    return c\n")
+    assert verify_structured(launder, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_sum_to_n_proves_with_pack_and_exit_assert(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # The full chain on the real corpus task: the GaussStep pack, the
+    # floor-division bridge, the corrected while fuel, and the exit
+    # assert together take sum_to_n to `ok` -- the first while-loop
+    # task with a nonlinear postcondition to prove end to end.
+    import shutil
+    src = Path("examples/contact/he_humaneval_60.py")
+    pack = Path("examples/contact/he_humaneval_60.proofs.lean")
+    dst = tmp_path / "he_humaneval_60.py"
+    shutil.copy(src, dst)
+    shutil.copy(pack, tmp_path / "he_humaneval_60.proofs.lean")
+    assert verify_structured(dst, tmp_path / "o",
+                             backend="lean")["status"] == "ok"
