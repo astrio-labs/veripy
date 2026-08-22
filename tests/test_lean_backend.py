@@ -3433,3 +3433,54 @@ def test_end_to_end_range_start_verifies(tmp_path):
         "    return True\n")
     assert verify_structured(wrong, tmp_path / "o4",
                              backend="lean")["status"] == "failed"
+
+
+def test_symbolic_start_does_not_license_the_index_as_divisor():
+    # Review-caught, then measured. A start that is a PARAMETER made
+    # positive by `requires` licenses `n % k` at translation time just
+    # as soundly as a literal (Python cannot reach a zero divisor at
+    # runtime either way) -- but the induction theorem does not carry
+    # the function's requires, so the start's positivity is unprovable
+    # exactly where the licensed expression lands. The result was a
+    # correct program earning a `failed` verdict: a false-spec claim,
+    # the worst verdict short of unsoundness. Refusing at encode time
+    # is the honest boundary until the theorems carry a
+    # start-positivity premise.
+    symbolic = ("#@ requires lo >= 2\n#@ requires n >= 2\n"
+                "#@ ensures result == "
+                "(forall k in range(lo, n) :: n % k != 0)\n"
+                "def f(n: int, lo: int) -> bool:\n"
+                "    for k in range(lo, n):\n"
+                "        #@ invariant forall j in range(lo, k) :: "
+                "n % j != 0\n"
+                "        if n % k == 0:\n"
+                "            return False\n"
+                "    return True\n")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(symbolic)
+
+    # The literal form stays licensed -- `2 <= i` is in the theorem, so
+    # omega proves the positivity right where it is needed.
+    literal = ("#@ requires n >= 2\n"
+               "#@ ensures result == "
+               "(forall k in range(2, n) :: n % k != 0)\n"
+               "def f(n: int) -> bool:\n"
+               "    for k in range(2, n):\n"
+               "        #@ invariant forall j in range(2, k) :: "
+               "n % j != 0\n"
+               "        if n % k == 0:\n"
+               "            return False\n"
+               "    return True\n")
+    assert "VeriPy.PyMod" in _encode(literal).lean_source
+
+    # And a symbolic start WITHOUT a divisor is untouched by the
+    # narrowing -- the licensing is what changed, not 2-arg ranges.
+    plain = ("#@ requires lo >= 0\n#@ requires lo <= n\n"
+             "#@ ensures result == n - lo\n"
+             "def h(n: int, lo: int) -> int:\n"
+             "    s = 0\n"
+             "    for k in range(lo, n):\n"
+             "        #@ invariant s == k - lo\n"
+             "        s = s + 1\n"
+             "    return s\n")
+    assert "def «h_loop»" in _encode(plain).lean_source

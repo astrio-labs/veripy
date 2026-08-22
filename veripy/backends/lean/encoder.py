@@ -2788,14 +2788,30 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             start_t = ("0" if loop.start is None
                        else _int_expr(loop.start, names, fn.lineno,
                                       lc=lc0))
-            # A positive-literal start makes the index positive at every
-            # index CPython evaluates the body at, which is what
+            # A positive-LITERAL start makes the index positive at
+            # every index CPython evaluates the body at, which is what
             # licenses `n % k` in an is_prime-shaped step. The generated
             # fold is total beyond that range, but it is only ever
             # APPLIED at (start, fuel) matching CPython's iterations, so
             # the divisor obligation is discharged where it matters.
-            if loop.start is not None \
-                    and _positive_bound(loop.start, lc0):
+            #
+            # Literal ONLY -- measured, not a style choice. A SYMBOLIC
+            # start positive by `requires` licenses the translation just
+            # as soundly (Python cannot divide by zero at runtime), but
+            # the induction theorem does not carry the function's
+            # requires, so the start's positivity is unprovable exactly
+            # where the licensed expression lands and a correct program
+            # earned a `failed` verdict -- a false-spec claim, the worst
+            # verdict short of unsoundness. _positive_bound accepts
+            # such names, so it is deliberately NOT used here. Until
+            # the theorems carry a start-positivity premise, refusing
+            # at encode time is the honest verdict.
+            start_lit = (loop.start.value if loop.start is not None
+                         and isinstance(loop.start, ast.Constant)
+                         and isinstance(loop.start.value, int)
+                         and not isinstance(loop.start.value, bool)
+                         else None)
+            if start_lit is not None and start_lit >= 1:
                 step_lc = _ListCtx(step_lc.lists, step_lc.safe_idx,
                                    step_lc.take_idx, step_lc.scaffold,
                                    step_lc.min_len,
