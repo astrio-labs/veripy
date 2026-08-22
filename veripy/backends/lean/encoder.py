@@ -3525,11 +3525,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 emit("  all_goals (try simp only [Int.add_sub_cancel] "
                      "at *)", first_ensures_line)
             # A QUANTIFIED invariant conjunct (the gcd divisor-set
-            # class) needs structured handling, measured twice over:
-            # omega DIVERGES -- natively, past heartbeat caps -- when
-            # the ∀ sits inside the conjunction it is handed, yet
-            # tolerates the same ∀ as a standalone hypothesis; and the
-            # ladder cannot instantiate a quantifier at the terms the
+            # class) needs structured handling: omega FAILS on the ∀
+            # buried inside the conjunction it is handed (measured on
+            # the real task -- fast failure, not divergence; an
+            # earlier "omega diverges natively" reading of this was a
+            # scratch-tooling artifact, a case-insensitive-filesystem
+            # self-cat that fed lean a 58GB file), and the ladder
+            # cannot instantiate a quantifier at the terms the
             # ensures actually needs. So: destructure the invariant so
             # every conjunct stands alone, then instantiate each ∀ at
             # the RESULT (ensures mention it) and at the goal's own

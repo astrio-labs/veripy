@@ -3578,9 +3578,11 @@ def test_end_to_end_sum_to_n_proves_with_pack_and_exit_assert(tmp_path):
 
 def test_quantified_invariant_endgame_structure():
     # The gcd class: a quantified invariant conjunct must be
-    # DESTRUCTURED (omega diverges natively -- past heartbeat caps --
-    # on a ∀ buried inside the conjunction it is handed, yet tolerates
-    # the same ∀ standing alone), then instantiated at the RESULT and
+    # DESTRUCTURED (omega fails on a ∀ buried inside the conjunction
+    # it is handed -- fast failure, measured on the real task; the
+    # earlier "diverges natively" reading was a scratch-tooling
+    # artifact -- yet tolerates the same ∀ standing alone), then
+    # instantiated at the RESULT and
     # at the goal's own binder, in the projection language the
     # unfolded goal speaks -- instantiating at the folded application
     # hands omega a second, unrelated atom and the guarded step
