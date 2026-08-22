@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.6"
+PRELUDE_VERSION = "lean-0.7"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -95,6 +95,13 @@ theorem PyPow_succ (a : Int) (e : Int) (h : 0 ≤ e) :
     PyPow a (e + 1) = PyPow a e * a := by
   unfold PyPow
   rw [show (e + 1).toNat = e.toNat + 1 from by omega, Int.pow_succ]
+
+-- Exit-state endgames instantiate an invariant's quantifier at the
+-- RESULT, which surfaces self and zero residues: gcd's divisor set at
+-- d = x contains `x % x` and (after the exit condition) `0 % x`.
+theorem PyMod_self (a : Int) : PyMod a a = 0 := Int.fmod_self
+
+theorem PyMod_zero_left (b : Int) : PyMod 0 b = 0 := Int.zero_fmod b
 
 theorem SqGeSelf (a : Int) : a ≤ a * a := by
   rcases Int.lt_or_le a 1 with h | h

@@ -3574,3 +3574,78 @@ def test_end_to_end_sum_to_n_proves_with_pack_and_exit_assert(tmp_path):
     shutil.copy(pack, tmp_path / "he_humaneval_60.proofs.lean")
     assert verify_structured(dst, tmp_path / "o",
                              backend="lean")["status"] == "ok"
+
+
+def test_quantified_invariant_endgame_structure():
+    # The gcd class: a quantified invariant conjunct must be
+    # DESTRUCTURED (omega diverges natively -- past heartbeat caps --
+    # on a ∀ buried inside the conjunction it is handed, yet tolerates
+    # the same ∀ standing alone), then instantiated at the RESULT and
+    # at the goal's own binder, in the projection language the
+    # unfolded goal speaks -- instantiating at the folded application
+    # hands omega a second, unrelated atom and the guarded step
+    # silently no-ops (measured, every step of it).
+    src = ("#@ requires a >= 0 and b >= 0\n"
+           "#@ requires a > 0 or b > 0\n"
+           "#@ ensures result >= 1\n"
+           "#@ ensures a % result == 0 and b % result == 0\n"
+           "#@ ensures forall d in range(result + 1, max(a, b) + 1) :: "
+           "a % d != 0 or b % d != 0\n"
+           "def gcd(a: int, b: int) -> int:\n"
+           "    x, y = a, b\n"
+           "    while y != 0:\n"
+           "        #@ invariant x >= 0 and y >= 0\n"
+           "        #@ invariant x > 0 or y > 0\n"
+           "        #@ invariant x <= max(a, b) and y <= max(a, b)\n"
+           "        #@ invariant forall d in range(1, max(a, b) + 1) :: "
+           "(x % d == 0 and y % d == 0) == (a % d == 0 and b % d == 0)\n"
+           "        #@ decreases y\n"
+           "        x, y = y, x % y\n"
+           "    assert y == 0\n"
+           "    return x\n")
+    out = _encode(src).lean_source
+    assert "obtain ⟨hj0, hj1, hj2, hj3⟩ := hinv" in out
+    # Instantiated at the result's PROJECTION, both bound spellings.
+    assert "have hjr3 := hj3 («gcd_loop»" in out
+    # The goal's own binder, after the conjunction is split with
+    # And.intro (`repeat' split` splits if/match, not ∧).
+    assert "all_goals (try (repeat' apply And.intro))" in out
+    assert "all_goals (try (intro d_ hd_))" in out
+    assert "have hjd3 := hj3 d_" in out
+    # The below-the-divisor residue that refutes the too-big divisor.
+    assert "have hsm_ : VeriPy.PyMod" in out
+    # A computed return keeps honest incompleteness: no machinery.
+    comp = src.replace("    return x\n", "    return x + 0\n")
+    out2 = _encode(comp).lean_source
+    assert "obtain ⟨hj0" not in out2
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_gcd_proves_and_unsound_variants_fail(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/he_humaneval_13.py")
+    pack = Path("examples/contact/he_humaneval_13.proofs.lean")
+    good = tmp_path / "gcd.py"
+    shutil.copy(src, good)
+    shutil.copy(pack, tmp_path / "gcd.proofs.lean")
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    # The machinery must not manufacture facts. Four directions, all
+    # measured before the tests were written: a false exit assert, a
+    # strengthened ensures, a widened maximality window, and an
+    # inverted divisibility claim.
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            ("assert y == 0", "assert y == 1"),
+            ("#@ ensures result >= 1", "#@ ensures result >= 2"),
+            ("range(result + 1, max(a, b) + 1)",
+             "range(result + 1, max(a, b) + 2)"),
+            ("b % result == 0", "b % result == 1"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        (tmp_path / f"bad{k}.proofs.lean").write_text(pack.read_text())
+        assert verify_structured(bad, tmp_path / f"ob{k}",
+                                 backend="lean")["status"] == "failed", k

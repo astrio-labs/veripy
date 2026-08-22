@@ -3524,6 +3524,100 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             if wloop.post_asserts:
                 emit("  all_goals (try simp only [Int.add_sub_cancel] "
                      "at *)", first_ensures_line)
+            # A QUANTIFIED invariant conjunct (the gcd divisor-set
+            # class) needs structured handling, measured twice over:
+            # omega DIVERGES -- natively, past heartbeat caps -- when
+            # the ∀ sits inside the conjunction it is handed, yet
+            # tolerates the same ∀ as a standalone hypothesis; and the
+            # ladder cannot instantiate a quantifier at the terms the
+            # ensures actually needs. So: destructure the invariant so
+            # every conjunct stands alone, then instantiate each ∀ at
+            # the RESULT (ensures mention it) and at the goal's own
+            # binder after intro (for ∀-shaped ensures). Every step
+            # guarded: shapes without the conjunct skip it all.
+            inv_conjs = (list(wloop.inv.values)
+                         if isinstance(wloop.inv, ast.BoolOp)
+                         and isinstance(wloop.inv.op, ast.And)
+                         else [wloop.inv])
+
+            def _is_quant(c: ast.expr) -> bool:
+                return (isinstance(c, ast.Call)
+                        and isinstance(c.func, ast.Name)
+                        and c.func.id in ("all", "any"))
+
+            q_idx = [ci for ci, c in enumerate(inv_conjs)
+                     if _is_quant(c)]
+            # The instantiation term must speak the language the goal
+            # speaks. The top-level `unfold` turns the goal's function
+            # applications into loop PROJECTIONS, so instantiating at
+            # the folded application hands omega a second, unrelated
+            # atom and the guarded side goal silently skips (measured:
+            # every instantiation below no-opped). Bare-name returns
+            # only; a computed return keeps honest incompleteness.
+            ret_proj = None
+            if isinstance(wloop.ret, ast.Name) \
+                    and wloop.ret.id in wloop.accs:
+                w_app = (f"({_ident(f'{spec_fn.name}_loop')} {targsp}"
+                         f"(({_ident(gm)} {targsp}{w_inits}).toNat + 1) "
+                         f"{w_inits})")
+                ret_proj = w_app + _proj(
+                    wloop.accs.index(wloop.ret.id), len(wloop.accs))
+            if q_idx and len(inv_conjs) > 1 and ret_proj is not None:
+                hj_names = [f"hj{ci}" for ci in range(len(inv_conjs))]
+                emit(f"  {wgp}obtain ⟨{', '.join(hj_names)}⟩ := "
+                     f"hinv{wgs}", first_ensures_line)
+                # The exit condition rewrites the dead accumulator in
+                # the OTHER hypotheses and the goal -- never `at *`,
+                # which rewrites hcond itself to `0 = 0` and CLEARS
+                # the one fact that refutes the dead disjunct
+                # (measured: `1 ≤ x` from `x > 0 ∨ y > 0` became
+                # unprovable because y = 0 was gone).
+                emit(f"  all_goals (try simp only [hcond] at "
+                     f"{' '.join(hj_names)} ⊢)", first_ensures_line)
+                for ci in q_idx:
+                    # At the result. The unfolding simp CURRIES the
+                    # bound (`(A ∧ B) → C` becomes `A → B → C`), so
+                    # the two-discharge form is tried first and the
+                    # uncurried form kept as the fallback; each omega
+                    # runs among STANDALONE, projection-language
+                    # hypotheses.
+                    emit(f"  all_goals (try (have hjr{ci} := hj{ci} "
+                         f"{ret_proj} (by omega) (by omega)))",
+                         first_ensures_line)
+                    emit(f"  all_goals (try (have hjr{ci} := hj{ci} "
+                         f"{ret_proj} (by omega)))", first_ensures_line)
+                # Self and zero residues surface exactly here
+                # (x % x, 0 % x).
+                # true_and/iff_true finish what the residue lemmas
+                # start: without them `(True ∧ True) ↔ RHS` just sits
+                # there (measured), one True short of usable.
+                emit("  all_goals (try simp only [VeriPy.PyMod_self, "
+                     "VeriPy.PyMod_zero_left, true_and, and_true, "
+                     "true_iff, iff_true] at *)",
+                     first_ensures_line)
+                # `repeat' split` splits if/match, NOT conjunctions --
+                # every earlier task closed its posts-∧ whole via
+                # omega, which a ∀-shaped conjunct forbids. Split it
+                # so the quantified post stands alone for the intro.
+                emit("  all_goals (try (repeat' apply And.intro))",
+                     first_ensures_line)
+                # ∀-shaped ensures: intro the binder, instantiate
+                # there, and supply the below-the-divisor residue
+                # (`x % d = x` for 0 ≤ x < d) that refutes the
+                # too-big divisor.
+                emit("  all_goals (try (intro d_ hd_))",
+                     first_ensures_line)
+                for ci in q_idx:
+                    emit(f"  all_goals (try (have hjd{ci} := hj{ci} "
+                         f"d_ (by omega) (by omega)))",
+                         first_ensures_line)
+                    emit(f"  all_goals (try (have hjd{ci} := hj{ci} "
+                         f"d_ (by omega)))", first_ensures_line)
+                emit(f"  all_goals (try (have hsm_ : VeriPy.PyMod "
+                     f"{ret_proj} d_ = {ret_proj} := by "
+                     f"rw [VeriPy.PyMod_pos _ _ (by omega)]; "
+                     f"exact Int.emod_eq_of_lt (by omega) (by omega)))",
+                     first_ensures_line)
         elif loop is not None:
             # Bring the invariant through the loop: instantiate the
             # induction theorem at (fuel = bound.toNat, i = 0,

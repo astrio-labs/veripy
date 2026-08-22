@@ -216,8 +216,8 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 
 | | |
 |---|---|
-| contact corpus under Lean | **5/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`) |
-| prelude | `lean-0.6` |
+| contact corpus under Lean | **6/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`) |
+| prelude | `lean-0.7` (`PyMod_self`, `PyMod_zero_left` added for the quantified-invariant endgame) |
 | slices landed | P2 1–20, P3 (sidecar channel) |
 | `.proofs.lean` packs in existence | **3** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr` — all kernel-checked, clean axiom footprints) |
 
@@ -236,7 +236,6 @@ work list and not a countdown):
 | blocker | tasks |
 |---|---|
 | `str` parameters | `he_48` |
-| spec endgame after a passing preservation VC | `he_13` (the pack proves and the induction goes through; the exit-state `∀`-instantiations in the ensures remain) |
 | reaches the prover, fails the last step | `he_31` (endgame `max` normalization, then the source's own `range(2, n-1)` loop vs `range(2, n)` spec gap — needs a variable-divisor pack lemma and `#@ proof` support on the `for` path) |
 | nested loops | `he_40`, `he_43` |
 | DP / indexed assignment — **cut by decision** | `mbpp_402`, `mbpp_620`, `mbpp_247` (2-D table), `mbpp_149` (dp array) |
