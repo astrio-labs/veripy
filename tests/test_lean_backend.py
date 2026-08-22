@@ -370,8 +370,9 @@ def test_loop_shape_rejections():
         (base + "    s = 0\n    t = 1\n    for i in range(n):\n"
                 "        #@ invariant s == i\n        s = s + 1\n"
                 "    return s\n", "acc = init"),
-        # iterating something other than range(<bound>)
-        (base + "    s = 0\n    for i in range(0, n):\n"
+        # iterating something other than range: a STEP is not
+        # modelled (range(0, n) became the slice-19 feature)
+        (base + "    s = 0\n    for i in range(0, n, 2):\n"
                 "        #@ invariant s == i\n        s = s + 1\n"
                 "    return s\n", "range"),
         # loop body must be a single accumulator assignment
@@ -3316,3 +3317,170 @@ def test_while_fuel_matches_cpython_on_both_loop_shapes(tmp_path):
     # the old fuel the `<=` shape breaks and the `<` shape does not.
     assert _probe(NONSTRICT, "upto", _upto, True) > 0
     assert _probe(STRICT, "countup", _countup, True) == 0
+
+
+def test_range_start_shapes_encode_and_step_is_rejected():
+    # P2 slice 19: `for i in range(start, bound)`. The induction
+    # hypothesis is `start ≤ i`, NOT `0 ≤ i` -- the fold is only ever
+    # applied from the start index, and the preservation VC below it
+    # can be genuinely FALSE: is_prime's step conjunct `n % i != 0`
+    # fails at i=1 while the empty-domain invariant holds, so the old
+    # quantification made a correct program unprovable.
+    src = ("#@ requires n >= 2\n#@ ensures result == n - 2\n"
+           "def g(n: int) -> int:\n    s = 0\n"
+           "    for i in range(2, n):\n        #@ invariant s == i - 2\n"
+           "        s = s + 1\n    return s\n")
+    out = _encode(src).lean_source
+    assert "2 ≤ «i» →" in out
+    # Fuel is the WIDTH of the range, applied at the start index...
+    assert "((«n») - (2)).toNat (2)" in out
+    # ...and the bound hypothesis is max-weakened so the instantiation
+    # stays provable when the range is EMPTY (bound < start).
+    assert "≤ max («n») «i» →" in out
+
+    # A step is not modelled; the message says which forms are.
+    stepped = ("#@ requires n >= 0\n#@ ensures result >= 0\n"
+               "def f(n: int) -> int:\n    s = 0\n"
+               "    for i in range(0, n, 2):\n"
+               "        #@ invariant s >= 0\n        s = s + 1\n"
+               "    return s\n")
+    with pytest.raises(EncodeError, match="step is not modelled"):
+        _encode(stepped)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_range_start_model_matches_cpython(tmp_path):
+    # Fidelity before theorems, incl. the EMPTY range (n < start) --
+    # the while-fuel bug taught that the definition must be measured
+    # against CPython directly, not inferred from the spec verdict.
+    import subprocess
+
+    SRC = ("#@ requires n >= 0\n#@ ensures result >= 0\n"
+           "def f(n: int) -> int:\n    s = 0\n"
+           "    for i in range(2, n):\n        #@ invariant s >= 0\n"
+           "        s = s + i\n    return s\n")
+
+    def py(n):
+        s = 0
+        for i in range(2, n):
+            s += i
+        return s
+
+    text = _encode(SRC).lean_source
+    text = "\n".join(l for l in text.splitlines()
+                     if not l.startswith("#print"))
+    for n in (0, 1, 2, 3, 5, 10):
+        text += f"\nexample : «f» ({n} : Int) = ({py(n)}) := by rfl"
+    path = tmp_path / "m.lean"
+    path.write_text(text + "\n")
+    out = subprocess.run([str(find_lean()), str(path)],
+                         capture_output=True, text=True)
+    assert (out.stdout + out.stderr).count("error") == 0
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_range_start_verifies(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # Exact spec through a start-offset accumulator loop.
+    exact = tmp_path / "exact.py"
+    exact.write_text("#@ requires n >= 2\n#@ ensures result == n - 2\n"
+                     "def g(n: int) -> int:\n    s = 0\n"
+                     "    for i in range(2, n):\n"
+                     "        #@ invariant s == i - 2\n"
+                     "        s = s + 1\n    return s\n")
+    assert verify_structured(exact, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    badinv = tmp_path / "badinv.py"
+    badinv.write_text("#@ requires n >= 2\n#@ ensures result == n - 2\n"
+                      "def g(n: int) -> int:\n    s = 0\n"
+                      "    for i in range(2, n):\n"
+                      "        #@ invariant s == i\n"
+                      "        s = s + 1\n    return s\n")
+    assert verify_structured(badinv, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+    # The is_prime MACHINERY: an early-return search over range(2, n)
+    # whose divisor is the loop index, licensed by the positive-literal
+    # start. The corpus is_prime itself stays blocked on its own
+    # range(2, n-1) loop vs range(2, n) spec gap, which needs a
+    # variable-divisor pack lemma, not loop support.
+    prime = tmp_path / "prime.py"
+    prime.write_text(
+        "#@ requires n >= 2\n"
+        "#@ ensures result == (forall j in range(2, n) :: n % j != 0)\n"
+        "def has_no_divisor(n: int) -> bool:\n"
+        "    for k in range(2, n):\n"
+        "        #@ invariant forall j in range(2, k) :: n % j != 0\n"
+        "        if n % k == 0:\n"
+        "            return False\n"
+        "    return True\n")
+    assert verify_structured(prime, tmp_path / "o3",
+                             backend="lean")["status"] == "ok"
+
+    # The mirror: an INVERTED spec must fail, or the search desugar
+    # proved the wrong direction somewhere.
+    wrong = tmp_path / "wrong.py"
+    wrong.write_text(
+        "#@ requires n >= 2\n"
+        "#@ ensures result == (exists j in range(2, n) :: n % j == 0)\n"
+        "def has_no_divisor(n: int) -> bool:\n"
+        "    for k in range(2, n):\n"
+        "        #@ invariant forall j in range(2, k) :: n % j != 0\n"
+        "        if n % k == 0:\n"
+        "            return False\n"
+        "    return True\n")
+    assert verify_structured(wrong, tmp_path / "o4",
+                             backend="lean")["status"] == "failed"
+
+
+def test_symbolic_start_does_not_license_the_index_as_divisor():
+    # Review-caught, then measured. A start that is a PARAMETER made
+    # positive by `requires` licenses `n % k` at translation time just
+    # as soundly as a literal (Python cannot reach a zero divisor at
+    # runtime either way) -- but the induction theorem does not carry
+    # the function's requires, so the start's positivity is unprovable
+    # exactly where the licensed expression lands. The result was a
+    # correct program earning a `failed` verdict: a false-spec claim,
+    # the worst verdict short of unsoundness. Refusing at encode time
+    # is the honest boundary until the theorems carry a
+    # start-positivity premise.
+    symbolic = ("#@ requires lo >= 2\n#@ requires n >= 2\n"
+                "#@ ensures result == "
+                "(forall k in range(lo, n) :: n % k != 0)\n"
+                "def f(n: int, lo: int) -> bool:\n"
+                "    for k in range(lo, n):\n"
+                "        #@ invariant forall j in range(lo, k) :: "
+                "n % j != 0\n"
+                "        if n % k == 0:\n"
+                "            return False\n"
+                "    return True\n")
+    with pytest.raises(EncodeError, match="divisor"):
+        _encode(symbolic)
+
+    # The literal form stays licensed -- `2 <= i` is in the theorem, so
+    # omega proves the positivity right where it is needed.
+    literal = ("#@ requires n >= 2\n"
+               "#@ ensures result == "
+               "(forall k in range(2, n) :: n % k != 0)\n"
+               "def f(n: int) -> bool:\n"
+               "    for k in range(2, n):\n"
+               "        #@ invariant forall j in range(2, k) :: "
+               "n % j != 0\n"
+               "        if n % k == 0:\n"
+               "            return False\n"
+               "    return True\n")
+    assert "VeriPy.PyMod" in _encode(literal).lean_source
+
+    # And a symbolic start WITHOUT a divisor is untouched by the
+    # narrowing -- the licensing is what changed, not 2-arg ranges.
+    plain = ("#@ requires lo >= 0\n#@ requires lo <= n\n"
+             "#@ ensures result == n - lo\n"
+             "def h(n: int, lo: int) -> int:\n"
+             "    s = 0\n"
+             "    for k in range(lo, n):\n"
+             "        #@ invariant s == k - lo\n"
+             "        s = s + 1\n"
+             "    return s\n")
+    assert "def «h_loop»" in _encode(plain).lean_source

@@ -882,6 +882,10 @@ class _LoopShape:
     for_line: int
     acc_bool: bool      # Bool accumulator (True/False init, and/or step)
     acc_list: bool = False   # List accumulator (`[]` init, append step)
+    # `for i in range(start, bound)` (P2 slice 19). None means 0 — and
+    # None also keeps the 1-arg emission byte-identical to what every
+    # pinned test expects.
+    start: ast.expr | None = None
     # Leading `if COND: return V` guards, in source order. They
     # short-circuit before the loop runs.
     guards: list[tuple[ast.expr, ast.expr]] = field(default_factory=list)
@@ -1455,10 +1459,11 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
             loop.lineno)
     it = loop.iter
     if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
-            and it.func.id == "range" and len(it.args) == 1
+            and it.func.id == "range" and len(it.args) in (1, 2)
             and not it.keywords):
-        raise _reject("loops must iterate `range(<bound>)` in this slice",
-                      loop.lineno)
+        raise _reject("loops must iterate `range(<bound>)` or "
+                      "`range(<start>, <bound>)` in this slice "
+                      "(a step is not modelled)", loop.lineno)
     if loop.orelse:
         raise _reject("`for ... else` is outside the fragment", loop.lineno)
     test = body[0].test
@@ -1496,7 +1501,8 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
     ast.fix_missing_locations(wrapped)
     return _LoopShape(index=index, acc=acc,
                       init=ast.Constant(value=end_ret.value),
-                      bound=it.args[0], step=step,
+                      start=it.args[0] if len(it.args) == 2 else None,
+                      bound=it.args[-1], step=step,
                       ret=ast.Name(id=acc, ctx=ast.Load()),
                       inv=wrapped,
                       inv_line=inv_line, for_line=loop.lineno,
@@ -1830,10 +1836,12 @@ def _split_loop(fn: ast.FunctionDef,
     index = loop.target.id
     it = loop.iter
     if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
-            and it.func.id == "range" and len(it.args) == 1
+            and it.func.id == "range" and len(it.args) in (1, 2)
             and not it.keywords):
-        raise _reject("loops must iterate `range(<bound>)` in this slice",
-                      loop.lineno)
+        raise _reject("loops must iterate `range(<bound>)` or "
+                      "`range(<start>, <bound>)` in this slice "
+                      "(a step is not modelled)", loop.lineno)
+    start_arg = it.args[0] if len(it.args) == 2 else None
     if loop.orelse:
         raise _reject("`for ... else` is outside the fragment", loop.lineno)
     body = [s for s in loop.body]
@@ -2018,8 +2026,8 @@ def _split_loop(fn: ast.FunctionDef,
                           "this slice", ret_stmt.lineno)
     return _LoopShape(index=index, acc=acc, init=init_value,
                       acc_list=acc_list,
-                      guards=guards,
-                      bound=it.args[0], step=step_expr,
+                      guards=guards, start=start_arg,
+                      bound=it.args[-1], step=step_expr,
                       ret=ret_stmt.value, inv=inv_expr, inv_line=inv_line,
                       for_line=loop.lineno, acc_bool=acc_bool,
                       asserts=body_asserts)
@@ -2777,6 +2785,42 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             while kvar in used_plain or kvar == fuel:
                 kvar += "'"
             bound_t = _int_expr(loop.bound, names, fn.lineno, lc=lc0)
+            start_t = ("0" if loop.start is None
+                       else _int_expr(loop.start, names, fn.lineno,
+                                      lc=lc0))
+            # A positive-LITERAL start makes the index positive at
+            # every index CPython evaluates the body at, which is what
+            # licenses `n % k` in an is_prime-shaped step. The generated
+            # fold is total beyond that range, but it is only ever
+            # APPLIED at (start, fuel) matching CPython's iterations, so
+            # the divisor obligation is discharged where it matters.
+            #
+            # Literal ONLY -- measured, not a style choice. A SYMBOLIC
+            # start positive by `requires` licenses the translation just
+            # as soundly (Python cannot divide by zero at runtime), but
+            # the induction theorem does not carry the function's
+            # requires, so the start's positivity is unprovable exactly
+            # where the licensed expression lands and a correct program
+            # earned a `failed` verdict -- a false-spec claim, the worst
+            # verdict short of unsoundness. _positive_bound accepts
+            # such names, so it is deliberately NOT used here. Until
+            # the theorems carry a start-positivity premise, refusing
+            # at encode time is the honest verdict.
+            start_lit = (loop.start.value if loop.start is not None
+                         and isinstance(loop.start, ast.Constant)
+                         and isinstance(loop.start.value, int)
+                         and not isinstance(loop.start.value, bool)
+                         else None)
+            if start_lit is not None and start_lit >= 1:
+                step_lc = _ListCtx(step_lc.lists, step_lc.safe_idx,
+                                   step_lc.take_idx, step_lc.scaffold,
+                                   step_lc.min_len,
+                                   frozenset(step_lc.pos_names
+                                             | {loop.index}),
+                                   step_lc.result_list,
+                                   step_lc.result_is_list,
+                                   frozenset(step_lc.nonneg_names
+                                             | {loop.index}))
             if loop.acc_list:
                 init_t = "([] : List Int)"
                 # `out.append(v)` is `out ++ [v]`: Python appends at the
@@ -2876,7 +2920,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 emit(f"theorem {_ident(a_name)} {binders} "
                      f"({iv} : Int) ({av} : {acc_ty})", sst.lineno)
                 hyps = (f"(hinv : {_ident(gen_inv)} {argsp}{iv} {av}) "
-                        f"(hlo : 0 ≤ {iv}) (hhi : {iv} < {bound_t})"
+                        f"(hlo : {start_t} ≤ {iv}) "
+                        f"(hhi : {iv} < {bound_t})"
                         + "".join(f" ({hn} : {hc})" for hn, hc in prior))
                 emit(f"    {hyps} :", sst.lineno)
                 emit(f"    {claim_t} := by", sst.lineno)
@@ -2909,8 +2954,22 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit(f"theorem {_ident(gen_thm)} {binders} : "
                  f"∀ ({fuel} : Nat) ({iv} : Int) ({av} : {acc_ty}),",
                  loop.inv_line)
-            emit(f"    {_ident(gen_inv)} {argsp}{iv} {av} → 0 ≤ {iv} → "
-                 f"{iv} + ({fuel} : Int) ≤ {bound_t} →",
+            # `max` covers the EMPTY range: instantiated at the start
+            # index with fuel (bound - start).toNat, the plain bound
+            # form is FALSE whenever bound < start (range(2, 1) is
+            # is_prime(2)), and the spec proof could not begin. With
+            # max the hypothesis is true with zero fuel there, and for
+            # any positive fuel omega recovers `i + fuel ≤ bound` from
+            # it, so the preservation cases keep their full strength.
+            # `start ≤ i`, not `0 ≤ i`: the fold is only ever applied
+            # from the start index, and the preservation VC below the
+            # start can be genuinely FALSE -- is_prime's step conjunct
+            # `n % i != 0` fails at i=1 while the empty-domain
+            # invariant holds, so a theorem quantifying over i=1 would
+            # be unprovable for a correct program.
+            emit(f"    {_ident(gen_inv)} {argsp}{iv} {av} → "
+                 f"{start_t} ≤ {iv} → "
+                 f"{iv} + ({fuel} : Int) ≤ max ({bound_t}) {iv} →",
                  loop.inv_line)
             emit(f"    {_ident(gen_inv)} {argsp}({iv} + {fuel}) "
                  f"({_ident(gen_loop)} {argsp}{fuel} {iv} {av}) := by",
@@ -3159,8 +3218,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("", None)
             emit(f"def {_ident(spec_fn.name)} {binders} : {acc_ty} :=",
                  fn.lineno)
+            if loop.start is None:
+                fuel_call = f"({bound_t}).toNat 0"
+            else:
+                fuel_call = (f"(({bound_t}) - ({start_t})).toNat "
+                             f"({start_t})")
             body_t = (f"let {av} := {_ident(gen_loop)} {argsp}"
-                      f"({bound_t}).toNat 0 {init_t}; {ret_t}")
+                      f"{fuel_call} {init_t}; {ret_t}")
             emit("  " + _wrap_guards(loop.guards, body_t, names,
                                      fn.lineno, lc0, is_bool,
                                      is_list_ret), fn.lineno)
@@ -3368,6 +3432,9 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                    rename=rename, lc=lc0)
             t_bound = _int_expr(loop.bound, names, fn.lineno,
                                 rename=rename, lc=lc0)
+            t_start = ("0" if loop.start is None
+                       else _int_expr(loop.start, names, fn.lineno,
+                                      rename=rename, lc=lc0))
             emit("  try dsimp only", first_ensures_line)
             # With a guard the goal has already split, and the loop's
             # facts hold only in the branch the guard did not take, so
@@ -3394,7 +3461,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 b = fa + ex if quant_pair == "forall_first" else ex + fa
                 for tl in (f"  have hi0 : "
                            f"{_ident(f'{spec_fn.name}_inv')} "
-                           f"{targsp}0 {t_init} := by",
+                           f"{targsp}({t_start}) {t_init} := by",
                            f"    simp only "
                            f"[{_ident(f'{spec_fn.name}_inv')}]",
                            "    constructor",
@@ -3402,15 +3469,26 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     emit(tl, first_ensures_line)
             else:
                 emit(f"  {gp}have hi0 : {_ident(f'{spec_fn.name}_inv')} "
-                     f"{targsp}0 {t_init} := by "
+                     f"{targsp}({t_start}) {t_init} := by "
                      f"simp only [{_ident(f'{spec_fn.name}_inv')}]; "
                      f"all_goals (try push_cast); all_goals (try omega); "
                      f"all_goals (try simp_all [VeriPy.PySum]); "
                      f"all_goals (try intros); "
                      f"all_goals (first | omega | trivial){gs}",
                      first_ensures_line)
+            if loop.start is None:
+                hfin_fuel, hfin_i = f"({t_bound}).toNat", "0"
+            else:
+                hfin_fuel = f"(({t_bound}) - ({t_start})).toNat"
+                hfin_i = f"({t_start})"
+            # Both side obligations go through omega, which reasons
+            # about toNat and max natively: `0 ≤ start` needs the
+            # requires in context (present here), and
+            # `start + (bound - start).toNat ≤ max bound start` is TRUE
+            # even for the empty range, which the plain-bound form was
+            # not.
             emit(f"  {gp}have hfin := {_ident(f'{spec_fn.name}_loop_inv')} "
-                 f"{targsp}({t_bound}).toNat 0 {t_init} hi0 (by omega) "
+                 f"{targsp}{hfin_fuel} {hfin_i} {t_init} hi0 (by omega) "
                  f"(by omega){gs}",
                  first_ensures_line)
             emit(f"  all_goals (try (simp only "
@@ -3421,9 +3499,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # in hfin once the invariant is unfolded, and an unguarded
             # `rw` then fails the whole proof (measured: a true spec
             # whose invariant was index-free failed as postcondition).
-            emit(f"  all_goals (try rw [Int.toNat_of_nonneg "
-                 f"(by omega : (0:Int) ≤ {t_bound})] at hfin)",
-                 first_ensures_line)
+            if loop.start is None:
+                emit(f"  all_goals (try rw [Int.toNat_of_nonneg "
+                     f"(by omega : (0:Int) ≤ {t_bound})] at hfin)",
+                     first_ensures_line)
+            else:
+                # Two guarded steps: cast the fuel back to
+                # `bound - start` (provable only for the non-empty
+                # range, hence try), then collapse the index sum so
+                # hfin's atoms mention the bound itself.
+                emit(f"  all_goals (try rw [Int.toNat_of_nonneg "
+                     f"(by omega : (0:Int) ≤ (({t_bound}) - "
+                     f"({t_start})))] at hfin)", first_ensures_line)
+                emit(f"  all_goals (try rw [show (({t_start}) + "
+                     f"(({t_bound}) - ({t_start}))) = ({t_bound}) "
+                     f"from by omega] at hfin)", first_ensures_line)
             # For a `range(len(xs))` loop the invariant lands at
             # `take (0 + ↑xs.length).toNat`: normalize the casts and
             # collapse `take xs.length` to the whole list so hfin's
