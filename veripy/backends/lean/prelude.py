@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.7"
+PRELUDE_VERSION = "lean-0.8"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -110,6 +110,31 @@ theorem SqGeSelf (a : Int) : a ≤ a * a := by
     omega
   · calc a = a * 1 := by omega
       _ ≤ a * a := Int.mul_le_mul_of_nonneg_left h (by omega)
+
+-- The mapped-fold pair (mbpp_sum_squares class). The slice-extension
+-- assert `[f(x) for x in xs[:i+1]] == [f(x) for x in xs[:i]] + [f(xs[i])]`
+-- is proved by Map_take_succ (its bound comes from the obligation's own
+-- `i < len` hypothesis), and the proved form then steps the invariant
+-- through PySum_append_one -- hypothesis-free, so it can sit in the
+-- preservation simp set unconditionally.
+theorem PySum_append_one (xs : List Int) (a : Int) :
+    PySum (xs ++ [a]) = PySum xs + a := by
+  induction xs with
+  | nil => simp [PySum]
+  | cons x rest ih => simp [PySum, ih]; omega
+
+theorem Map_take_succ (f : Int → Int) (xs : List Int) (n : Nat)
+    (h : n < xs.length) :
+    (xs.take (n + 1)).map f = (xs.take n).map f ++ [f (xs.getD n 0)] := by
+  induction xs generalizing n with
+  | nil => simp at h
+  | cons x rest ih =>
+    cases n with
+    | zero => simp [List.getD]
+    | succ m =>
+      simp only [List.take_succ_cons, List.map_cons, List.getD_cons_succ]
+      rw [ih m (by simpa using h)]
+      simp
 
 theorem PySum_take_succ (xs : List Int) (n : Nat) :
     PySum (xs.take (n + 1)) = PySum (xs.take n) + xs.getD n 0 := by

@@ -353,6 +353,46 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
                           "this slice", line)
         if e.func.id == "sum" and len(args) == 1:
             a0 = args[0]
+            if isinstance(a0, ast.GeneratorExp):
+                # `sum(f(x) for x in ITER)` folds a MAPPED list:
+                # PySum ∘ map. The iterable reuses the same two forms
+                # the plain-sum branch admits (a list parameter, or its
+                # loop-index prefix), so the take/map order is fixed as
+                # map-outside-take -- the order Map_take_succ states.
+                if len(a0.generators) == 1 \
+                        and not a0.generators[0].ifs \
+                        and not a0.generators[0].is_async \
+                        and isinstance(a0.generators[0].target, ast.Name):
+                    gv = a0.generators[0].target.id
+                    if gv in names:
+                        raise _reject(
+                            f"generator binder {gv!r} shadows a name in "
+                            f"scope — outside this slice", line)
+                    gbody = _int_expr(a0.elt, names | {gv}, line,
+                                      rename=rename, lc=lc)
+                    gfn = f"(fun {_ident(gv)} => {gbody})"
+                    git = a0.generators[0].iter
+                    if isinstance(git, ast.Name) and git.id in lc.lists:
+                        return (f"(VeriPy.PySum "
+                                f"({_lref(git.id, rename)}.map {gfn}))")
+                    if isinstance(git, ast.Subscript) \
+                            and isinstance(git.value, ast.Name) \
+                            and git.value.id in lc.lists \
+                            and isinstance(git.slice, ast.Slice) \
+                            and git.slice.lower is None \
+                            and git.slice.step is None \
+                            and git.slice.upper is not None \
+                            and lc.take_idx is not None \
+                            and isinstance(git.slice.upper, ast.Name) \
+                            and git.slice.upper.id == lc.take_idx:
+                        up = _lref(git.slice.upper.id, rename)
+                        return (f"(VeriPy.PySum (("
+                                f"{_lref(git.value.id, rename)}.take "
+                                f"({up}).toNat).map {gfn}))")
+                raise _reject(
+                    "a generator sum folds `f(x) for x in xs` or "
+                    "`... in xs[:i]` (loop index bound) in this slice",
+                    line)
             if isinstance(a0, ast.Name) and a0.id in lc.lists:
                 # Python folds left, PySum folds right; Int addition is
                 # commutative and associative, so the values agree.
@@ -386,6 +426,155 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
         raise _reject(_MATH_LEAN, line)
     raise _reject(f"expression {ast.dump(e)[:60]}... is outside slice 1",
                   line)
+
+
+
+def _list_term(e: ast.expr, names: set[str], line: int,
+               lc: "_ListCtx",
+               rename: dict[str, str] | None = None) -> str | None:
+    """A LIST-VALUED expression in a claim: comprehension over a list
+    parameter or its nonnegative-bounded prefix, the parameter itself,
+    such a prefix, a literal, or `+`-concatenation of these. Returns
+    None when the expression is not list-shaped (the caller falls back
+    to the scalar reading).
+
+    Prefix bounds are restricted to shapes that are PROVABLY
+    nonnegative from position alone -- the loop index, index plus a
+    nonnegative literal, `len(L)`, or a literal -- because Python's
+    negative slice bound means suffix-trimming, which `take`'s toNat
+    clamp does not model."""
+    def _upper_ok(u: ast.expr) -> str | None:
+        if isinstance(u, ast.Constant) and isinstance(u.value, int) \
+                and not isinstance(u.value, bool) and u.value >= 0:
+            return str(u.value)
+        if isinstance(u, ast.Name) and lc.take_idx is not None \
+                and u.id == lc.take_idx:
+            return _ident(u.id)
+        if isinstance(u, ast.BinOp) and isinstance(u.op, ast.Add) \
+                and isinstance(u.left, ast.Name) \
+                and lc.take_idx is not None \
+                and u.left.id == lc.take_idx \
+                and isinstance(u.right, ast.Constant) \
+                and isinstance(u.right.value, int) \
+                and not isinstance(u.right.value, bool) \
+                and u.right.value >= 0:
+            return f"({_ident(u.left.id)} + {u.right.value})"
+        if isinstance(u, ast.Call) and isinstance(u.func, ast.Name) \
+                and u.func.id == "len" and len(u.args) == 1 \
+                and not u.keywords and isinstance(u.args[0], ast.Name) \
+                and u.args[0].id in lc.lists:
+            return f"(({_lref(u.args[0].id, rename)}.length : Int))"
+        return None
+
+    def _iter_term(it: ast.expr) -> str | None:
+        if isinstance(it, ast.Name) and it.id in lc.lists:
+            return _lref(it.id, rename)
+        if isinstance(it, ast.Subscript) \
+                and isinstance(it.value, ast.Name) \
+                and it.value.id in lc.lists \
+                and isinstance(it.slice, ast.Slice) \
+                and it.slice.lower is None and it.slice.step is None \
+                and it.slice.upper is not None:
+            up = _upper_ok(it.slice.upper)
+            if up is not None:
+                return f"({_lref(it.value.id, rename)}.take ({up}).toNat)"
+        return None
+
+    if isinstance(e, ast.ListComp) and len(e.generators) == 1 \
+            and not e.generators[0].ifs \
+            and not e.generators[0].is_async \
+            and isinstance(e.generators[0].target, ast.Name):
+        base = _iter_term(e.generators[0].iter)
+        if base is not None:
+            v = e.generators[0].target.id
+            if v in names:
+                raise _reject(f"comprehension binder {v!r} shadows a "
+                              f"name in scope — outside this slice",
+                              line)
+            # The rename reaches EVERY scalar inside a list term:
+            # threading it to the list names alone left a comprehension
+            # body's `f` naming the function (review-caught, the
+            # half-threaded variant of the previous finding).
+            body = _int_expr(e.elt, names | {v}, line, rename=rename,
+                             lc=lc)
+            return f"({base}.map (fun {_ident(v)} => {body}))"
+        return None
+    base = _iter_term(e)
+    if base is not None:
+        return base
+    if isinstance(e, ast.List):
+        if not e.elts:
+            return "([] : List Int)"
+        items = ", ".join(_int_expr(x, names, line,
+                                    rename=rename, lc=lc)
+                          for x in e.elts)
+        return f"([{items}] : List Int)"
+    if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
+        a = _list_term(e.left, names, line, lc, rename)
+        b = _list_term(e.right, names, line, lc, rename)
+        if a is not None and b is not None:
+            return f"({a} ++ {b})"
+    return None
+
+
+
+def _slice_extension_shape(e: ast.expr, idx: str,
+                           lc: "_ListCtx",
+                           names: frozenset[str] | set[str] = frozenset()
+                           ) -> tuple[str, str] | None:
+    """`[f(x) for x in L[:idx+1]] == [f(x) for x in L[:idx]] + [ELT]`
+    -- the corpus's slice-extension hint. Returns (L, fn) translated,
+    or None. The two comprehensions must share the list and the body;
+    ELT is not checked -- the lemma produces `f (getD idx 0)` and a
+    mismatched ELT simply fails the `exact` (defeq), falling back to
+    the generic ladder."""
+    if not (isinstance(e, ast.Compare) and len(e.ops) == 1
+            and isinstance(e.ops[0], ast.Eq)):
+        return None
+    lhs, rhs = e.left, e.comparators[0]
+    if not (isinstance(rhs, ast.BinOp) and isinstance(rhs.op, ast.Add)
+            and isinstance(rhs.right, ast.List)
+            and len(rhs.right.elts) == 1):
+        return None
+
+    def _comp(c: ast.expr) -> tuple[str, str, str, ast.expr] | None:
+        if not (isinstance(c, ast.ListComp) and len(c.generators) == 1
+                and not c.generators[0].ifs
+                and isinstance(c.generators[0].target, ast.Name)
+                and isinstance(c.generators[0].iter, ast.Subscript)):
+            return None
+        it = c.generators[0].iter
+        if not (isinstance(it.value, ast.Name) and it.value.id in lc.lists
+                and isinstance(it.slice, ast.Slice)
+                and it.slice.lower is None and it.slice.step is None
+                and it.slice.upper is not None):
+            return None
+        return (it.value.id, c.generators[0].target.id,
+                ast.dump(c.elt), it.slice.upper)
+
+    a, b = _comp(lhs), _comp(rhs.left)
+    if a is None or b is None:
+        return None
+    if a[0] != b[0] or a[1] != b[1] or a[2] != b[2]:
+        return None
+    up_a, up_b = a[3], b[3]
+    if not (isinstance(up_b, ast.Name) and up_b.id == idx
+            and isinstance(up_a, ast.BinOp)
+            and isinstance(up_a.op, ast.Add)
+            and isinstance(up_a.left, ast.Name) and up_a.left.id == idx
+            and isinstance(up_a.right, ast.Constant)
+            and up_a.right.value == 1):
+        return None
+    # Full scope for the mapped body -- a binder-only set rejected
+    # `[x * c for x in ...]` with parameter c (review-caught) -- and a
+    # DETECTOR never raises: an untranslatable body is just not this
+    # shape, and the generic ladder gets its chance.
+    try:
+        body_t = _int_expr(lhs.elt, set(names) | {a[1]},
+                           getattr(e, "lineno", 0) or 0, lc=lc)
+    except EncodeError:
+        return None
+    return (_ident(a[0]), f"(fun {_ident(a[1])} => {body_t})")
 
 
 def _quantifier(e: ast.Call, names: set[str], line: int,
@@ -575,6 +764,18 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
             return q
     if isinstance(e, ast.Compare) and len(e.ops) == 1 \
             and type(e.ops[0]) in (ast.Eq, ast.NotEq):
+        llc = lc or _NO_LISTS
+        lt = _list_term(e.left, names, line, llc, rename)
+        rt = _list_term(e.comparators[0], names, line, llc, rename)
+        if lt is not None and rt is not None:
+            eq = f"({lt} = {rt})"
+            return eq if isinstance(e.ops[0], ast.Eq) else f"(¬{eq})"
+        # A mixed reading falls THROUGH to the scalar path: its
+        # messages are the established voice, and `result == xs`
+        # (whole-list equality, deliberately unmodeled) must keep the
+        # boundary message it has always had -- _list_term cannot see
+        # `result`, so a mixed-side rejection here called two lists
+        # "a list and a non-list" (caught by the pinned message test).
         lp = _prop_operand(e.left, names)
         rp = _prop_operand(e.comparators[0], names)
         if lp is not None and rp is not None:
@@ -889,6 +1090,13 @@ class _LoopShape:
     # Leading `if COND: return V` guards, in source order. They
     # short-circuit before the loop runs.
     guards: list[tuple[ast.expr, ast.expr]] = field(default_factory=list)
+    # Trailing `assert`s between the loop and the return (P2 slice
+    # 23). PARAMETERS-ONLY claims: the for path has no exit-state
+    # machinery (that is the while path's), so a claim naming the
+    # index or accumulator is rejected rather than stated about the
+    # wrong state. Each becomes a theorem under the requires, and the
+    # proved form is substituted into the spec proof.
+    post_asserts: list[ast.Assert] = field(default_factory=list)
     # Top-level `assert`s in the loop BODY (P2 slice 18). Dafny reads
     # one as prove-then-assume, and so does this: each becomes its own
     # theorem under the invariant at that iteration, then rides into
@@ -1807,13 +2015,21 @@ def _split_loop(fn: ast.FunctionDef,
     if early is not None:
         early.guards = guards
         return early
+    post_asserts: list[ast.Assert] = []
+    if len(stmts) >= 4 and isinstance(stmts[1], ast.For) \
+            and isinstance(stmts[-1], ast.Return) \
+            and all(isinstance(x, ast.Assert) for x in stmts[2:-1]):
+        post_asserts = [x for x in stmts[2:-1]
+                        if isinstance(x, ast.Assert)]
+        stmts = [stmts[0], stmts[1], stmts[-1]]
     if len(stmts) != 3 or not isinstance(stmts[0], (ast.Assign,
                                                     ast.AnnAssign)) \
             or not isinstance(stmts[1], ast.For) \
             or not isinstance(stmts[2], ast.Return):
         raise _reject("a loop function must be exactly `acc = init; "
-                      "for ...: ...; return expr` (or an early-return "
-                      "search loop) in this slice", fors[0].lineno)
+                      "for ...: ...: optional `assert`s; return expr` "
+                      "(or an early-return search loop) in this slice",
+                      fors[0].lineno)
     init_stmt, loop, ret_stmt = stmts
     if isinstance(init_stmt, ast.AnnAssign):
         # `m: int = l[0]` — the annotation must be `int` (the only
@@ -2041,7 +2257,7 @@ def _split_loop(fn: ast.FunctionDef,
                       bound=it.args[-1], step=step_expr,
                       ret=ret_stmt.value, inv=inv_expr, inv_line=inv_line,
                       for_line=loop.lineno, acc_bool=acc_bool,
-                      asserts=body_asserts)
+                      asserts=body_asserts, post_asserts=post_asserts)
 
 
 def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
@@ -2980,10 +3196,20 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                             sst.lineno, taken)
                 taken.add(a_name)
                 _no_old(sst.test, sst.lineno)
+                # The claim's slice bounds are the loop index (and
+                # index-plus-literal), so its context carries take_idx
+                # -- step_lc does not, since executable code has no
+                # business taking prefixes.
+                claim_lc = _ListCtx(step_lc.lists, step_lc.safe_idx,
+                                    loop.index, step_lc.scaffold,
+                                    step_lc.min_len, step_lc.pos_names,
+                                    step_lc.result_list,
+                                    step_lc.result_is_list,
+                                    step_lc.nonneg_names)
                 _reject_undecidable_quantifier(sst.test, body_names,
-                                               sst.lineno, step_lc)
+                                               sst.lineno, claim_lc)
                 claim_t = _prop_expr(sst.test, body_names, sst.lineno,
-                                     lc=step_lc)
+                                     lc=claim_lc)
                 emit(f"theorem {_ident(a_name)} {binders} "
                      f"({iv} : Int) ({av} : {acc_ty})", sst.lineno)
                 hyps = (f"(hinv : {_ident(gen_inv)} {argsp}{iv} {av}) "
@@ -2992,8 +3218,24 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                         + "".join(f" ({hn} : {hc})" for hn, hc in prior))
                 emit(f"    {hyps} :", sst.lineno)
                 emit(f"    {claim_t} := by", sst.lineno)
-                for tl in ("  simp only [" + _ident(gen_inv)
-                           + "] at hinv",
+                # The slice-extension idiom -- the corpus's standing
+                # proof hint, `[f(x) for x in xs[:i+1]] == [f(x) for x
+                # in xs[:i]] + [f(xs[i])]` -- is Map_take_succ applied
+                # at the index, with the bound discharged from the
+                # obligation's own `i < len` hypothesis. Detected by
+                # shape and closed by `exact`: the lemma's `f (getD i)`
+                # and the claim's spelled-out element are beta-defeq.
+                ext = _slice_extension_shape(sst.test, loop.index,
+                                             claim_lc, body_names)
+                if ext is not None:
+                    xlist, xfn = ext
+                    emit(f"  all_goals (try (rw [show (({_ident(loop.index)}) + 1).toNat "
+                         f"= ({_ident(loop.index)}).toNat + 1 from by "
+                         f"omega]; exact VeriPy.Map_take_succ {xfn} "
+                         f"{xlist} ({_ident(loop.index)}).toNat "
+                         f"(by omega)))", sst.lineno)
+                for tl in ("  all_goals (simp only [" + _ident(gen_inv)
+                           + "] at hinv)",
                            "  try simp only [decide_eq_true_eq] at *",
                            "  repeat' split",
                            "  all_goals (try intros)",
@@ -3097,6 +3339,22 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("      all_goals (try push_cast)", loop.inv_line)
             for step_line in ladder:
                 emit(step_line, loop.inv_line)
+            # The mapped-fold alternative is EXPENSIVE (simp_all
+            # over the whole context) and fires only when the
+            # invariant actually folds a mapped sum -- unconditional,
+            # it multiplied the suite's runtime several-fold, timing
+            # out a run that normally takes ninety seconds.
+            has_mapped_sum = any(
+                isinstance(nd, ast.Call)
+                and isinstance(nd.func, ast.Name)
+                and nd.func.id == "sum" and nd.args
+                and isinstance(nd.args[0], ast.GeneratorExp)
+                for nd in ast.walk(loop.inv))
+            mapped_alt = (
+                f" | ((try simp only [show ({iv} + 1).toNat = "
+                f"({iv}).toNat + 1 from by omega] at *); "
+                f"simp_all [VeriPy.PySum_append_one]; try omega)"
+                if has_mapped_sum else "")
             emit(f"  | succ {kvar} ih =>", loop.inv_line)
             emit(f"      intro {iv} {av} h hi hb", loop.inv_line)
             emit(f"      simp only [{_ident(gen_loop)}]", loop.inv_line)
@@ -3211,7 +3469,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 emit(f"        (by simp only [{_ident(gen_inv)}] at h ⊢; "
                      f"first | omega | (rw [show ({iv} + 1).toNat = "
                      f"({iv}).toNat + 1 from by omega]; "
-                     f"simp only [VeriPy.PySum_take_succ]; omega))",
+                     f"simp only [VeriPy.PySum_take_succ]; omega)"
+                     + mapped_alt + ")",
                      loop.inv_line)
             elif isinstance(loop.step.op, ast.And):
                 # The `first | exact ... | omega` leaves bridge the
@@ -3279,6 +3538,75 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("      all_goals (try (exact hstep))", loop.inv_line)
             for step_line in ladder:
                 emit(step_line, loop.inv_line)
+            # Trailing asserts: parameters-only claims (the for path
+            # has no exit-state machinery -- that is the while
+            # path's), each a theorem under the requires. take_length
+            # sits in the ladder because the corpus's trailing assert
+            # is exactly the take-to-whole-list collapse.
+            for pk, past in enumerate(loop.post_asserts):
+                # LEXICALLY SCOPED, not by spelling: a binder named
+                # like the index shadows it only inside its own
+                # comprehension (and, per Python, NOT in the first
+                # generator's iterable, which evaluates in enclosing
+                # scope). A spelling-based exemption let a free
+                # occurrence outside the comprehension fall through to
+                # the generic unknown-name message — refused either
+                # way (loop state can never be a parameter), but the
+                # boundary should speak with its own voice.
+                def _no_loop_state(e: ast.expr, bound: frozenset[str],
+                                   _line: int) -> None:
+                    if isinstance(e, ast.Name):
+                        if e.id in (loop.index, loop.acc) \
+                                and e.id not in bound:
+                            raise _reject(
+                                f"a post-loop `assert` on a `for` may "
+                                f"mention parameters only in this "
+                                f"slice — {e.id!r} is loop state, and "
+                                f"the for path has no exit-state "
+                                f"machinery (a `while` does)", _line)
+                        return
+                    if isinstance(e, (ast.ListComp, ast.SetComp,
+                                      ast.GeneratorExp)):
+                        b = set(bound)
+                        for gi, g in enumerate(e.generators):
+                            _no_loop_state(g.iter,
+                                           frozenset(b) if gi
+                                           else bound, _line)
+                            if isinstance(g.target, ast.Name):
+                                b.add(g.target.id)
+                            for c in g.ifs:
+                                _no_loop_state(c, frozenset(b), _line)
+                        _no_loop_state(e.elt, frozenset(b), _line)
+                        return
+                    for child in ast.iter_child_nodes(e):
+                        if isinstance(child, ast.expr):
+                            _no_loop_state(child, bound, _line)
+                _no_loop_state(past.test, frozenset(), past.lineno)
+                pa_name = f"{fname}_post_assert{pk}"
+                _check_name(pa_name, "generated declaration for",
+                            past.lineno, taken)
+                taken.add(pa_name)
+                _no_old(past.test, past.lineno)
+                _reject_undecidable_quantifier(past.test, names,
+                                               past.lineno, lc0)
+                pa_claim = _prop_expr(past.test, names, past.lineno,
+                                      lc=lc0)
+                pa_hyps = []
+                for qi, (qexpr, qline) in enumerate(
+                        _parse_clause(spec_fn, "requires")):
+                    pa_hyps.append(f"(hq{qi} : "
+                                   f"{_prop_expr(qexpr, names, qline, lc=lc0)})")
+                emit("", None)
+                emit(f"theorem {_ident(pa_name)} {binders}"
+                     + ("" if not pa_hyps else " " + " ".join(pa_hyps))
+                     + " :", past.lineno)
+                emit(f"    {pa_claim} := by", past.lineno)
+                for tl in ("  all_goals (try simp only "
+                           "[Int.toNat_natCast, List.take_length])",
+                           "  all_goals (try simp_all)",
+                           "  all_goals (first | rfl | omega | trivial)"):
+                    emit(tl, past.lineno)
+                theorems.append(pa_name)
             ret_t = av if (loop.acc_bool or loop.acc_list) \
                 else _int_expr(loop.ret, names | {loop.acc}, fn.lineno,
                                lc=lc0)
