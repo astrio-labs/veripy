@@ -3841,3 +3841,14 @@ def test_new_paths_inherit_scope_binders_and_rename():
     out = _encode(ren).lean_source
     assert "«f'».map" in out
     assert "(«f».map" not in out
+
+    # ...and the rename reaches every SCALAR inside a list term too:
+    # a comprehension body's or literal's `f` must be the renamed
+    # parameter, never the function (the half-threaded variant,
+    # review-caught on the fix above).
+    ren2 = ("#@ ensures result == 0 and "
+            "[x + f for x in xs] == [x + f for x in xs]\n"
+            "def f(xs: list[int], f: int) -> int:\n    return 0\n")
+    out2 = _encode(ren2).lean_source
+    assert "«x» + «f'»" in out2
+    assert "«x» + «f»)" not in out2
