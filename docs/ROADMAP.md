@@ -216,8 +216,8 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 
 | | |
 |---|---|
-| contact corpus under Lean | **7/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`) |
-| prelude | `lean-0.7` (`PyMod_self`, `PyMod_zero_left` added for the quantified-invariant endgame) |
+| contact corpus under Lean | **8/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`) |
+| prelude | `lean-0.8` (`Map_take_succ`, `PySum_append_one` added for the mapped-fold class) |
 | slices landed | P2 1–20, P3 (sidecar channel) |
 | `.proofs.lean` packs in existence | **4** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr`; `he_31`: `ModPredOne` (with a Dafny twin, the first task packed under BOTH provers) — all kernel-checked, clean axiom footprints) |
 
@@ -238,7 +238,8 @@ work list and not a countdown):
 | `str` parameters | `he_48` |
 | nested loops | `he_40`, `he_43` |
 | DP / indexed assignment — **cut by decision** | `mbpp_402`, `mbpp_620`, `mbpp_247` (2-D table), `mbpp_149` (dp array) |
-| multi-statement `for` body | `he_3`, `he_9`, `mbpp_sum_squares` |
+| pair-accumulator search (`+=` then early return) | `he_3` |
+| `int \| None` accumulator — a real fragment addition, not a body-shape issue (earlier table binned it by its first error) | `he_9` |
 | filtered comprehension | `he_30` |
 | `dict` | `mbpp_885` (also `sorted`), `mbpp_97` (also nested comprehension) |
 | `sorted` | `he_34` |

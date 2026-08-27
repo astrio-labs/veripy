@@ -3717,3 +3717,90 @@ def test_end_to_end_is_prime_proves_and_variants_fail(tmp_path):
         (tmp_path / f"bad{k}.proofs.lean").write_text(packl.read_text())
         assert verify_structured(bad, tmp_path / f"ob{k}",
                                  backend="lean")["status"] == "failed", k
+
+
+def test_mapped_sum_translates_in_spec_and_invariant():
+    # `sum(f(x) for x in xs)` folds a MAPPED list: PySum ∘ map, with
+    # map OUTSIDE take -- the order Map_take_succ states.
+    src = ("#@ ensures result == sum(x * x for x in values)\n"
+           "def f(values: list[int]) -> int:\n    total = 0\n"
+           "    for i in range(len(values)):\n"
+           "        #@ invariant total == sum(x * x for x in values[:i])\n"
+           "        total = total + values[i] * values[i]\n"
+           "    return total\n")
+    out = _encode(src).lean_source
+    assert "VeriPy.PySum ((«values».take («i»).toNat).map " \
+           "(fun «x» => («x» * «x»)))" in out
+    assert "VeriPy.PySum («values».map (fun «x» => («x» * «x»)))" in out
+
+
+def test_slice_extension_assert_is_proved_by_map_take_succ():
+    # The corpus's standing hint: the in-loop assert states the
+    # slice-extension identity, its obligation closes by Map_take_succ
+    # (bound from the obligation's own `i < len`), and the proved form
+    # rides into preservation where PySum_append_one steps the fold.
+    src = ("#@ ensures result == sum(x * x for x in values)\n"
+           "def f(values: list[int]) -> int:\n    total = 0\n"
+           "    for i in range(len(values)):\n"
+           "        #@ invariant total == sum(x * x for x in values[:i])\n"
+           "        assert [x * x for x in values[:i + 1]] == "
+           "[x * x for x in values[:i]] + [values[i] * values[i]]\n"
+           "        total = total + values[i] * values[i]\n"
+           "    return total\n")
+    out = _encode(src).lean_source
+    assert "exact VeriPy.Map_take_succ (fun «x» => («x» * «x»)) " \
+           "«values»" in out
+    assert "VeriPy.PySum_append_one" in out
+    # The claim itself is a LIST equality with ++ on the right.
+    assert "++ ([((«values».getD («i»).toNat 0) * " \
+           "(«values».getD («i»).toNat 0))] : List Int)" in out
+
+
+def test_for_post_loop_asserts_are_params_only():
+    # The for path has no exit-state machinery (that is the while
+    # path's), so a trailing assert naming loop state is refused
+    # rather than stated about the wrong state.
+    acc = ("#@ requires n >= 0\n#@ ensures result == n\n"
+           "def f(n: int) -> int:\n    s = 0\n    for i in range(n):\n"
+           "        #@ invariant s == i\n        s = s + 1\n"
+           "    assert s == n\n    return s\n")
+    with pytest.raises(EncodeError, match="parameters only"):
+        _encode(acc)
+
+    # A parameters-only claim becomes a theorem under the requires.
+    ok = ("#@ requires n >= 1\n#@ ensures result >= 0\n"
+          "def g(n: int) -> int:\n    s = 0\n    for i in range(n):\n"
+          "        #@ invariant s >= 0\n        s = s + 1\n"
+          "    assert n >= 1\n    return s\n")
+    out = _encode(ok).lean_source
+    assert "theorem «g_post_assert0»" in out
+    assert "(hq0 : («n» ≥ 1))" in out
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_sum_squares_proves_and_lies_fail(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/mbpp_sum_squares.py")
+    good = tmp_path / "sq.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    # The hint must not lie: a wrong extension element fails its own
+    # obligation, and wrong invariant/ensures functions fail theirs.
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            ("+ [values[i] * values[i]]",
+             "+ [values[i] * values[i] + 1]"),
+            ("#@ ensures result == sum(x * x for x in values)",
+             "#@ ensures result == sum(x * x + 1 for x in values)"),
+            ("assert [x * x for x in values[:len(values)]] == "
+             "[x * x for x in values]",
+             "assert [x * x for x in values[:len(values)]] == "
+             "[x * x for x in values] + [0]"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        assert verify_structured(bad, tmp_path / f"ob{k}",
+                                 backend="lean")["status"] == "failed", k
