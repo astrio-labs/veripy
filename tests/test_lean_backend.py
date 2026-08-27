@@ -3892,6 +3892,24 @@ def test_new_paths_inherit_scope_binders_and_rename():
               "    return s\n")
     assert "theorem «g_post_assert0»" in _encode(binder).lean_source
 
+    # ...and the exemption is LEXICAL, not by spelling: a free
+    # occurrence outside the comprehension is loop state (refused with
+    # the boundary's own message), and so is the FIRST generator's
+    # iterable, which Python evaluates in enclosing scope.
+    free = binder.replace("    assert [i * 0",
+                          "    assert i >= 0 and [i * 0")
+    with pytest.raises(EncodeError, match="loop state"):
+        _encode(free)
+    encl = ("#@ ensures result >= 0\n"
+            "def g(xs: list[int]) -> int:\n    s = 0\n"
+            "    for i in range(len(xs)):\n"
+            "        #@ invariant s >= 0\n        s = s + 1\n"
+            "    assert [q * 0 for q in xs[:i]] == "
+            "[q * 0 for q in xs[:i]]\n"
+            "    return s\n")
+    with pytest.raises(EncodeError, match="loop state"):
+        _encode(encl)
+
     # (3) _list_term uses the theorem-context RENAME map: a list
     # parameter named after its own function must emit the renamed
     # binder, not the function constant.
