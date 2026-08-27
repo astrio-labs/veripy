@@ -490,7 +490,12 @@ def _list_term(e: ast.expr, names: set[str], line: int,
                 raise _reject(f"comprehension binder {v!r} shadows a "
                               f"name in scope — outside this slice",
                               line)
-            body = _int_expr(e.elt, names | {v}, line, lc=lc)
+            # The rename reaches EVERY scalar inside a list term:
+            # threading it to the list names alone left a comprehension
+            # body's `f` naming the function (review-caught, the
+            # half-threaded variant of the previous finding).
+            body = _int_expr(e.elt, names | {v}, line, rename=rename,
+                             lc=lc)
             return f"({base}.map (fun {_ident(v)} => {body}))"
         return None
     base = _iter_term(e)
@@ -499,7 +504,8 @@ def _list_term(e: ast.expr, names: set[str], line: int,
     if isinstance(e, ast.List):
         if not e.elts:
             return "([] : List Int)"
-        items = ", ".join(_int_expr(x, names, line, lc=lc)
+        items = ", ".join(_int_expr(x, names, line,
+                                    rename=rename, lc=lc)
                           for x in e.elts)
         return f"([{items}] : List Int)"
     if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
