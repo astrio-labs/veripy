@@ -3865,3 +3865,39 @@ def test_end_to_end_below_zero_proves_and_lies_fail(tmp_path):
         bad.write_text(base.replace(frm, to))
         assert verify_structured(bad, tmp_path / f"ob{k}",
                                  backend="lean")["status"] == "failed", k
+
+def test_new_paths_inherit_scope_binders_and_rename():
+    # Three review-caught instances of one family -- a new path not
+    # inheriting existing context. (1) The slice-extension detector
+    # translated the mapped body with only its binder in scope, so a
+    # parameter in the body crashed a valid encode; a detector also
+    # NEVER raises -- not-this-shape means the generic ladder's turn.
+    scope = ("#@ ensures result == sum(x * c for x in values)\n"
+             "def f(values: list[int], c: int) -> int:\n    total = 0\n"
+             "    for i in range(len(values)):\n"
+             "        #@ invariant total == "
+             "sum(x * c for x in values[:i])\n"
+             "        assert [x * c for x in values[:i + 1]] == "
+             "[x * c for x in values[:i]] + [values[i] * c]\n"
+             "        total = total + values[i] * c\n    return total\n")
+    assert "exact VeriPy.Map_take_succ" in _encode(scope).lean_source
+
+    # (2) A claim-bound binder named like the loop index SHADOWS it
+    # (Python scoping); the params-only walk exempts it.
+    binder = ("#@ ensures result >= 0\n"
+              "def g(xs: list[int]) -> int:\n    s = 0\n"
+              "    for i in range(len(xs)):\n"
+              "        #@ invariant s >= 0\n        s = s + 1\n"
+              "    assert [i * 0 for i in xs] == [i * 0 for i in xs]\n"
+              "    return s\n")
+    assert "theorem «g_post_assert0»" in _encode(binder).lean_source
+
+    # (3) _list_term uses the theorem-context RENAME map: a list
+    # parameter named after its own function must emit the renamed
+    # binder, not the function constant.
+    ren = ("#@ ensures result == 0 and "
+           "[x * 1 for x in f] == [x * 1 for x in f]\n"
+           "def f(f: list[int]) -> int:\n    return 0\n")
+    out = _encode(ren).lean_source
+    assert "«f'».map" in out
+    assert "(«f».map" not in out
