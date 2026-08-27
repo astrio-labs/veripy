@@ -429,7 +429,8 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
 
 
 def _list_term(e: ast.expr, names: set[str], line: int,
-               lc: "_ListCtx") -> str | None:
+               lc: "_ListCtx",
+               rename: dict[str, str] | None = None) -> str | None:
     """A LIST-VALUED expression in a claim: comprehension over a list
     parameter or its nonnegative-bounded prefix, the parameter itself,
     such a prefix, a literal, or `+`-concatenation of these. Returns
@@ -461,12 +462,12 @@ def _list_term(e: ast.expr, names: set[str], line: int,
                 and u.func.id == "len" and len(u.args) == 1 \
                 and not u.keywords and isinstance(u.args[0], ast.Name) \
                 and u.args[0].id in lc.lists:
-            return f"(({_ident(u.args[0].id)}.length : Int))"
+            return f"(({_lref(u.args[0].id, rename)}.length : Int))"
         return None
 
     def _iter_term(it: ast.expr) -> str | None:
         if isinstance(it, ast.Name) and it.id in lc.lists:
-            return _ident(it.id)
+            return _lref(it.id, rename)
         if isinstance(it, ast.Subscript) \
                 and isinstance(it.value, ast.Name) \
                 and it.value.id in lc.lists \
@@ -475,7 +476,7 @@ def _list_term(e: ast.expr, names: set[str], line: int,
                 and it.slice.upper is not None:
             up = _upper_ok(it.slice.upper)
             if up is not None:
-                return f"({_ident(it.value.id)}.take ({up}).toNat)"
+                return f"({_lref(it.value.id, rename)}.take ({up}).toNat)"
         return None
 
     if isinstance(e, ast.ListComp) and len(e.generators) == 1 \
@@ -502,8 +503,8 @@ def _list_term(e: ast.expr, names: set[str], line: int,
                           for x in e.elts)
         return f"([{items}] : List Int)"
     if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
-        a = _list_term(e.left, names, line, lc)
-        b = _list_term(e.right, names, line, lc)
+        a = _list_term(e.left, names, line, lc, rename)
+        b = _list_term(e.right, names, line, lc, rename)
         if a is not None and b is not None:
             return f"({a} ++ {b})"
     return None
@@ -511,7 +512,9 @@ def _list_term(e: ast.expr, names: set[str], line: int,
 
 
 def _slice_extension_shape(e: ast.expr, idx: str,
-                           lc: "_ListCtx") -> tuple[str, str] | None:
+                           lc: "_ListCtx",
+                           names: frozenset[str] | set[str] = frozenset()
+                           ) -> tuple[str, str] | None:
     """`[f(x) for x in L[:idx+1]] == [f(x) for x in L[:idx]] + [ELT]`
     -- the corpus's slice-extension hint. Returns (L, fn) translated,
     or None. The two comprehensions must share the list and the body;
@@ -555,10 +558,16 @@ def _slice_extension_shape(e: ast.expr, idx: str,
             and isinstance(up_a.right, ast.Constant)
             and up_a.right.value == 1):
         return None
-    return (_ident(a[0]),
-            f"(fun {_ident(a[1])} => "
-            + _int_expr(lhs.elt, {a[1]},
-                        getattr(e, "lineno", 0) or 0, lc=lc) + ")")
+    # Full scope for the mapped body -- a binder-only set rejected
+    # `[x * c for x in ...]` with parameter c (review-caught) -- and a
+    # DETECTOR never raises: an untranslatable body is just not this
+    # shape, and the generic ladder gets its chance.
+    try:
+        body_t = _int_expr(lhs.elt, set(names) | {a[1]},
+                           getattr(e, "lineno", 0) or 0, lc=lc)
+    except EncodeError:
+        return None
+    return (_ident(a[0]), f"(fun {_ident(a[1])} => {body_t})")
 
 
 def _quantifier(e: ast.Call, names: set[str], line: int,
@@ -749,8 +758,8 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
     if isinstance(e, ast.Compare) and len(e.ops) == 1 \
             and type(e.ops[0]) in (ast.Eq, ast.NotEq):
         llc = lc or _NO_LISTS
-        lt = _list_term(e.left, names, line, llc)
-        rt = _list_term(e.comparators[0], names, line, llc)
+        lt = _list_term(e.left, names, line, llc, rename)
+        rt = _list_term(e.comparators[0], names, line, llc, rename)
         if lt is not None and rt is not None:
             eq = f"({lt} = {rt})"
             return eq if isinstance(e.ops[0], ast.Eq) else f"(¬{eq})"
@@ -3210,7 +3219,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 # shape and closed by `exact`: the lemma's `f (getD i)`
                 # and the claim's spelled-out element are beta-defeq.
                 ext = _slice_extension_shape(sst.test, loop.index,
-                                             claim_lc)
+                                             claim_lc, body_names)
                 if ext is not None:
                     xlist, xfn = ext
                     emit(f"  all_goals (try (rw [show (({_ident(loop.index)}) + 1).toNat "
@@ -3528,9 +3537,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # sits in the ladder because the corpus's trailing assert
             # is exactly the take-to-whole-list collapse.
             for pk, past in enumerate(loop.post_asserts):
+                # A binder named like the index SHADOWS it inside its
+                # own comprehension (Python scoping), so claim-bound
+                # names are exempt (review-caught: `for i in ...`
+                # inside the claim was read as loop state).
+                claim_bound = {
+                    g.target.id
+                    for nd in ast.walk(past.test)
+                    if isinstance(nd, (ast.ListComp, ast.SetComp,
+                                       ast.GeneratorExp))
+                    for g in nd.generators
+                    if isinstance(g.target, ast.Name)}
                 for node in ast.walk(past.test):
                     if isinstance(node, ast.Name) \
-                            and node.id in (loop.index, loop.acc):
+                            and node.id in (loop.index, loop.acc) \
+                            and node.id not in claim_bound:
                         raise _reject(
                             f"a post-loop `assert` on a `for` may "
                             f"mention parameters only in this slice — "
