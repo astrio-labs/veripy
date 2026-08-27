@@ -10,6 +10,7 @@ def is_prime(n: int) -> bool:
         return False
     for k in range(2, n - 1):
         #@ invariant forall j in range(2, k) :: n % j != 0
+        #@ proof ModPredOne(n)
         if n % k == 0:
             return False
     return True
