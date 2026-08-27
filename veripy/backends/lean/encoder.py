@@ -368,7 +368,8 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
                         raise _reject(
                             f"generator binder {gv!r} shadows a name in "
                             f"scope — outside this slice", line)
-                    gbody = _int_expr(a0.elt, names | {gv}, line, lc=lc)
+                    gbody = _int_expr(a0.elt, names | {gv}, line,
+                                      rename=rename, lc=lc)
                     gfn = f"(fun {_ident(gv)} => {gbody})"
                     git = a0.generators[0].iter
                     if isinstance(git, ast.Name) and git.id in lc.lists:

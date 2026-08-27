@@ -3930,3 +3930,12 @@ def test_new_paths_inherit_scope_binders_and_rename():
     out2 = _encode(ren2).lean_source
     assert "«x» + «f'»" in out2
     assert "«x» + «f»)" not in out2
+
+    # ...including the genexp-sum body, the sibling path that repeated
+    # the miss (review-caught twice makes it a sweep: an AST check
+    # confirmed no rename-scoped function still drops it anywhere).
+    ren3 = ("#@ ensures result == sum(x + f for x in xs)\n"
+            "def f(xs: list[int], f: int) -> int:\n    return 0\n")
+    out3 = _encode(ren3).lean_source
+    assert "«x» + «f'»" in out3
+    assert "«x» + «f»)" not in out3
