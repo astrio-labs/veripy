@@ -542,7 +542,19 @@ def _slice_extension_shape(e: ast.expr, idx: str,
         return (it.value.id, c.generators[0].target.id,
                 ast.dump(c.elt), it.slice.upper)
 
+    def _plain(c: ast.expr):
+        if isinstance(c, ast.Subscript) \
+                and isinstance(c.value, ast.Name) \
+                and c.value.id in lc.lists \
+                and isinstance(c.slice, ast.Slice) \
+                and c.slice.lower is None and c.slice.step is None \
+                and c.slice.upper is not None:
+            return (c.value.id, None, None, c.slice.upper)
+        return None
+
     a, b = _comp(lhs), _comp(rhs.left)
+    if a is None and b is None:
+        a, b = _plain(lhs), _plain(rhs.left)
     if a is None or b is None:
         return None
     if a[0] != b[0] or a[1] != b[1] or a[2] != b[2]:
@@ -555,6 +567,8 @@ def _slice_extension_shape(e: ast.expr, idx: str,
             and isinstance(up_a.right, ast.Constant)
             and up_a.right.value == 1):
         return None
+    if a[1] is None:
+        return (_ident(a[0]), None)
     return (_ident(a[0]),
             f"(fun {_ident(a[1])} => "
             + _int_expr(lhs.elt, {a[1]},
@@ -646,8 +660,18 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
             and isinstance(hi_arg.args[0], ast.Name) \
             and hi_arg.args[0].id in lc.lists:
         safe[v] = hi_arg.args[0].id
+    # A binder over a provably-NONNEGATIVE range licenses `xs[:v]`
+    # exactly as the loop index does: Python's negative slice bound
+    # means suffix-trimming, which take's toNat clamp does not model,
+    # and the bound hypothesis `lo ≤ v` rules that out wherever the
+    # body is evaluated. This is what lets an ensures say
+    # `exists n in range(len(xs) + 1) :: sum(xs[:n]) < 0`
+    # (the below_zero class).
+    body_take = (v if (len(it.args) < 2
+                       or _nonneg_bound(it.args[0], lc))
+                 else (None if lc.take_idx == v else lc.take_idx))
     body_lc = _ListCtx(lc.lists, safe,
-                       None if lc.take_idx == v else lc.take_idx,
+                       body_take,
                        lc.scaffold, lc.min_len, frozenset(body_pos),
                        lc.result_list, lc.result_is_list,
                        frozenset(body_nonneg))
@@ -1074,6 +1098,15 @@ class _LoopShape:
     # Leading `if COND: return V` guards, in source order. They
     # short-circuit before the loop runs.
     guards: list[tuple[ast.expr, ast.expr]] = field(default_factory=list)
+    # The SEARCH-ACCUMULATOR shape (P2 slice 24, the below_zero
+    # class): the body updates the accumulator, then early-returns a
+    # bool literal when a test over the NEW value fires; the trailing
+    # return is the complement literal. Modeled as a completed
+    # (Int × Bool) fold -- the value result is identical because the
+    # flag is or-monotone and the body is pure, the same argument the
+    # slice-3 desugar documents.
+    search_test: ast.expr | None = None
+    search_hit: bool | None = None
     # Trailing `assert`s between the loop and the return (P2 slice
     # 23). PARAMETERS-ONLY claims: the for path has no exit-state
     # machinery (that is the while path's), so a claim naming the
@@ -2056,6 +2089,8 @@ def _split_loop(fn: ast.FunctionDef,
     if loop.orelse:
         raise _reject("`for ... else` is outside the fragment", loop.lineno)
     body = [s for s in loop.body]
+    search_test: ast.expr | None = None
+    search_hit: bool | None = None
     # Asserts are proof obligations, not steps, so they are lifted out
     # before the shape match and every shape below sees the body it
     # expects. Lifting is exactly what makes POSITION easy to lose,
@@ -2152,6 +2187,34 @@ def _split_loop(fn: ast.FunctionDef,
         ast.fix_missing_locations(step_expr)
     elif isinstance(init_value, ast.List) and not init_value.elts:
         pass          # a list accumulator: its body is append statements
+    elif len(body) == 2 and isinstance(body[0], ast.Assign) \
+            and len(body[0].targets) == 1 \
+            and isinstance(body[0].targets[0], ast.Name) \
+            and body[0].targets[0].id == acc \
+            and isinstance(body[1], ast.If) and not body[1].orelse \
+            and len(body[1].body) == 1 \
+            and isinstance(body[1].body[0], ast.Return) \
+            and isinstance(body[1].body[0].value, ast.Constant) \
+            and isinstance(body[1].body[0].value.value, bool):
+        # acc-step, then `if TEST: return <bool>` -- the trailing
+        # return must be the complement literal (checked below, where
+        # ret_stmt is in scope for the search fields).
+        step_expr = body[0].value
+        search_test = body[1].test
+        search_hit = body[1].body[0].value.value
+        if not search_hit:
+            raise _reject(
+                "a search-accumulator loop returns `True` on hit in "
+                "this slice — the `return False` pairing inverts the "
+                "flag's meaning against the ensures' `exists`",
+                body[1].lineno)
+        if not (isinstance(ret_stmt.value, ast.Constant)
+                and isinstance(ret_stmt.value.value, bool)
+                and ret_stmt.value.value == (not search_hit)):
+            raise _reject(
+                "a search-accumulator loop returns the complement bool "
+                "literal after the loop (`if TEST: return True` pairs "
+                "with `return False`)", ret_stmt.lineno)
     elif len(body) != 1 or not isinstance(body[0], ast.Assign) \
             or len(body[0].targets) != 1 \
             or not isinstance(body[0].targets[0], ast.Name) \
@@ -2241,7 +2304,8 @@ def _split_loop(fn: ast.FunctionDef,
                       bound=it.args[-1], step=step_expr,
                       ret=ret_stmt.value, inv=inv_expr, inv_line=inv_line,
                       for_line=loop.lineno, acc_bool=acc_bool,
-                      asserts=body_asserts, post_asserts=post_asserts)
+                      asserts=body_asserts, post_asserts=post_asserts,
+                      search_test=search_test, search_hit=search_hit)
 
 
 def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
@@ -2633,12 +2697,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 "`append` returns `list[int]`, anything else `int` or "
                 "`bool`", fn.lineno)
         if loop is not None and not loop.acc_list \
-                and is_bool != loop.acc_bool:
+                and is_bool != loop.acc_bool \
+                and loop.search_test is None:
+            # The search-accumulator shape is the one licensed split:
+            # an int accumulator with a bool RESULT, because the
+            # result is the search flag, not the accumulator.
             raise _reject(
                 "a loop function's accumulator must match its return "
                 "type in this slice: True/False-initialized accumulators "
                 "return `bool`, integer accumulators return `int`",
                 fn.lineno)
+        if loop is not None and loop.search_test is not None \
+                and not is_bool:
+            raise _reject(
+                "a search-accumulator loop returns `bool` (the early "
+                "return is a bool literal)", fn.lineno)
         if wloop is not None:
             for nm in wloop.accs:
                 if nm in params:
@@ -2982,6 +3055,388 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                   lc=lc0)
                 emit(f"  {ret_t}", fn.lineno)
 
+        elif loop is not None and loop.search_test is not None:
+            # The SEARCH-ACCUMULATOR shape (below_zero class): an
+            # (Int × Bool) fold. The flag or-tracks the test over the
+            # POST-step accumulator; the fold runs to completion and
+            # the RESULT is the flag -- identical to the early return
+            # because or is monotone and the body is pure. The user's
+            # invariants are carried CONDITIONALLY on the flag being
+            # false: Dafny owes an invariant only at loop heads the
+            # program reaches, and past the hit the real program has
+            # returned.
+            if loop.guards:
+                raise _reject("a guard before a search-accumulator "
+                              "loop is outside this slice", fn.lineno)
+            if loop.start is not None:
+                raise _reject("a search-accumulator loop over "
+                              "range(start, bound) is outside this "
+                              "slice", loop.for_line)
+            for nm, what in ((loop.index, "loop index"),
+                             (loop.acc, "accumulator")):
+                if nm in params:
+                    raise _reject(f"{what} {nm!r} shadows a parameter "
+                                  f"— outside this slice",
+                                  loop.for_line)
+            for sst in loop.asserts:
+                for nd in ast.walk(sst.test):
+                    if isinstance(nd, ast.Name) and nd.id == loop.acc:
+                        raise _reject(
+                            "an in-loop `assert` in a search-"
+                            "accumulator loop may not mention the "
+                            "accumulator in this slice (its obligation "
+                            "carries no invariant)", sst.lineno)
+            # The flag's meaning comes from the ONE ensures of the
+            # licensed form: `result == (exists n in range(bound + 1)
+            # :: P)` -- the hit predicate localized to the prefix.
+            ens_all = _parse_clause(spec_fn, "ensures")
+            syn = None
+            for eexpr, eline in ens_all:
+                if (isinstance(eexpr, ast.Compare)
+                        and len(eexpr.ops) == 1
+                        and isinstance(eexpr.ops[0], ast.Eq)
+                        and isinstance(eexpr.left, ast.Name)
+                        and eexpr.left.id == "result"
+                        and isinstance(eexpr.comparators[0], ast.Call)
+                        and isinstance(eexpr.comparators[0].func,
+                                       ast.Name)
+                        and eexpr.comparators[0].func.id == "any"):
+                    ecall = eexpr.comparators[0]
+                    gen = ecall.args[0]
+                    rng = gen.generators[0].iter
+                    if (isinstance(rng, ast.Call) and len(rng.args) == 1
+                            and isinstance(rng.args[0], ast.BinOp)
+                            and isinstance(rng.args[0].op, ast.Add)
+                            and ast.dump(rng.args[0].left)
+                            == ast.dump(loop.bound)
+                            and isinstance(rng.args[0].right,
+                                           ast.Constant)
+                            and rng.args[0].right.value == 1):
+                        syn = (ecall, eline)
+                        break
+            if syn is None:
+                raise _reject(
+                    "a search-accumulator loop needs one ensures of "
+                    "the form `result == (exists n in range(<bound> + "
+                    "1) :: P)` — the flag's invariant is P localized "
+                    "to the processed prefix", fn.lineno)
+            syn_call, syn_line = syn
+            # SYNTH(i): the same ∃ with the range hi replaced by i+1.
+            loc_call = copy.deepcopy(syn_call)
+            loc_call.args[0].generators[0].iter.args[0] = ast.BinOp(
+                left=ast.Name(id=loop.index, ctx=ast.Load()),
+                op=ast.Add(), right=ast.Constant(value=1))
+            ast.fix_missing_locations(loc_call)
+            fname = spec_fn.name
+            gen_loop, gen_inv, gen_thm = (f"{fname}_loop",
+                                          f"{fname}_inv",
+                                          f"{fname}_loop_inv")
+            for g in (gen_loop, gen_inv, gen_thm):
+                _check_name(g, "generated declaration for", fn.lineno,
+                            taken)
+                taken.add(g)
+            body_names = names | {loop.index, loop.acc}
+            args = " ".join(_ident(pn) for pn in params)
+            argsp = (args + " ") if args else ""
+            used_plain = set(params) | {loop.index, loop.acc}
+            fuel = "m"
+            while fuel in used_plain:
+                fuel += "'"
+            kvar = "k"
+            while kvar in used_plain or kvar == fuel:
+                kvar += "'"
+            fvar = "f_"
+            while fvar in used_plain or fvar in (fuel, kvar):
+                fvar += "'"
+            iv, av = _ident(loop.index), _ident(loop.acc)
+            safe = {loop.index: loop.bound.args[0].id
+                    if (isinstance(loop.bound, ast.Call)
+                        and isinstance(loop.bound.func, ast.Name)
+                        and loop.bound.func.id == "len"
+                        and loop.bound.args
+                        and isinstance(loop.bound.args[0], ast.Name)
+                        and loop.bound.args[0].id in lc0.lists)
+                    else "*"}
+            if safe[loop.index] == "*":
+                safe = {}
+            step_lc = _ListCtx(lc0.lists, safe, None,
+                               min_len=lc0.min_len,
+                               pos_names=lc0.pos_names,
+                               nonneg_names=lc0.nonneg_names)
+            inv_lc = _ListCtx(lc0.lists, dict(safe), loop.index,
+                              scaffold=True, min_len=lc0.min_len,
+                              pos_names=lc0.pos_names,
+                              nonneg_names=lc0.nonneg_names)
+            bound_t = _int_expr(loop.bound, names, fn.lineno, lc=lc0)
+            init_t = _int_expr(loop.init, names, fn.lineno, lc=lc0)
+            step_t = _int_expr(loop.step, body_names, loop.for_line,
+                               lc=step_lc)
+            # TEST over the POST-step accumulator: substitute the step
+            # into the test before translating.
+            test_post = _SubstExprs(
+                {loop.acc: copy.deepcopy(loop.step)}).visit(
+                copy.deepcopy(loop.search_test))
+            test_t = _prop_expr(test_post, body_names, loop.for_line,
+                                lc=step_lc)
+            inv_user = _prop_expr(loop.inv, body_names, loop.inv_line,
+                                  lc=inv_lc)
+            synth_t = _prop_expr(loc_call, body_names, syn_line,
+                                 lc=inv_lc)
+            hit_lit = "true" if loop.search_hit else "false"
+            miss_lit = "false" if loop.search_hit else "true"
+            emit("", None)
+            emit(f"def {_ident(gen_loop)} {binders} : "
+                 f"Nat → Int → Int → Bool → Int × Bool",
+                 loop.for_line)
+            emit(f"  | 0, _, {av}, {fvar} => ({av}, {fvar})",
+                 loop.for_line)
+            emit(f"  | ({fuel} + 1), {iv}, {av}, {fvar} => "
+                 f"{_ident(gen_loop)} {argsp}{fuel} ({iv} + 1) "
+                 f"({step_t}) ({fvar} || decide {test_t})",
+                 loop.for_line)
+            emit("", None)
+            emit(f"def {_ident(gen_inv)} {binders} ({iv} : Int) "
+                 f"({av} : Int) ({fvar} : Bool) : Prop :=",
+                 loop.inv_line)
+            emit(f"  (({fvar} = false) → {inv_user}) ∧ "
+                 f"(({fvar} = true) ↔ {synth_t})", loop.inv_line)
+            # In-loop asserts: obligations over params + index only
+            # (checked above), so no invariant hypothesis is needed.
+            sa_facts: list[str] = []
+            for si, sst in enumerate(loop.asserts):
+                a_name = f"{fname}_loop_assert{si}"
+                _check_name(a_name, "generated declaration for",
+                            sst.lineno, taken)
+                taken.add(a_name)
+                _no_old(sst.test, sst.lineno)
+                claim_lc = _ListCtx(step_lc.lists, step_lc.safe_idx,
+                                    loop.index, step_lc.scaffold,
+                                    step_lc.min_len,
+                                    step_lc.pos_names,
+                                    step_lc.result_list,
+                                    step_lc.result_is_list,
+                                    step_lc.nonneg_names)
+                _reject_undecidable_quantifier(sst.test, body_names,
+                                               sst.lineno, claim_lc)
+                sa_claim = _prop_expr(sst.test, body_names, sst.lineno,
+                                      lc=claim_lc)
+                emit("", None)
+                emit(f"theorem {_ident(a_name)} {binders} "
+                     f"({iv} : Int)", sst.lineno)
+                emit(f"    (hlo : 0 ≤ {iv}) (hhi : {iv} < {bound_t}) :",
+                     sst.lineno)
+                emit(f"    {sa_claim} := by", sst.lineno)
+                ext = _slice_extension_shape(sst.test, loop.index,
+                                             claim_lc)
+                if ext is not None:
+                    xlist, xfn = ext
+                    xcall = (f"VeriPy.Take_succ_getD {xlist}"
+                             if xfn is None else
+                             f"VeriPy.Map_take_succ {xfn} {xlist}")
+                    emit(f"  all_goals (try (rw [show (({iv}) + "
+                         f"1).toNat = ({iv}).toNat + 1 from by omega]; "
+                         f"exact {xcall} ({iv}).toNat (by omega)))",
+                         sst.lineno)
+                for tl in ("  all_goals (try simp_all)",
+                           "  all_goals (first | omega | trivial)"):
+                    emit(tl, sst.lineno)
+                theorems.append(a_name)
+                sa_facts.append(
+                    f"      have hla{si} := {_ident(a_name)} "
+                    f"{argsp}{iv} hi (by omega)")
+            emit("", None)
+            app_pair = f"({_ident(gen_loop)} {argsp}{fuel} {iv} {av} {fvar})"
+            emit(f"theorem {_ident(gen_thm)} {binders} : "
+                 f"∀ ({fuel} : Nat) ({iv} {av} : Int) "
+                 f"({fvar} : Bool),", loop.inv_line)
+            emit(f"    {_ident(gen_inv)} {argsp}{iv} {av} {fvar} → "
+                 f"0 ≤ {iv} → {iv} + ({fuel} : Int) ≤ {bound_t} →",
+                 loop.inv_line)
+            emit(f"    {_ident(gen_inv)} {argsp}({iv} + {fuel}) "
+                 f"{app_pair}.1 {app_pair}.2 := by", loop.inv_line)
+            emit(f"  intro {fuel}", loop.inv_line)
+            emit(f"  induction {fuel} with", loop.inv_line)
+            emit("  | zero =>", loop.inv_line)
+            emit(f"      intro {iv} {av} {fvar} h hi hb",
+                 loop.inv_line)
+            emit(f"      simp only [{_ident(gen_loop)}]",
+                 loop.inv_line)
+            emit(f"      simpa using h", loop.inv_line)
+            emit(f"  | succ {kvar} ih =>", loop.inv_line)
+            emit(f"      intro {iv} {av} {fvar} h hi hb",
+                 loop.inv_line)
+            emit(f"      simp only [{_ident(gen_loop)}]",
+                 loop.inv_line)
+            for fact in sa_facts:
+                emit(fact, loop.inv_line)
+            emit(f"      have hstep := ih ({iv} + 1) ({step_t}) "
+                 f"({fvar} || decide {test_t})", loop.inv_line)
+            # Arity of the user invariant's conjunction, for the
+            # destructure and the goal split.
+            n_conj = (len(loop.inv.values)
+                      if isinstance(loop.inv, ast.BoolOp)
+                      and isinstance(loop.inv.op, ast.And) else 1)
+            hues = ", ".join(f"hue{j}_" for j in range(n_conj))
+            holes = ", ".join("?_" for _ in range(n_conj))
+            list_arg = (sorted(lc0.lists)[0] if lc0.lists else None)
+            emit("        (by", loop.inv_line)
+            emit(f"          simp only [{_ident(gen_inv)}] at h ⊢",
+                 loop.inv_line)
+            emit("          obtain ⟨hu_, hiff_⟩ := h", loop.inv_line)
+            if list_arg is not None:
+                emit(f"          have hsum_ := VeriPy.PySum_take_succ "
+                     f"{_ident(list_arg)} ({iv}).toNat", loop.inv_line)
+                # The prelude states sums over List.getD; the step
+                # translation indexes as `xs[i]?.getD`. One unfold
+                # aligns the atoms -- without it, omega holds two
+                # names for the same element and closes nothing.
+                emit("          all_goals (try simp only [List.getD] "
+                     "at hsum_)", loop.inv_line)
+            emit("          constructor", loop.inv_line)
+            emit("          · intro hf_", loop.inv_line)
+            emit("            simp only [Bool.or_eq_false_iff, "
+                 "decide_eq_false_iff_not] at hf_", loop.inv_line)
+            emit("            have hu2_ := hu_ hf_.1", loop.inv_line)
+            if n_conj > 1:
+                emit(f"            obtain ⟨{hues}⟩ := hu2_",
+                     loop.inv_line)
+            emit(f"            all_goals (try (rw [show (({iv}) + "
+                 f"1).toNat = ({iv}).toNat + 1 from by omega] at *))",
+                 loop.inv_line)
+            if n_conj > 1:
+                emit(f"            refine ⟨{holes}⟩", loop.inv_line)
+            hue_conj = " | ".join(
+                [f"(exact hue{j}_ nq_ ⟨hq0_, hlt_⟩)"
+                 for j in range(n_conj)] + ["simp_all", "omega"])
+            hue_curr = " | ".join(
+                [f"(exact hue{j}_ nq_ hq0_ hlt_)"
+                 for j in range(n_conj)] + ["simp_all", "omega"])
+            ge_tail = [
+                "                     rw [hne2_]",
+                "                     rw [show "
+                f"(({iv}) + 1).toNat = ({iv}).toNat + 1 from by "
+                "omega]",
+                "                     all_goals (try (rw [hla0]))",
+                "                     all_goals (try (rw [hsum_]))",
+                "                     all_goals (try simp_all)",
+                "                     all_goals (first | omega "
+                "| trivial))",
+            ]
+            for _b in range(max(n_conj, 1)):
+                pre = "            · " if n_conj > 1 else "            "
+                emit(pre + "first", loop.inv_line)
+                emit("                | omega", loop.inv_line)
+                # The user quantifier's bound is emitted CONJUNCTIVE
+                # (`(lo ≤ n ∧ n < hi) → P`), and simp sometimes
+                # curries it before this script runs -- so both intro
+                # shapes are alternatives, in that order (measured:
+                # a three-binder intro on the conjunctive form fails
+                # introN and the whole alternative silently rolled
+                # back inside `first`).
+                emit("                | (intro nq_ hqq_",
+                     loop.inv_line)
+                emit("                   obtain ⟨hq0_, hq1_⟩ := hqq_",
+                     loop.inv_line)
+                emit("                   rcases Classical.em "
+                     f"(nq_ < {iv} + 1) with hlt_ | hge_",
+                     loop.inv_line)
+                emit(f"                   · first | {hue_conj}",
+                     loop.inv_line)
+                emit("                   · have hne2_ : nq_ = "
+                     f"{iv} + 1 := by omega", loop.inv_line)
+                for tl in ge_tail:
+                    emit(tl, loop.inv_line)
+                emit("                | (intro nq_ hq0_ hq1_",
+                     loop.inv_line)
+                emit("                   rcases Classical.em "
+                     f"(nq_ < {iv} + 1) with hlt_ | hge_",
+                     loop.inv_line)
+                emit(f"                   · first | {hue_curr}",
+                     loop.inv_line)
+                emit("                   · have hne2_ : nq_ = "
+                     f"{iv} + 1 := by omega", loop.inv_line)
+                for tl in ge_tail:
+                    emit(tl, loop.inv_line)
+                emit("                | simp_all", loop.inv_line)
+                emit("                | trivial", loop.inv_line)
+            emit("          · simp only [Bool.or_eq_true, "
+                 "decide_eq_true_eq]", loop.inv_line)
+            emit("            constructor", loop.inv_line)
+            emit("            · intro hor_", loop.inv_line)
+            emit(f"              by_cases hfv_ : {fvar} = true",
+                 loop.inv_line)
+            emit("              · obtain ⟨n_, hn_, hp_⟩ := "
+                 "hiff_.mp hfv_", loop.inv_line)
+            emit("                exact ⟨n_, ⟨hn_.1, by omega⟩, hp_⟩",
+                 loop.inv_line)
+            emit("              · rcases hor_ with hfv2_ | ht2_",
+                 loop.inv_line)
+            emit("                · exact absurd hfv2_ hfv_",
+                 loop.inv_line)
+            emit(f"                · refine ⟨{iv} + 1, "
+                 f"⟨by omega, by omega⟩, ?_⟩", loop.inv_line)
+            emit("                  have hu2_ := hu_ (by "
+                 "simpa using hfv_)", loop.inv_line)
+            emit("                  all_goals (try (rw [show "
+                 f"(({iv}) + 1).toNat = ({iv}).toNat + 1 from by "
+                 "omega] at *))", loop.inv_line)
+            emit("                  all_goals (try simp_all)",
+                 loop.inv_line)
+            emit("                  all_goals (try omega)",
+                 loop.inv_line)
+            emit("                  all_goals (first | omega | "
+                 "trivial)", loop.inv_line)
+            emit("            · intro hex_", loop.inv_line)
+            emit("              obtain ⟨n_, hn_, hp_⟩ := hex_",
+                 loop.inv_line)
+            emit(f"              by_cases hnl_ : n_ < {iv} + 1",
+                 loop.inv_line)
+            emit("              · left", loop.inv_line)
+            emit("                exact hiff_.mpr ⟨n_, ⟨hn_.1, "
+                 "hnl_⟩, hp_⟩", loop.inv_line)
+            emit(f"              · by_cases hfv_ : {fvar} = true",
+                 loop.inv_line)
+            emit("                · simp [hfv_]", loop.inv_line)
+            emit("                · right", loop.inv_line)
+            emit(f"                  have hne_ : n_ = {iv} + 1 := "
+                 "by omega", loop.inv_line)
+            emit("                  rw [hne_] at hp_", loop.inv_line)
+            emit("                  have hu2_ := hu_ (by "
+                 "simpa using hfv_)", loop.inv_line)
+            emit("                  all_goals (try (rw [show "
+                 f"(({iv}) + 1).toNat = ({iv}).toNat + 1 from by "
+                 "omega] at *))", loop.inv_line)
+            emit("                  all_goals (try simp_all)",
+                 loop.inv_line)
+            emit("                  all_goals (try omega)",
+                 loop.inv_line)
+            emit("                  all_goals (first | omega | "
+                 "trivial)", loop.inv_line)
+            emit("        )", loop.inv_line)
+            emit("        (by omega) (by (try push_cast at hb ⊢); "
+                 "omega)", loop.inv_line)
+            emit(f"      simp only [{_ident(gen_inv)}] at hstep ⊢",
+                 loop.inv_line)
+            emit(f"      all_goals (try push_cast at hstep ⊢)",
+                 loop.inv_line)
+            emit(f"      all_goals (try (rw [show ({iv} + 1 + "
+                 f"({kvar} : Int)) = ({iv} + (({kvar} : Int) + 1)) "
+                 f"from by omega] at hstep))", loop.inv_line)
+            emit("      all_goals (try (exact hstep))", loop.inv_line)
+            emit("      all_goals (try simp_all)", loop.inv_line)
+            emit("      all_goals (first | omega | trivial)",
+                 loop.inv_line)
+            emit("", None)
+            emit(f"def {_ident(spec_fn.name)} {binders} : Bool :=",
+                 fn.lineno)
+            pair_call = (f"({_ident(gen_loop)} {argsp}"
+                         f"({bound_t}).toNat 0 ({init_t}) false).2")
+            # `return True` on hit: the result IS the flag. `return
+            # False` on hit: the result is its negation.
+            emit(f"  {pair_call}" if loop.search_hit
+                 else f"  (!{pair_call})", fn.lineno)
+            theorems.append(gen_thm)
+
         elif loop is not None:
             for nm, what in ((loop.index, "loop index"),
                              (loop.acc, "accumulator")):
@@ -3213,10 +3668,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                              claim_lc)
                 if ext is not None:
                     xlist, xfn = ext
+                    xcall = (f"VeriPy.Take_succ_getD {xlist}"
+                             if xfn is None else
+                             f"VeriPy.Map_take_succ {xfn} {xlist}")
                     emit(f"  all_goals (try (rw [show (({_ident(loop.index)}) + 1).toNat "
                          f"= ({_ident(loop.index)}).toNat + 1 from by "
-                         f"omega]; exact VeriPy.Map_take_succ {xfn} "
-                         f"{xlist} ({_ident(loop.index)}).toNat "
+                         f"omega]; exact {xcall} "
+                         f"({_ident(loop.index)}).toNat "
                          f"(by omega)))", sst.lineno)
                 for tl in ("  all_goals (simp only [" + _ident(gen_inv)
                            + "] at hinv)",
@@ -3903,6 +4361,75 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                      f"rw [VeriPy.PyMod_pos _ _ (by omega)]; "
                      f"exact Int.emod_eq_of_lt (by omega) (by omega)))",
                      first_ensures_line)
+        elif loop is not None and loop.search_test is not None:
+            targs = " ".join(_ident(_tname(pn)) for pn in params)
+            targsp = (targs + " ") if targs else ""
+            t_bound = _int_expr(loop.bound, names, fn.lineno,
+                                rename=rename, lc=lc0)
+            t_init = _int_expr(loop.init, names, fn.lineno,
+                               rename=rename, lc=lc0)
+            gi_s = f"{spec_fn.name}_inv"
+            gt_s = f"{spec_fn.name}_loop_inv"
+            emit("  try dsimp only", first_ensures_line)
+            # inv at entry: the user part under `false = false`, and
+            # the flag-iff whose RHS is the EMPTY-PREFIX ∃ -- only
+            # n = 0 is in range, and P(0) evaluates on the empty take.
+            emit(f"  have hi0 : {_ident(gi_s)} {targsp}0 ({t_init}) "
+                 f"false := by", first_ensures_line)
+            emit(f"    simp only [{_ident(gi_s)}]", first_ensures_line)
+            emit("    constructor", first_ensures_line)
+            emit("    · intro _", first_ensures_line)
+            emit("      all_goals (try push_cast)", first_ensures_line)
+            emit("      all_goals (try simp_all [VeriPy.PySum])",
+                 first_ensures_line)
+            # A ∀-conjunct at entry ranges over [lo, lo+1)-style
+            # windows whose only inhabitant is the start: name the
+            # binder, pin it with omega, substitute, and the empty
+            # take collapses (measured: anonymous intros left
+            # `n✝ < 1 ⊢ 0 ≤ PySum (take n✝)` unreachable).
+            emit("      all_goals (try (intro nz_ hz_))",
+                 first_ensures_line)
+            emit("      all_goals (try (obtain ⟨hz0_, hz1_⟩ := hz_))",
+                 first_ensures_line)
+            emit("      all_goals (try (intro hz1c_))",
+                 first_ensures_line)
+            emit("      all_goals (try (have hze_ : nz_ = 0 := by "
+                 "omega))", first_ensures_line)
+            emit("      all_goals (try (subst hze_))",
+                 first_ensures_line)
+            emit("      all_goals (try simp_all [VeriPy.PySum])",
+                 first_ensures_line)
+            emit("      all_goals (try intros)", first_ensures_line)
+            emit("      all_goals (first | omega | trivial)",
+                 first_ensures_line)
+            emit("    · constructor", first_ensures_line)
+            emit("      · intro hf_", first_ensures_line)
+            emit("        exact absurd hf_ (by simp)",
+                 first_ensures_line)
+            emit("      · rintro ⟨n_, hn_, hp_⟩", first_ensures_line)
+            emit("        have hz_ : n_ = 0 := by omega",
+                 first_ensures_line)
+            emit("        subst hz_", first_ensures_line)
+            emit("        all_goals (try simp_all [VeriPy.PySum])",
+                 first_ensures_line)
+            emit("        all_goals (first | omega | trivial)",
+                 first_ensures_line)
+            emit(f"  have hfin := {_ident(gt_s)} {targsp}"
+                 f"({t_bound}).toNat 0 ({t_init}) false hi0 "
+                 f"(by omega) (by omega)", first_ensures_line)
+            emit(f"  obtain ⟨hfu_, hfiff_⟩ := hfin",
+                 first_ensures_line)
+            emit(f"  all_goals (try rw [Int.toNat_of_nonneg "
+                 f"(by omega : (0:Int) ≤ {t_bound})] at hfiff_)",
+                 first_ensures_line)
+            emit("  all_goals (try simp only [Int.toNat_natCast, "
+                 "Int.zero_add] at hfiff_)", first_ensures_line)
+            emit("  all_goals (try (exact hfiff_))",
+                 first_ensures_line)
+            emit("  all_goals (try simp_all)", first_ensures_line)
+            emit("  all_goals (try intros)", first_ensures_line)
+            emit("  all_goals (first | omega | trivial)",
+                 first_ensures_line)
         elif loop is not None:
             # Bring the invariant through the loop: instantiate the
             # induction theorem at (fuel = bound.toNat, i = 0,

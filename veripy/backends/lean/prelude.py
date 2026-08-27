@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.8"
+PRELUDE_VERSION = "lean-0.9"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -117,6 +117,20 @@ theorem SqGeSelf (a : Int) : a ≤ a * a := by
 -- `i < len` hypothesis), and the proved form then steps the invariant
 -- through PySum_append_one -- hypothesis-free, so it can sit in the
 -- preservation simp set unconditionally.
+-- The UNMAPPED slice extension (below_zero class): the same hint as
+-- Map_take_succ with no comprehension around it.
+theorem Take_succ_getD (xs : List Int) (n : Nat) (h : n < xs.length) :
+    xs.take (n + 1) = xs.take n ++ [xs.getD n 0] := by
+  induction xs generalizing n with
+  | nil => simp at h
+  | cons x rest ih =>
+    cases n with
+    | zero => simp [List.getD]
+    | succ m =>
+      simp only [List.take_succ_cons, List.getD_cons_succ]
+      rw [ih m (by simpa using h)]
+      simp
+
 theorem PySum_append_one (xs : List Int) (a : Int) :
     PySum (xs ++ [a]) = PySum xs + a := by
   induction xs with

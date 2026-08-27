@@ -3804,3 +3804,64 @@ def test_end_to_end_sum_squares_proves_and_lies_fail(tmp_path):
         bad.write_text(base.replace(frm, to))
         assert verify_structured(bad, tmp_path / f"ob{k}",
                                  backend="lean")["status"] == "failed", k
+
+
+def test_search_accumulator_shape_and_boundaries():
+    # The below_zero class: acc-step, then `if TEST: return True`,
+    # trailing `return False` -- an (Int × Bool) fold whose flag
+    # or-tracks the test over the POST-step accumulator. The user's
+    # invariants are carried CONDITIONALLY on the flag being false
+    # (Dafny owes an invariant only at loop heads the program
+    # reaches), and the flag's own invariant is the ensures' exists
+    # localized to the processed prefix.
+    src = ("#@ ensures result == (exists n in range(len(xs) + 1) :: "
+           "sum(xs[:n]) < 0)\n"
+           "def f(xs: list[int]) -> bool:\n    b = 0\n"
+           "    for i in range(len(xs)):\n"
+           "        #@ invariant b == sum(xs[:i])\n"
+           "        b += xs[i]\n"
+           "        if b < 0:\n            return True\n"
+           "    return False\n")
+    out = _encode(src).lean_source
+    assert "Nat → Int → Int → Bool → Int × Bool" in out
+    assert "(f_ || decide" in out
+    assert "((f_ = false) →" in out
+    assert "((f_ = true) ↔" in out
+
+    # `return False` on hit inverts the flag against the ensures'
+    # exists -- refused, not guessed at.
+    inv_hit = src.replace("return True", "return XX").replace(
+        "return False", "return True").replace("return XX",
+                                               "return False")
+    with pytest.raises(EncodeError, match="returns `True` on hit"):
+        _encode(inv_hit)
+
+    # The flag's meaning comes from ONE ensures of the licensed form;
+    # a range that is not bound + 1 is refused.
+    wide = src.replace("range(len(xs) + 1)", "range(len(xs) + 2)")
+    with pytest.raises(EncodeError, match="exists n in range"):
+        _encode(wide)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_below_zero_proves_and_lies_fail(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/he_humaneval_3.py")
+    good = tmp_path / "bz.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            (":: sum(operations[:n]) < 0)",
+             ":: sum(operations[:n]) >= 0)"),
+            ("if balance < 0:", "if balance > 0:"),
+            ("#@ invariant balance == sum(operations[:i])",
+             "#@ invariant balance == sum(operations[:i]) + 1"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        assert verify_structured(bad, tmp_path / f"ob{k}",
+                                 backend="lean")["status"] == "failed", k
