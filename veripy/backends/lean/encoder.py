@@ -3543,27 +3543,44 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # sits in the ladder because the corpus's trailing assert
             # is exactly the take-to-whole-list collapse.
             for pk, past in enumerate(loop.post_asserts):
-                # A binder named like the index SHADOWS it inside its
-                # own comprehension (Python scoping), so claim-bound
-                # names are exempt (review-caught: `for i in ...`
-                # inside the claim was read as loop state).
-                claim_bound = {
-                    g.target.id
-                    for nd in ast.walk(past.test)
-                    if isinstance(nd, (ast.ListComp, ast.SetComp,
-                                       ast.GeneratorExp))
-                    for g in nd.generators
-                    if isinstance(g.target, ast.Name)}
-                for node in ast.walk(past.test):
-                    if isinstance(node, ast.Name) \
-                            and node.id in (loop.index, loop.acc) \
-                            and node.id not in claim_bound:
-                        raise _reject(
-                            f"a post-loop `assert` on a `for` may "
-                            f"mention parameters only in this slice — "
-                            f"{node.id!r} is loop state, and the for "
-                            f"path has no exit-state machinery (a "
-                            f"`while` does)", past.lineno)
+                # LEXICALLY SCOPED, not by spelling: a binder named
+                # like the index shadows it only inside its own
+                # comprehension (and, per Python, NOT in the first
+                # generator's iterable, which evaluates in enclosing
+                # scope). A spelling-based exemption let a free
+                # occurrence outside the comprehension fall through to
+                # the generic unknown-name message — refused either
+                # way (loop state can never be a parameter), but the
+                # boundary should speak with its own voice.
+                def _no_loop_state(e: ast.expr, bound: frozenset[str],
+                                   _line: int) -> None:
+                    if isinstance(e, ast.Name):
+                        if e.id in (loop.index, loop.acc) \
+                                and e.id not in bound:
+                            raise _reject(
+                                f"a post-loop `assert` on a `for` may "
+                                f"mention parameters only in this "
+                                f"slice — {e.id!r} is loop state, and "
+                                f"the for path has no exit-state "
+                                f"machinery (a `while` does)", _line)
+                        return
+                    if isinstance(e, (ast.ListComp, ast.SetComp,
+                                      ast.GeneratorExp)):
+                        b = set(bound)
+                        for gi, g in enumerate(e.generators):
+                            _no_loop_state(g.iter,
+                                           frozenset(b) if gi
+                                           else bound, _line)
+                            if isinstance(g.target, ast.Name):
+                                b.add(g.target.id)
+                            for c in g.ifs:
+                                _no_loop_state(c, frozenset(b), _line)
+                        _no_loop_state(e.elt, frozenset(b), _line)
+                        return
+                    for child in ast.iter_child_nodes(e):
+                        if isinstance(child, ast.expr):
+                            _no_loop_state(child, bound, _line)
+                _no_loop_state(past.test, frozenset(), past.lineno)
                 pa_name = f"{fname}_post_assert{pk}"
                 _check_name(pa_name, "generated declaration for",
                             past.lineno, taken)
