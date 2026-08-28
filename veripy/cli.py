@@ -642,12 +642,19 @@ def cmd_screen(tasks: Path, time_limit: int = 60) -> int:
     return 0 if all(r.adoptable for r in results) else 1
 
 
+def _backend_choices() -> list[str]:
+    from .backends.base import available_backends
+    return available_backends()
+
+
 def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
-                 mutant_cap: int, quick: bool) -> int:
+                 mutant_cap: int, quick: bool,
+                 backend: str = "dafny") -> int:
     from .benchmark.runner import ERROR, FAIL, render_report, run_benchmark, scores_to_json
 
     kwargs = dict(mutant_cap=mutant_cap, hunt_timeout=5,
-                  dafny_time_limit=60, difftest_examples=60)
+                  dafny_time_limit=60, difftest_examples=60,
+                  backend=backend)
     if quick:
         kwargs.update(mutant_cap=min(mutant_cap, 4), difftest_examples=20)
     scores = run_benchmark(tasks, outdir, **kwargs)
@@ -837,6 +844,13 @@ def main(argv: list[str] | None = None) -> int:
     p_benchmark.add_argument("-o", "--outdir", type=Path, default=Path("build/benchmark"))
     p_benchmark.add_argument("--report", type=Path, default=None)
     p_benchmark.add_argument("--mutant-cap", type=int, default=12)
+    p_benchmark.add_argument(
+        "--backend", dest="proof_backend", default="dafny",
+        choices=_backend_choices(),
+        help="prover backend for the ladder's encode/prove rungs and "
+             "the exams (R0-R2 and fidelity are prover-independent). "
+             "The proof-repair roster follows the backend: only tasks "
+             "with THAT prover's sidecar sit its exam")
     p_benchmark.add_argument(
         "--exam", choices=["proof-repair", "spec-writing"], default=None,
         help="run an exam instead of the ladder: 'proof-repair' strips the "
@@ -1062,7 +1076,8 @@ def main(argv: list[str] | None = None) -> int:
                 scores = run_repair_exam(args.tasks, args.outdir / "exam",
                                          lambda: make_engine(args.engine, _wall(args), effort=_effort(args)),
                                          max_iterations=args.max_iterations,
-                                         time_limit=args.time_limit)
+                                         time_limit=args.time_limit,
+                                         backend=args.proof_backend)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
@@ -1083,7 +1098,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             ladder = dict(mutant_cap=args.mutant_cap, hunt_timeout=5,
                           dafny_time_limit=args.time_limit,
-                          difftest_examples=60)
+                          difftest_examples=60,
+                          backend=args.proof_backend)
             if args.quick:
                 ladder.update(mutant_cap=min(args.mutant_cap, 3),
                               difftest_examples=20)
@@ -1103,7 +1119,9 @@ def main(argv: list[str] | None = None) -> int:
             # Exit status reports EXAM VALIDITY, never spec quality: a weak
             # spec is a measurement, not a failure.
             return 0 if scores and all(s.valid for s in scores) else 1
-        return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
+        return cmd_benchmark(args.tasks, args.outdir, args.report,
+                             args.mutant_cap, args.quick,
+                             backend=args.proof_backend)
     if args.command == "experiment":
         from .benchmark.experiment import (
             exam_roster,

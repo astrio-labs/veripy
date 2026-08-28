@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from .agentio import verify_structured
+from .backends.base import get_backend
 from .backends.dafny.encoder import EncodeError, validate_sidecar_text
 
 Engine = Callable[[dict[str, Any]], str]
@@ -64,12 +65,33 @@ Sidecar rules (whitelist-validated; violations are rejected):
   name (plus any helper lemmas they call)
 The preamble (PyMod, PyFloorDiv, PySlice, PySum, ...) is in scope."""
 
+LEAN_RULES = """\
+You are repairing a Lean 4 proof for a verified-Python toolchain.
+You may change ONLY the proof sidecar (<stem>.proofs.lean). Reply with the
+COMPLETE new sidecar content and nothing else (no fences, no commentary).
+Sidecar rules (whitelist-validated; violations are rejected):
+- declarations only: `theorem` / `lemma` / `def`, each with a REAL proof
+  — the driver checks every theorem's axiom footprint, so `sorry` and
+  `admit` are refused by their shared sorryAx even before the token scan
+- forbidden tokens: axiom, sorry, admit, native_decide, unsafe, partial,
+  opaque, extern, implemented_by, macro, macro_rules
+- core Lean 4 only: no imports at all (Mathlib is not available)
+- lemmas are invoked from Python via `#@ proof LemmaName(args)` clauses
+  already present in the source; define exactly the lemmas those clauses
+  name (plus any helper lemmas they call)
+The VeriPy prelude (PyMod, PyFloorDiv, PySum, IntBexDec, ...) is in
+scope; packs are spliced right after it, so they may use the prelude but
+not the generated definitions."""
+
+_BACKEND_RULES = {"dafny": RULES, "lean": LEAN_RULES}
+
 
 def build_request(source: str, payload: dict[str, Any],
-                  attempt: int, history: list[dict[str, Any]]) -> dict[str, Any]:
+                  attempt: int, history: list[dict[str, Any]],
+                  backend: str = "dafny") -> dict[str, Any]:
     return {
         "schema": "veripy-repair-request/1",
-        "rules": RULES,
+        "rules": _BACKEND_RULES.get(backend, RULES),
         "attempt": attempt,
         "source": source,
         "failures": payload,
@@ -646,7 +668,13 @@ class _FileEngine:
 
     def __call__(self, request: dict[str, Any]) -> str:
         self.calls += 1
+        # `.dfy` first (the historical name), then any single file with
+        # this attempt number — a Lean exam scripts `1.lean`.
         candidate = self.directory / f"{self.calls}.dfy"
+        if not candidate.exists():
+            matches = sorted(self.directory.glob(f"{self.calls}.*"))
+            if len(matches) == 1:
+                candidate = matches[0]
         if not candidate.exists():
             raise RuntimeError(f"file engine exhausted at attempt {self.calls}")
         return candidate.read_text()
@@ -784,9 +812,13 @@ class RepairOutcome:
     attempts: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _classify_rejection(proposal: str, name: str) -> dict[str, Any] | None:
+def _classify_rejection(proposal: str, name: str,
+                        backend: str = "dafny") -> dict[str, Any] | None:
     try:
-        validate_sidecar_text(proposal, name)
+        if backend == "dafny":
+            validate_sidecar_text(proposal, name)
+        else:
+            get_backend(backend).validate_sidecar(proposal)
     except EncodeError as exc:
         return {"rule": exc.rule or "other", "message": exc.message}
     return None
@@ -817,7 +849,8 @@ def _repairable(payload: dict[str, Any]) -> bool:
 
 def repair_file(path: Path, outdir: Path, engine: Engine,
                 max_iterations: int = 4, time_limit: int = 30,
-                apply: bool = False) -> RepairOutcome:
+                apply: bool = False,
+                backend: str = "dafny") -> RepairOutcome:
     outdir.mkdir(parents=True, exist_ok=True)
     # A fresh private work directory per invocation: two overlapping
     # repairs of same-named sources sharing an outdir must never verify
@@ -825,9 +858,10 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
     work = Path(tempfile.mkdtemp(prefix="work-", dir=outdir))
     work_src = work / path.name
     work_src.write_text(path.read_text())
-    user_sidecar = path.with_name(path.stem + ".proofs.dfy")
+    be = get_backend(backend)
+    user_sidecar = be.sidecar_path(path)
     initial_sidecar = user_sidecar.read_text() if user_sidecar.exists() else None
-    work_sidecar = work / f"{path.stem}.proofs.dfy"
+    work_sidecar = work / be.sidecar_path(work_src).name
     if user_sidecar.exists():
         work_sidecar.write_text(user_sidecar.read_text())
     else:
@@ -842,7 +876,7 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
     for attempt in range(max_iterations + 1):
         t0 = time.monotonic()
         payload = verify_structured(work_src, work / f"iter{attempt}",
-                                    time_limit=time_limit)
+                                    time_limit=time_limit, backend=backend)
         record: dict[str, Any] = {
             "attempt": attempt,
             "status": payload["status"],
@@ -872,7 +906,8 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
                                  attempts)
         if attempt == max_iterations:
             break
-        request = build_request(source, payload, attempt, history)
+        request = build_request(source, payload, attempt, history,
+                                backend=backend)
         t1 = time.monotonic()
         try:
             proposal = _strip_fences(engine(request))
@@ -880,7 +915,9 @@ def repair_file(path: Path, outdir: Path, engine: Engine,
             return RepairOutcome(False, attempt, f"engine error: {exc}",
                                  None, history, attempts)
         record["engine_ms"] = int((time.monotonic() - t1) * 1000)
-        record["rejection"] = _classify_rejection(proposal, work_sidecar.name)
+        record["rejection"] = _classify_rejection(proposal,
+                                                  work_sidecar.name,
+                                                  backend)
         work_sidecar.write_text(proposal)
         history.append({
             "attempt": attempt,

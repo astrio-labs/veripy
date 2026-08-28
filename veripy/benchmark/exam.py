@@ -41,11 +41,15 @@ class ExamScore:
     usage: list[dict[str, Any] | None] = field(default_factory=list)
 
 
-def exam_tasks(tasks_root: Path) -> list[Path]:
-    """Golden tasks that carry proof additions to strip."""
-    return sorted(
-        p.parent for p in tasks_root.glob("*/task.proofs.dfy")
-    )
+def exam_tasks(tasks_root: Path,
+               backend: str = "dafny") -> list[Path]:
+    """Golden tasks that carry proof additions to strip — for the
+    NAMED backend: a task sits an exam only under a prover whose
+    sidecar it actually has, so the Lean exam roster is the tasks
+    with a `.proofs.lean` pack, not Dafny's roster re-run."""
+    from ..backends.base import get_backend
+    suffix = get_backend(backend).sidecar_path(Path("task.py")).name
+    return sorted(p.parent for p in tasks_root.glob(f"*/{suffix}"))
 
 
 # In PROVER_KINDS, but NOT evidence that an obligation went undischarged.
@@ -227,12 +231,14 @@ def prepare_exam_workspace(tasks_root: Path, workdir: Path,
 def run_repair_exam(tasks_root: Path, workdir: Path,
                     engine_factory: Callable[[], Engine],
                     max_iterations: int = 4, time_limit: int = 60,
-                    only: set[str] | None = None) -> list[ExamScore]:
-    from ..backends.dafny.encoder import load_proof_sidecar
+                    only: set[str] | None = None,
+                    backend: str = "dafny") -> list[ExamScore]:
+    from ..backends.base import get_backend
+    be = get_backend(backend)
 
     check_workdir_disjoint(tasks_root, workdir)
     scores: list[ExamScore] = []
-    for task_dir in exam_tasks(tasks_root):
+    for task_dir in exam_tasks(tasks_root, backend):
         task_id = task_dir.name
         if only is not None and task_id not in only:
             continue
@@ -243,12 +249,12 @@ def run_repair_exam(tasks_root: Path, workdir: Path,
         # engine so a stateful engine (file:<dir>) replays its own attempt
         # sequence per task instead of continuing a previous task's counter
         # (and so per-call usage attributes cleanly to one task).
-        golden = load_proof_sidecar(task_dir / "task.py")
+        golden = be.load_sidecar(task_dir / "task.py")
         engine = engine_factory()
         t0 = time.monotonic()
         outcome = repair_file(stripped, exam_dir / "repair", engine,
                               max_iterations=max_iterations,
-                              time_limit=time_limit)
+                              time_limit=time_limit, backend=backend)
         scores.append(ExamScore(
             task_id=task_id,
             restored=outcome.verified,

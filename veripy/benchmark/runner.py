@@ -31,8 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..agentio import atomic_write_text
-from ..backends.dafny.driver import find_dafny, verify_dafny_file
-from ..backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
+from ..backends.base import get_backend
+from ..backends.dafny.encoder import EncodeError
 from ..backends.runtime.emit import emit_checked
 from ..frontend.extract import parse_source
 from ..frontend.typegate import run_type_gate
@@ -156,6 +156,7 @@ def run_task(
     hunt_timeout: int = 5,
     dafny_time_limit: int = 60,
     difftest_examples: int = 60,
+    backend: str = "dafny",
 ) -> TaskScore:
     task_id = task_dir.name
     score = TaskScore(task_id=task_id)
@@ -338,25 +339,30 @@ def run_task(
             f"{score.mutants_killed}/{score.mutants_total} refuted"
             + ("; " + "; ".join(extra) if extra else "")))
 
-    # R3: encode
+    # R3: encode — through the backend registry, so `--backend lean`
+    # climbs the SAME ladder with the same rungs (R0-R2 and R5 are
+    # prover-independent; only encode and prove dispatch).
+    be = get_backend(backend)
     try:
-        sidecar = load_proof_sidecar(source_path)
-        encoded = encode_module(source, specs, module_name=source_path.name,
-                                proof_lemmas=sidecar.lemmas)
+        sidecar = be.load_sidecar(source_path)
+        encoded = be.encode(source, specs, module_name=source_path.name,
+                            proof_lemmas=sidecar.lemmas)
     except EncodeError as exc:
         score.rungs.append(Rung("encode", FAIL, f"line {exc.line}: {exc.message}"))
         return score
     score.rungs.append(Rung("encode", PASS))
 
-    # R4: prove
-    if find_dafny() is None:
-        score.rungs.append(Rung("prove", ERROR, "dafny not installed"))
+    # R4: prove. `dafny_time_limit` keeps its name (a published kwarg)
+    # but bounds WHICHEVER prover the backend runs.
+    if be.prover_version() is None:
+        score.rungs.append(Rung("prove", ERROR,
+                                f"{backend} prover not installed"))
         return score
-    stub = workdir / f"{task_id}.dfy"
-    stub.write_text(encoded.dafny_source + sidecar.text)
-    result = verify_dafny_file(stub, encoded.line_map,
-                               time_limit=dafny_time_limit,
-                               stub_extent=encoded.dafny_source.count("\n") + 1)
+    stub = workdir / be.artifact_name(task_id)
+    stub.write_text(be.compose_artifact(encoded, sidecar))
+    result = be.verify_artifact(
+        stub, encoded.line_map, time_limit=dafny_time_limit,
+        extent=be.encoded_text(encoded).count("\n") + 1)
     if result.error is not None:
         score.rungs.append(Rung("prove", ERROR, result.error))
         return score

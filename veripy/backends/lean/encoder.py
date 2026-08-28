@@ -3506,7 +3506,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             if call.func.id not in proof_lemmas:
                 raise _reject(
                     f"unknown lemma {call.func.id!r} — a `#@ proof` "
-                    f"target must be declared in the sidecar "
+                    f"target must be declared in the proof sidecar "
                     f"(<stem>.proofs.lean); this one declares "
                     f"{sorted(proof_lemmas) or 'nothing'}", clause.line)
         if loop is None and wloop is None \
