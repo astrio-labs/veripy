@@ -471,3 +471,89 @@ def test_lean_pack_screens_load_bearing(tmp_path):
         (src / "he_humaneval_31.proofs.lean").read_text())
     r = screen_sidecar(task, backend="lean")
     assert r.verdict == "load-bearing", (r.verdict, r.detail)
+
+
+LEAN_PACKED = ["below_zero", "gcd", "is_prime", "modp",
+               "rolling_max", "sum_squares"]
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+@pytest.mark.parametrize("task_id", LEAN_PACKED)
+def test_corpus_lean_packs_prove(task_id, tmp_path):
+    # The cross-prover corpus: each task with a `.proofs.lean` twin
+    # proves under Lean (gcd/modp ride ports of the he_13/he_49
+    # packs; below_zero/sum_squares/rolling_max packs are
+    # resolution-only — the prelude carries their content — and the
+    # per-backend screen says so honestly). sum_to_n is the measured
+    # exception: its exit-value assert would flip the DAFNY pack
+    # vacuous and cost a proof-repair exam row, so it stays
+    # Dafny-only until the Lean while-endgame derives exit values
+    # unaided.
+    import shutil
+    from veripy.agentio import verify_structured
+    src = REPO / "benchmark" / "tasks" / task_id
+    shutil.copy(src / "task.py", tmp_path / "task.py")
+    shutil.copy(src / "task.proofs.lean", tmp_path / "task.proofs.lean")
+    r = verify_structured(tmp_path / "task.py", tmp_path / "o",
+                          backend="lean", time_limit=60)
+    assert r["status"] == "ok", (task_id, r["failures"][:1])
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_resolution_only_lean_pack_screens_vacuous(tmp_path):
+    # A pack the Lean ladder does not need screens VACUOUS under
+    # Lean — the honest verdict that keeps it OFF the Lean exam
+    # roster while still resolving the task's `#@ proof` clause.
+    import shutil
+    src = REPO / "benchmark" / "tasks" / "below_zero"
+    task = tmp_path / "t"
+    task.mkdir()
+    shutil.copy(src / "task.py", task / "task.py")
+    shutil.copy(src / "task.proofs.lean", task / "task.proofs.lean")
+    r = screen_sidecar(task, backend="lean")
+    assert r.verdict == "vacuous", (r.verdict, r.detail)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_sqrt_search_pack_screen_is_inconclusive_by_construction(tmp_path):
+    # The sqrt-search class REQUIRES its `#@ proof` clause, so the
+    # screen's counterfactual (strip clauses AND pack) hits the class
+    # gate before the prover — `inconclusive`, honestly: the class
+    # cannot run clause-less, so the screen observes nothing about
+    # provability. The EXAM's counterfactual (strip only the pack)
+    # is the real one: iteration-0 fails on resolution, restoration
+    # measures the composite lemma.
+    import shutil
+    src = REPO / "benchmark" / "tasks" / "is_prime"
+    task = tmp_path / "t"
+    task.mkdir()
+    shutil.copy(src / "task.py", task / "task.py")
+    shutil.copy(src / "task.proofs.lean", task / "task.proofs.lean")
+    r = screen_sidecar(task, backend="lean")
+    assert r.verdict == "inconclusive", (r.verdict, r.detail)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_lean_is_prime_exam_restores_with_scripted_golden(tmp_path):
+    # The first Lean exam row that is load-bearing BY CONSTRUCTION:
+    # the emitted endgame applies the sidecar's composite lemma, so
+    # stripping the pack fails at iteration 0 and restoration
+    # measures real proof content.
+    import shutil
+    src = REPO / "benchmark" / "tasks" / "is_prime"
+    corpus = tmp_path / "tasks"
+    task = corpus / "is_prime"
+    task.mkdir(parents=True)
+    shutil.copy(src / "task.py", task / "task.py")
+    golden = (src / "task.proofs.lean").read_text()
+    (task / "task.proofs.lean").write_text(golden)
+    attempts = tmp_path / "attempts"
+    attempts.mkdir()
+    (attempts / "1.lean").write_text(golden)
+    scores = run_repair_exam(corpus, tmp_path / "work",
+                             lambda: make_engine(f"file:{attempts}"),
+                             time_limit=60, backend="lean")
+    assert len(scores) == 1
+    s0 = scores[0]
+    assert s0.restored, s0.reason
+    assert s0.iterations == 1
