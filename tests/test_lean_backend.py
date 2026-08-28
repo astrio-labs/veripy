@@ -517,7 +517,7 @@ def test_list_misuse_is_refused_not_mistranslated():
          "    return sum(n)\n", "list parameter or"),
         # only list[int] element types have a model
         ("#@ ensures result >= 0\ndef f(xs: list[str]) -> int:\n"
-         "    return 0\n", "must be `int` or `list"),
+         "    return 0\n", "must be `int`, `str`, or `list"),
         # lists CAN be returned now, but list-valued equality is not
         # modeled: `result == xs` compares whole lists.
         ("#@ ensures result == xs\ndef f(xs: list[int]) -> list[int]:\n"
@@ -4096,3 +4096,60 @@ def test_computed_reads_carry_wellformedness_obligations(tmp_path):
     shutil.copy(Path("examples/contact/he_humaneval_5.py"), good)
     assert verify_structured(good, tmp_path / "o2",
                              backend="lean")["status"] == "ok"
+
+
+def test_str_code_point_model_maps_and_disciplines():
+    # `str` is its code-point sequence (List Int) -- faithful ONLY
+    # under the element discipline: `len`, and comparisons whose
+    # EVERY operand is an indexed character of a str parameter
+    # (Python orders characters by code point, so all six comparators
+    # transfer). Everything else rejects by default, in ghost
+    # positions too, so a #@ clause means one thing across backends.
+    src = Path("examples/contact/he_humaneval_48.py").read_text()
+    out = _encode(src).lean_source
+    assert ": List Int" in out
+    # The mirror license: xs[len(xs) - 1 - i] rides i's own bound.
+    assert ".length : Int) - 1 -" in out
+
+    HEAD = ("def f(text: str) -> bool:\n"
+            "    for i in range(len(text)):\n"
+            "        #@ invariant True\n"
+            "        if text[i] != text[len(text) - 1 - i]:\n"
+            "            return False\n"
+            "    return True\n")
+    for bad_ens in (
+            "#@ ensures result == (sum(text) > 0)\n",          # arith
+            "#@ ensures result == (text[0] == 97)\n",          # literal
+            "#@ ensures result == (text[0] + 1 == text[0])\n",  # arith
+            "#@ ensures result == (text == text)\n"):          # whole-str
+        with pytest.raises(EncodeError,
+                           match="str.*parameter|compared with another"):
+            _encode("#@ verified\n" + bad_ens + HEAD)
+
+
+def test_end_to_end_palindrome_proves_and_lies_fail(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/he_humaneval_48.py")
+    good = tmp_path / "pal.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            # Off-by-one mirror in the spec: the ghost read escapes
+            # the window, and its well-formedness obligation (plus
+            # the spec itself) is FALSE on 1-char strings up.
+            ("#@ ensures result == (forall i in range(len(text)) :: "
+             "text[i] == text[len(text) - 1 - i])",
+             "#@ ensures result == (forall i in range(len(text)) :: "
+             "text[i] == text[len(text) - 2 - i])"),
+            # Implementation lie: bail on the MATCH, keep mismatches.
+            ("if text[i] != text[len(text) - 1 - i]:",
+             "if text[i] == text[len(text) - 1 - i]:"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        assert verify_structured(bad, tmp_path / f"ob{k}",
+                                 backend="lean")["status"] == "failed", k

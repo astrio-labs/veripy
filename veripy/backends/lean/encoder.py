@@ -326,6 +326,28 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             base = _lref(e.value.id, rename)
             return (f"({base}.getD ((({base}.length : Int)) - 1)"
                     f".toNat 0)")
+        if isinstance(idx, ast.BinOp) and isinstance(idx.op, ast.Sub) \
+                and isinstance(idx.right, ast.Name) \
+                and lc.safe_for(idx.right.id, e.value.id) \
+                and isinstance(idx.left, ast.BinOp) \
+                and isinstance(idx.left.op, ast.Sub) \
+                and isinstance(idx.left.right, ast.Constant) \
+                and idx.left.right.value == 1 \
+                and isinstance(idx.left.left, ast.Call) \
+                and isinstance(idx.left.left.func, ast.Name) \
+                and idx.left.left.func.id == "len" \
+                and len(idx.left.left.args) == 1 \
+                and isinstance(idx.left.left.args[0], ast.Name) \
+                and idx.left.left.args[0].id == e.value.id:
+            # MIRROR closure: `xs[len(xs) - 1 - i]` with i already
+            # safe for xs — 0 ≤ i < len forces 0 ≤ len-1-i < len, so
+            # the read is in bounds by the same construction that
+            # licensed i (the palindrome class reads both ends of
+            # the same window).
+            base = _lref(e.value.id, rename)
+            i_ = _lref(idx.right.id, rename)
+            return (f"({base}.getD (({base}.length : Int) - 1 - "
+                    f"{i_}).toNat 0)")
         if lc.scaffold:
             # SCAFFOLD positions (invariants, spec clauses) are proof
             # machinery, never executed: the totalized getD needs no
@@ -1873,6 +1895,78 @@ def _split_guards(stmts: list[ast.stmt]
     return guards, stmts[i:]
 
 
+def _str_element_discipline(fn: ast.FunctionDef,
+                            spec_fn: FunctionSpec,
+                            str_params: frozenset[str]) -> None:
+    """The code-point model (`str` as `List Int`) is faithful only
+    where the admitted operations cannot tell a string from its
+    code-point sequence: `len(s)`, and comparisons in which EVERY
+    operand is a single-character read of a str parameter (Python
+    compares characters by code point, so ==/!=/</<=/>/>= all
+    transfer). Everything else is rejected by default — arithmetic on
+    an element, `sum`, slices, whole-string comparison, iteration —
+    rather than silently proved about a program that would raise
+    TypeError or mean something different in Python. Ghost
+    expressions (spec clauses) obey the same rule, so a `#@` clause
+    keeps one meaning across backends. Shadowing a str parameter
+    (a local or binder reusing the name) also rejects: over-strict
+    is safe, and the fragment note says so.
+
+    Every source of expressions is swept: the function body AST and
+    every expression-kind spec clause. Clause text that fails to
+    parse is skipped here — the clause's own translator rejects it
+    with the better message."""
+    def elem_read(e: ast.expr) -> bool:
+        return (isinstance(e, ast.Subscript)
+                and isinstance(e.value, ast.Name)
+                and e.value.id in str_params
+                and not isinstance(e.slice, ast.Slice))
+
+    def sweep(root: ast.AST, clause_line: int | None) -> None:
+        licensed: set[int] = set()
+        for node in ast.walk(root):
+            if isinstance(node, ast.Compare):
+                operands = [node.left, *node.comparators]
+                if any(elem_read(o) for o in operands):
+                    if not all(elem_read(o) for o in operands):
+                        raise _reject(
+                            "a character of a `str` parameter can only "
+                            "be compared with another character read "
+                            "(the code-point model has no literals or "
+                            "arithmetic in this slice)",
+                            clause_line
+                            or getattr(node, "lineno", None))
+                    for o in operands:
+                        licensed.add(id(o.value))
+            elif (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "len"
+                    and len(node.args) == 1
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id in str_params):
+                licensed.add(id(node.args[0]))
+        for node in ast.walk(root):
+            if isinstance(node, ast.Name) and node.id in str_params \
+                    and id(node) not in licensed:
+                raise _reject(
+                    f"`{node.id}` is a `str` parameter: this slice "
+                    f"admits it only as `len({node.id})` or in "
+                    f"comparisons between two indexed characters",
+                    clause_line or getattr(node, "lineno", None))
+
+    sweep(fn, None)
+    for c in spec_fn.clauses:
+        if c.kind not in ("ensures", "requires", "invariant", "assert") \
+                or c.error is not None:
+            continue
+        text = c.desugared if c.desugared is not None else c.raw
+        try:
+            tree = ast.parse(text, mode="eval").body
+        except SyntaxError:
+            continue
+        sweep(tree, c.line)
+
+
 def _loop_invariants(spec_fn: FunctionSpec,
                      loop: ast.For | ast.While) -> tuple[ast.expr, int]:
     """Collect every `#@ invariant` at the loop HEAD and conjoin them
@@ -2907,10 +3001,20 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                           "no *args/**kwargs, no positional-only or "
                           "keyword-only markers) are in slice 1", fn.lineno)
         ptypes: dict[str, str] = {}
+        str_params: set[str] = set()
         for arg in a.args:
             ann = arg.annotation
             if isinstance(ann, ast.Name) and ann.id == "int":
                 ptypes[arg.arg] = "Int"
+            elif isinstance(ann, ast.Name) and ann.id == "str":
+                # Code-point model: a str is its List Int of code
+                # points. Sound only under the element discipline
+                # checked below — `len` and character-to-character
+                # comparisons are exactly the operations Python and
+                # the model agree on (Python orders characters by
+                # code point).
+                ptypes[arg.arg] = "List Int"
+                str_params.add(arg.arg)
             elif isinstance(ann, ast.Subscript) \
                     and isinstance(ann.value, ast.Name) \
                     and ann.value.id == "list" \
@@ -2925,13 +3029,16 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "backend admits them; this slice has no product types",
                     fn.lineno)
             else:
-                raise _reject(f"parameter {arg.arg!r} must be `int` or "
-                              f"`list[int]` in this slice", fn.lineno)
+                raise _reject(f"parameter {arg.arg!r} must be `int`, "
+                              f"`str`, or `list[int]` in this slice",
+                              fn.lineno)
             # No module-wide check for parameters: a binder shadowing a
             # top-level name is legal Lean (and matches Python scoping).
             # The one genuine capture — a parameter named after its OWN
             # function, which the theorem statement must reference beside
             # it — is alpha-renamed in theorem context below.
+        if str_params:
+            _str_element_discipline(fn, spec_fn, frozenset(str_params))
         lists0 = frozenset(p for p, t in ptypes.items()
                            if t == "List Int")
         lc0 = _ListCtx(lists0, {}, None,

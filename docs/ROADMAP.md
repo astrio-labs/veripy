@@ -216,7 +216,7 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 
 | | |
 |---|---|
-| contact corpus under Lean | **12/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`, `he_43`, `he_40`) — `he_43` now EXCEEDS Dafny, whose fragment lacks `enumerate` |
+| contact corpus under Lean | **13/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`, `he_43`, `he_40`, `he_48`) — `he_43` now EXCEEDS Dafny, whose fragment lacks `enumerate` |
 | prelude | `lean-0.11` (`IntBexDec`: range-bounded `∃` is decidable — the nested-search flattener) |
 | slices landed | P2 1–20, P3 (sidecar channel) |
 | `.proofs.lean` packs in existence | **4** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr`; `he_31`: `ModPredOne` (with a Dafny twin, the first task packed under BOTH provers) — all kernel-checked, clean axiom footprints) |
@@ -235,7 +235,6 @@ work list and not a countdown):
 
 | blocker | tasks |
 |---|---|
-| `str` parameters | `he_48` |
 | DP / indexed assignment — **cut by decision** | `mbpp_402`, `mbpp_620`, `mbpp_247` (2-D table), `mbpp_149` (dp array) |
 | `int \| None` accumulator — a real fragment addition, not a body-shape issue (earlier table binned it by its first error) | `he_9` |
 | filtered comprehension | `he_30` |
@@ -246,8 +245,15 @@ The earlier revision of this table grouped `mbpp_247`, `mbpp_885`, and
 `mbpp_97` under `str` parameters and `mbpp_149` under "two loops" —
 each was binned by its first error message. Reading the sources put
 `mbpp_247` and `mbpp_149` in the cut DP class and the other two behind
-`dict`, which no slice has touched. `str` is a one-task cluster, not
-four.
+`dict`, which no slice has touched. `str` was a one-task cluster, not
+four, and slice 27 cleared it: a `str` parameter is its code-point
+sequence (`List Int`), faithful because the admitted operations —
+`len`, and comparisons in which every operand is an indexed character
+— cannot tell a string from its code points (Python orders characters
+by code point). Everything else on a `str`, ghost positions included,
+is rejected rather than mistranslated. The same slice added the mirror
+license: `xs[len(xs) - 1 - i]` is structurally in bounds wherever `i`
+is.
 
 The five tasks that report *"a loop function must be exactly `acc =
 init; for ...: ...; return expr`"* are **five different causes sharing
