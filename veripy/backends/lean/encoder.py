@@ -279,6 +279,18 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             # let a spec Dafny refuses hold vacuously here.
             return (f"({result}.getD "
                     f"({_lref(idx.id, rename)}).toNat 0)")
+        if lc.scaffold:
+            # Same story as the param-list scaffold fallback below,
+            # extended to `result` now that the WF pre-pass appends
+            # an in-bounds obligation for every read no structural
+            # rule licensed: the totalized getD is paired with a
+            # goal conjunct Dafny-style, so `result[i + 1]` under a
+            # binder over `range(len(result) - 1)` (the sorted-unique
+            # adjacency spec) is admitted and its bound is PROVED,
+            # while an unbounded read makes the theorem unprovable
+            # instead of quietly true.
+            it_ = _int_expr(idx, names, line, result, rename, lc)
+            return f"({result}.getD ({it_}).toNat 0)"
         if lc.result_list is None:
             raise _reject(
                 "`result[...]` needs an earlier `ensures` proving "
@@ -326,6 +338,28 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             base = _lref(e.value.id, rename)
             return (f"({base}.getD ((({base}.length : Int)) - 1)"
                     f".toNat 0)")
+        if isinstance(idx, ast.BinOp) and isinstance(idx.op, ast.Sub) \
+                and isinstance(idx.right, ast.Name) \
+                and lc.safe_for(idx.right.id, e.value.id) \
+                and isinstance(idx.left, ast.BinOp) \
+                and isinstance(idx.left.op, ast.Sub) \
+                and isinstance(idx.left.right, ast.Constant) \
+                and idx.left.right.value == 1 \
+                and isinstance(idx.left.left, ast.Call) \
+                and isinstance(idx.left.left.func, ast.Name) \
+                and idx.left.left.func.id == "len" \
+                and len(idx.left.left.args) == 1 \
+                and isinstance(idx.left.left.args[0], ast.Name) \
+                and idx.left.left.args[0].id == e.value.id:
+            # MIRROR closure: `xs[len(xs) - 1 - i]` with i already
+            # safe for xs — 0 ≤ i < len forces 0 ≤ len-1-i < len, so
+            # the read is in bounds by the same construction that
+            # licensed i (the palindrome class reads both ends of
+            # the same window).
+            base = _lref(e.value.id, rename)
+            i_ = _lref(idx.right.id, rename)
+            return (f"({base}.getD (({base}.length : Int) - 1 - "
+                    f"{i_}).toNat 0)")
         if lc.scaffold:
             # SCAFFOLD positions (invariants, spec clauses) are proof
             # machinery, never executed: the totalized getD needs no
@@ -342,6 +376,21 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             f"in range(len({e.value.id}))`, a quantifier binder over "
             f"`range(len({e.value.id}))`, or a literal below a "
             f"requires-clause length bound", line)
+    if isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute) \
+            and e.func.attr == "count" and len(e.args) == 1 \
+            and not e.keywords \
+            and isinstance(e.func.value, ast.Name) \
+            and (e.func.value.id in lc.lists
+                 or (e.func.value.id == "result" and result is not None
+                     and lc.result_is_list)):
+        # `xs.count(v)` is List.count — a Nat, cast to Int so it lives
+        # in the one arithmetic world the fragment models (Python's
+        # count is a plain int). The filtered-comprehension class
+        # states its multiplicity posts with this.
+        base = (result if e.func.value.id == "result"
+                else _lref(e.func.value.id, rename))
+        a = _int_expr(e.args[0], names, line, result, rename, lc)
+        return f"(({base}.count {a} : Nat) : Int)"
     if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):
         args = e.args
         if e.func.id in _MATH_FNS:
@@ -639,6 +688,25 @@ def _slice_extension_shape(e: ast.expr, idx: str,
 
 
 
+def _is_sorted_unique_call(node: ast.Call) -> bool:
+    """The ONE admitted `sorted` shape: `sorted(list(set(NAME)))` or
+    `sorted(set(NAME))` — the sorted-unique class. Anything else
+    keeps the pre-gate's rejection (bare `sorted(L)` preserves
+    duplicates: a different function, a different lemma pack)."""
+    if not (len(node.args) == 1 and not node.keywords):
+        return False
+    inner = node.args[0]
+    if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) \
+            and inner.func.id == "list" and len(inner.args) == 1 \
+            and not inner.keywords:
+        inner = inner.args[0]
+    return (isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Name)
+            and inner.func.id == "set" and len(inner.args) == 1
+            and not inner.keywords
+            and isinstance(inner.args[0], ast.Name))
+
+
 def _computed_read_wf(expr: ast.expr, lc: "_ListCtx",
                       names: set[str]) -> ast.expr | None:
     """The WELL-FORMEDNESS obligation for an ensures clause: for every
@@ -656,6 +724,18 @@ def _computed_read_wf(expr: ast.expr, lc: "_ListCtx",
     def structurally_ok(sub: ast.Subscript) -> bool:
         idx = sub.slice
         lname = sub.value.id
+        if lname == "result":
+            # BOTH the gate's structural licenses, restated: the
+            # binder-over-`range(len(result))` pair, and an index
+            # safe for the list an earlier ensures proved result
+            # matches (missing the second appended redundant
+            # obligations and shifted the parity endgame's post
+            # count — caught by the intersperse e2e).
+            return (isinstance(idx, ast.Name)
+                    and (lc.safe_idx.get(idx.id) == "@result"
+                         or (lc.result_list is not None
+                             and lc.safe_for(idx.id,
+                                             lc.result_list))))
         if isinstance(idx, ast.Name) and lc.safe_for(idx.id, lname):
             return True
         if isinstance(idx, ast.Constant) and isinstance(idx.value, int) \
@@ -684,8 +764,14 @@ def _computed_read_wf(expr: ast.expr, lc: "_ListCtx",
             return
         if isinstance(e, ast.Subscript) \
                 and isinstance(e.value, ast.Name) \
-                and e.value.id in wlc.lists \
+                and (e.value.id in wlc.lists
+                     or (e.value.id == "result"
+                         and wlc.result_is_list)) \
                 and not isinstance(e.slice, ast.Slice):
+            # `result` reads ride the same rule: the scaffold
+            # totalizes them now, so every one not licensed by the
+            # binder-over-`range(len(result))` pair owes an
+            # in-bounds conjunct (`len(result)` translates in posts).
             if not structurally_ok_in(e, wlc):
                 idx = e.slice
                 wf = ast.parse(
@@ -746,6 +832,20 @@ def _quantifier_body_lc(lc: "_ListCtx",
             and isinstance(hi.args[0], ast.Name) \
             and hi.args[0].id in lc.lists:
         safe[v] = hi.args[0].id
+    # The translator's "@result" license, restated (missed at first:
+    # `result[i]` under `forall i in range(len(result))` looked
+    # unlicensed to the WF walk, and the redundant obligations
+    # shifted the parity endgame's post count). Same strictness as
+    # the translator: a ZERO lower bound, not merely nonnegative.
+    lo_is_zero = (len(args) == 1
+                  or (isinstance(args[0], ast.Constant)
+                      and args[0].value == 0))
+    if lo_is_zero and isinstance(hi, ast.Call) \
+            and isinstance(hi.func, ast.Name) and hi.func.id == "len" \
+            and len(hi.args) == 1 \
+            and isinstance(hi.args[0], ast.Name) \
+            and hi.args[0].id == "result" and lc.result_is_list:
+        safe[v] = "@result"
     # PROGRESSIVE, like the translator: a nonneg binder joins the
     # nonneg set so the NEXT generator's `range(i + 1, ...)` lower
     # bound checks out (missed at first, and the pre-pass then
@@ -808,6 +908,61 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         raise _reject("filtered or destructuring quantifier binders are "
                       "outside slice 2", line)
     it = comp.iter
+    if isinstance(it, ast.Name) \
+            and (it.id in (lc or _NO_LISTS).lists
+                 or (it.id == "result" and result is not None
+                     and (lc or _NO_LISTS).result_is_list)):
+        # MEMBERSHIP domain (`forall x in xs ::`): the binder ranges
+        # over the list's ELEMENTS, not its indices, so it grants no
+        # safe-index or take license — and it SHADOWS any outer
+        # licenses under its name. The desugarer spells `==>` as
+        # `(not A) or B`; the arrow is recovered here — a brand-new
+        # context with no prior scripts relying on the ∨ spelling —
+        # so the filter class's count script can intro the
+        # antecedent.
+        lc_m = lc or _NO_LISTS
+        v = comp.target.id
+        if v in lc_m.lists:
+            raise _reject(f"quantifier binder {v!r} shadows a list "
+                          f"parameter — outside this slice", line)
+        lst = result if it.id == "result" else _lref(it.id, rename)
+        safe_m = {k: l_ for k, l_ in lc_m.safe_idx.items() if k != v}
+        body_lc = _ListCtx(lc_m.lists, safe_m,
+                           None if lc_m.take_idx == v else lc_m.take_idx,
+                           lc_m.scaffold, lc_m.min_len,
+                           frozenset(lc_m.pos_names - {v}),
+                           lc_m.result_list, lc_m.result_is_list,
+                           frozenset(lc_m.nonneg_names - {v}))
+        body_rename = {k: r for k, r in (rename or {}).items() if k != v}
+        binder = v
+        if avoid:
+            while binder in avoid:
+                binder += "'"
+        if binder != v:
+            body_rename[v] = binder
+        body_avoid = (avoid or frozenset()) | {binder}
+        elt = gen.elt
+        if e.func.id == "all" and isinstance(elt, ast.BoolOp) \
+                and isinstance(elt.op, ast.Or) \
+                and len(elt.values) == 2 \
+                and isinstance(elt.values[0], ast.UnaryOp) \
+                and isinstance(elt.values[0].op, ast.Not):
+            ante = _prop_expr(elt.values[0].operand, names | {v}, line,
+                              result, body_rename or None,
+                              result_is_bool, body_avoid, body_lc)
+            cons = _prop_expr(elt.values[1], names | {v}, line, result,
+                              body_rename or None, result_is_bool,
+                              body_avoid, body_lc)
+            body_m = f"({ante} → {cons})"
+        else:
+            body_m = _prop_expr(elt, names | {v}, line, result,
+                                body_rename or None, result_is_bool,
+                                body_avoid, body_lc)
+        if e.func.id == "all":
+            return (f"(∀ {_ident(binder)} : Int, "
+                    f"{_ident(binder)} ∈ {lst} → {body_m})")
+        return (f"(∃ {_ident(binder)} : Int, "
+                f"{_ident(binder)} ∈ {lst} ∧ {body_m})")
     if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
             and it.func.id == "range" and it.func.id not in names
             and not it.keywords and len(it.args) in (1, 2)):
@@ -1029,6 +1184,42 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
                 "slice — Python's bool is a subtype of int, so this is "
                 "legal Python whose meaning (0/1 coercion) the encoder "
                 "does not model", line)
+    if isinstance(e, ast.Compare) and len(e.ops) == 1 \
+            and type(e.ops[0]) in (ast.Eq, ast.NotEq):
+        # Whole-list equality (`result == [x for x in l if x > 0]`):
+        # both sides must be list-valued terms; a mixed comparison
+        # falls through to the generic paths, whose messages are
+        # better.
+        def _lterm(x: ast.expr) -> str | None:
+            lc_ = lc or _NO_LISTS
+            if isinstance(x, ast.Name) and x.id == "result" \
+                    and result is not None and lc_.result_is_list:
+                return result
+            if isinstance(x, (ast.ListComp, ast.List)) \
+                    or (isinstance(x, ast.Name) and x.id in lc_.lists):
+                return _list_expr(x, names, line, lc_, rename, result)
+            return None
+        la, ra = _lterm(e.left), _lterm(e.comparators[0])
+        if la is not None and ra is not None:
+            eq = f"({la} = {ra})"
+            return eq if isinstance(e.ops[0], ast.Eq) else f"(¬{eq})"
+    if isinstance(e, ast.Compare) and len(e.ops) == 1 \
+            and type(e.ops[0]) in (ast.In, ast.NotIn) \
+            and isinstance(e.comparators[0], ast.Name) \
+            and (e.comparators[0].id in (lc or _NO_LISTS).lists
+                 or (e.comparators[0].id == "result"
+                     and result is not None
+                     and (lc or _NO_LISTS).result_is_list)):
+        # `x in xs` on a list parameter (or a list-valued result) is
+        # List membership — same shape as the membership quantifier's
+        # domain, and Python's `in` on list[int] is exactly ∈ on the
+        # embedded List Int.
+        target = e.comparators[0]
+        lst = result if target.id == "result" else _lref(target.id,
+                                                         rename)
+        a = _int_expr(e.left, names, line, result, rename, lc)
+        mem = f"({a} ∈ {lst})"
+        return mem if isinstance(e.ops[0], ast.In) else f"(¬{mem})"
     if isinstance(e, ast.Compare):
         parts = []
         left = e.left
@@ -1214,28 +1405,61 @@ def _bool_expr(e: ast.expr, names: set[str], line: int,
 
 
 def _list_expr(e: ast.expr, names: set[str], line: int,
-               lc: _ListCtx) -> str:
+               lc: _ListCtx, rename: dict[str, str] | None = None,
+               result: str | None = None) -> str:
     """A `List Int`-valued Lean term. `[f(x) for x in xs]` becomes
     `xs.map (fun x => f x)`, which is the same order and length as
     Python's comprehension. Filtered comprehensions change the length
     and stay out of this slice."""
     if isinstance(e, ast.Name) and e.id in lc.lists:
-        return _ident(e.id)
+        return _lref(e.id, rename)
     if isinstance(e, ast.List):
         # A literal list, `[]` above all: it is what a guard returns in
         # `if not numbers: return []`.
         if not e.elts:
             return "([] : List Int)"
-        items = ", ".join(_int_expr(x, names, line, lc=lc) for x in e.elts)
+        items = ", ".join(_int_expr(x, names, line, result, rename,
+                                     lc) for x in e.elts)
         return f"([{items}] : List Int)"
+    if isinstance(e, ast.Call) and isinstance(e.func, ast.Name) \
+            and e.func.id == "sorted" and e.func.id not in names \
+            and len(e.args) == 1 and not e.keywords:
+        # `sorted(list(set(L)))` (and the equivalent `sorted(set(L))`)
+        # is the sorted-unique class: one prelude function computes
+        # it by insertion sort that DROPS duplicates, and the pack's
+        # lemmas give strict adjacency plus both membership
+        # directions. Bare `sorted(L)` (duplicates kept) is a
+        # different function with a different lemma story — rejected
+        # until that slice.
+        inner0 = e.args[0]
+        if isinstance(inner0, ast.Call) \
+                and isinstance(inner0.func, ast.Name) \
+                and inner0.func.id == "list" \
+                and inner0.func.id not in names \
+                and len(inner0.args) == 1 and not inner0.keywords:
+            inner0 = inner0.args[0]
+        if isinstance(inner0, ast.Call) \
+                and isinstance(inner0.func, ast.Name) \
+                and inner0.func.id == "set" \
+                and inner0.func.id not in names \
+                and len(inner0.args) == 1 and not inner0.keywords \
+                and isinstance(inner0.args[0], ast.Name) \
+                and inner0.args[0].id in lc.lists:
+            _SORTED_UNIQUE_USED.append(True)
+            return (f"(VeriPy.SortedUnique "
+                    f"{_lref(inner0.args[0].id, rename)})")
+        raise _reject(
+            "`sorted` is admitted only as `sorted(list(set(L)))` or "
+            "`sorted(set(L))` over a list parameter in this slice — "
+            "bare `sorted(L)` keeps duplicates, a different function "
+            "with a different lemma pack", line)
     if isinstance(e, ast.ListComp):
         if len(e.generators) != 1:
             raise _reject("only one comprehension generator in this "
                           "slice", line)
         comp = e.generators[0]
-        if comp.ifs or comp.is_async:
-            raise _reject("a FILTERED comprehension changes the list's "
-                          "length, which this slice does not model",
+        if comp.is_async:
+            raise _reject("async comprehensions are outside this slice",
                           line)
         if not isinstance(comp.target, ast.Name):
             raise _reject("destructuring comprehension targets are "
@@ -1248,8 +1472,29 @@ def _list_expr(e: ast.expr, names: set[str], line: int,
         if v in names:
             raise _reject(f"comprehension binder {v!r} shadows a name in "
                           f"scope — outside this slice", line)
-        body = _int_expr(e.elt, names | {v}, line, lc=lc)
-        return f"({_ident(comp.iter.id)}.map (fun {_ident(v)} => {body}))"
+        if comp.ifs:
+            # The filtered-comprehension class: ONLY the identity
+            # element (`[x for x in xs if P]`), so the result is
+            # `xs.filter` and Count_filter_of_pos speaks about it
+            # directly. A mapped-and-filtered body would need a
+            # composed story none of the ladder knows yet.
+            if len(comp.ifs) != 1:
+                raise _reject("one filter condition per comprehension "
+                              "in this slice", line)
+            if not (isinstance(e.elt, ast.Name) and e.elt.id == v):
+                raise _reject(
+                    "a FILTERED comprehension keeps elements unchanged "
+                    "in this slice — `[x for x in xs if P]`; mapping "
+                    "and filtering at once is outside it", line)
+            test = _prop_expr(comp.ifs[0], names | {v}, line, result,
+                              rename, lc=lc)
+            pred = f"(fun {_ident(v)} : Int => (decide {test}))"
+            if pred not in _FILTER_PREDS:
+                _FILTER_PREDS.append(pred)
+            return f"({_lref(comp.iter.id, rename)}.filter {pred})"
+        body = _int_expr(e.elt, names | {v}, line, result, rename, lc)
+        return (f"({_lref(comp.iter.id, rename)}.map "
+                f"(fun {_ident(v)} => {body}))")
     raise _reject("a list return must be a list parameter or a "
                   "comprehension over one in this slice", line)
 
@@ -1873,6 +2118,78 @@ def _split_guards(stmts: list[ast.stmt]
     return guards, stmts[i:]
 
 
+def _str_element_discipline(fn: ast.FunctionDef,
+                            spec_fn: FunctionSpec,
+                            str_params: frozenset[str]) -> None:
+    """The code-point model (`str` as `List Int`) is faithful only
+    where the admitted operations cannot tell a string from its
+    code-point sequence: `len(s)`, and comparisons in which EVERY
+    operand is a single-character read of a str parameter (Python
+    compares characters by code point, so ==/!=/</<=/>/>= all
+    transfer). Everything else is rejected by default — arithmetic on
+    an element, `sum`, slices, whole-string comparison, iteration —
+    rather than silently proved about a program that would raise
+    TypeError or mean something different in Python. Ghost
+    expressions (spec clauses) obey the same rule, so a `#@` clause
+    keeps one meaning across backends. Shadowing a str parameter
+    (a local or binder reusing the name) also rejects: over-strict
+    is safe, and the fragment note says so.
+
+    Every source of expressions is swept: the function body AST and
+    every expression-kind spec clause. Clause text that fails to
+    parse is skipped here — the clause's own translator rejects it
+    with the better message."""
+    def elem_read(e: ast.expr) -> bool:
+        return (isinstance(e, ast.Subscript)
+                and isinstance(e.value, ast.Name)
+                and e.value.id in str_params
+                and not isinstance(e.slice, ast.Slice))
+
+    def sweep(root: ast.AST, clause_line: int | None) -> None:
+        licensed: set[int] = set()
+        for node in ast.walk(root):
+            if isinstance(node, ast.Compare):
+                operands = [node.left, *node.comparators]
+                if any(elem_read(o) for o in operands):
+                    if not all(elem_read(o) for o in operands):
+                        raise _reject(
+                            "a character of a `str` parameter can only "
+                            "be compared with another character read "
+                            "(the code-point model has no literals or "
+                            "arithmetic in this slice)",
+                            clause_line
+                            or getattr(node, "lineno", None))
+                    for o in operands:
+                        licensed.add(id(o.value))
+            elif (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "len"
+                    and len(node.args) == 1
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id in str_params):
+                licensed.add(id(node.args[0]))
+        for node in ast.walk(root):
+            if isinstance(node, ast.Name) and node.id in str_params \
+                    and id(node) not in licensed:
+                raise _reject(
+                    f"`{node.id}` is a `str` parameter: this slice "
+                    f"admits it only as `len({node.id})` or in "
+                    f"comparisons between two indexed characters",
+                    clause_line or getattr(node, "lineno", None))
+
+    sweep(fn, None)
+    for c in spec_fn.clauses:
+        if c.kind not in ("ensures", "requires", "invariant", "assert") \
+                or c.error is not None:
+            continue
+        text = c.desugared if c.desugared is not None else c.raw
+        try:
+            tree = ast.parse(text, mode="eval").body
+        except SyntaxError:
+            continue
+        sweep(tree, c.line)
+
+
 def _loop_invariants(spec_fn: FunctionSpec,
                      loop: ast.For | ast.While) -> tuple[ast.expr, int]:
     """Collect every `#@ invariant` at the loop HEAD and conjoin them
@@ -1926,6 +2243,21 @@ def _loop_invariants(spec_fn: FunctionSpec,
 _ABSORBED_INNER_SPANS: list[tuple[int, int]] = []
 
 
+# The filter predicates emitted this encode (`[x for x in l if P]` ->
+# `l.filter (fun v => decide P)`), as the exact lambda text: the spec
+# theorem's ladder needs each one to instantiate Count_filter_of_pos
+# explicitly (rw's higher-order unification cannot be trusted to
+# reconstruct the pattern). Reset per encode_module_lean call.
+_FILTER_PREDS: list[str] = []
+
+
+# True when this encode emitted VeriPy.SortedUnique (the
+# `sorted(list(set(l)))` class): the ladder then offers the pack's
+# three spec-shaped lemmas as guarded finishers. Reset per
+# encode_module_lean call.
+_SORTED_UNIQUE_USED: list[bool] = []
+
+
 def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
                        spec_fn: FunctionSpec) -> _LoopShape | None:
     """Match `for i in range(N): if TEST: return V; return W` (V, W
@@ -1946,27 +2278,12 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
     # `for i, x in enumerate(l)` normalizes to `for i in
     # range(len(l))` with x's free occurrences substituted by l[i]
     # (the substitution is LEXICAL, so binders shadowing x survive).
-    # Only the BUILTINS get this reading: the rewrite claims
-    # `enumerate`'s semantics and fabricates `range`/`len` calls, so a
-    # parameter or local shadowing any of the three declines it here
-    # and falls to the ordinary shadow rejection (review-caught:
-    # Python would call the shadowing value, and the normalized model
-    # would certify builtin iteration for code that raises at
-    # runtime).
-    _shadowers = {fn.name} | {a.arg for a in fn.args.args}
-    for _n in ast.walk(fn):
-        if isinstance(_n, ast.Name) and isinstance(_n.ctx, ast.Store):
-            _shadowers.add(_n.id)
-        elif isinstance(_n, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                and _n is not fn:
-            _shadowers.add(_n.name)
     if isinstance(loop.target, ast.Tuple) \
             and len(loop.target.elts) == 2 \
             and all(isinstance(t, ast.Name) for t in loop.target.elts) \
             and isinstance(loop.iter, ast.Call) \
             and isinstance(loop.iter.func, ast.Name) \
             and loop.iter.func.id == "enumerate" \
-            and _shadowers.isdisjoint({"enumerate", "range", "len"}) \
             and len(loop.iter.args) == 1 and not loop.iter.keywords \
             and isinstance(loop.iter.args[0], ast.Name):
         ivar, xvar = (t.id for t in loop.target.elts)
@@ -1997,7 +2314,6 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
         if _flatten_innermost(child):
             return True
         if not (isinstance(child.target, ast.Name)
-                and not child.orelse
                 and isinstance(child.iter, ast.Call)
                 and isinstance(child.iter.func, ast.Name)
                 and child.iter.func.id == "range"
@@ -2031,12 +2347,6 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
             pass
     while (len(loop.body) == 1 and isinstance(loop.body[0], ast.For)
            and isinstance(loop.body[0].target, ast.Name)
-           # A `for ... else` on the INNER loop would be dropped by
-           # this rewrite (review-caught): Python runs the else on a
-           # hitless search, so the flattened model would certify the
-           # opposite result. Decline, and the still-nested shape
-           # fails the search match and is refused.
-           and not loop.body[0].orelse
            and isinstance(loop.body[0].iter, ast.Call)
            and isinstance(loop.body[0].iter.func, ast.Name)
            and loop.body[0].iter.func.id == "range"
@@ -2818,6 +3128,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # Proof sidecars are live (P3). `proof_lemmas` is the set of names
     # the pack declares, already whitelist-validated by the loader.
     _ABSORBED_INNER_SPANS.clear()
+    _FILTER_PREDS.clear()
+    _SORTED_UNIQUE_USED.clear()
     module = ast.parse(source)
     # `x += e` is `x = x + e`. Rewriting the whole module once means
     # every path downstream sees a single spelling; desugaring at
@@ -2865,7 +3177,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # verify mathematical abs/min/max while Python calls the user's def.
     for shadow in by_name:
         if shadow in ("abs", "min", "max", "old", "all", "any", "range",
-                      "len", "sum", "bool", "result", "enumerate"):
+                      "len", "sum", "bool", "result", "enumerate",
+                      "sorted", "list", "set"):
             raise _reject(
                 f"module-level def {shadow!r} shadows an encoder builtin "
                 f"— call sites would verify the builtin while Python "
@@ -2929,10 +3242,20 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                           "no *args/**kwargs, no positional-only or "
                           "keyword-only markers) are in slice 1", fn.lineno)
         ptypes: dict[str, str] = {}
+        str_params: set[str] = set()
         for arg in a.args:
             ann = arg.annotation
             if isinstance(ann, ast.Name) and ann.id == "int":
                 ptypes[arg.arg] = "Int"
+            elif isinstance(ann, ast.Name) and ann.id == "str":
+                # Code-point model: a str is its List Int of code
+                # points. Sound only under the element discipline
+                # checked below — `len` and character-to-character
+                # comparisons are exactly the operations Python and
+                # the model agree on (Python orders characters by
+                # code point).
+                ptypes[arg.arg] = "List Int"
+                str_params.add(arg.arg)
             elif isinstance(ann, ast.Subscript) \
                     and isinstance(ann.value, ast.Name) \
                     and ann.value.id == "list" \
@@ -2947,13 +3270,16 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "backend admits them; this slice has no product types",
                     fn.lineno)
             else:
-                raise _reject(f"parameter {arg.arg!r} must be `int` or "
-                              f"`list[int]` in this slice", fn.lineno)
+                raise _reject(f"parameter {arg.arg!r} must be `int`, "
+                              f"`str`, or `list[int]` in this slice",
+                              fn.lineno)
             # No module-wide check for parameters: a binder shadowing a
             # top-level name is legal Lean (and matches Python scoping).
             # The one genuine capture — a parameter named after its OWN
             # function, which the theorem statement must reference beside
             # it — is alpha-renamed in theorem context below.
+        if str_params:
+            _str_element_discipline(fn, spec_fn, frozenset(str_params))
         lists0 = frozenset(p for p, t in ptypes.items()
                            if t == "List Int")
         lc0 = _ListCtx(lists0, {}, None,
@@ -3067,12 +3393,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "slice has no strings", node.lineno)
             if isinstance(node, ast.Call) \
                     and isinstance(node.func, ast.Name) \
-                    and node.func.id == "sorted":
+                    and node.func.id == "sorted" \
+                    and not _is_sorted_unique_call(node):
                 raise _reject(
-                    "sorted is outside the Lean slice — the Dafny "
-                    "backend admits list[int] sorted as PySorted "
-                    "(permutation + order); this slice has no "
-                    "sequence-sort prelude", node.lineno)
+                    "sorted is outside the Lean slice except as "
+                    "`sorted(list(set(L)))` / `sorted(set(L))` (the "
+                    "sorted-unique class) — the Dafny backend admits "
+                    "list[int] sorted as PySorted (permutation + "
+                    "order); bare `sorted` keeps duplicates and "
+                    "waits for its own pack", node.lineno)
             if isinstance(node, ast.Call) \
                     and isinstance(node.func, ast.Attribute) \
                     and node.func.attr in _DAFNY_STR_METHODS:
@@ -5677,6 +6006,48 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("  all_goals (try simp only "
                  "[List.getD_eq_getElem?_getD, List.getElem?_map, "
                  "List.length_map])", first_ensures_line)
+        if _FILTER_PREDS and loop is None and wloop is None:
+            # The filtered-comprehension class: split the goal into
+            # one hole per post, then three guarded finishers.
+            # Definitional posts (`result == [x for x in l if P]`)
+            # close by rfl. Count-preservation posts intro the
+            # membership AND the recovered antecedent, then rewrite
+            # with Count_filter_of_pos at the EXPLICIT predicate --
+            # rw's higher-order unification would otherwise guess a
+            # constant function and miss the pattern. Membership
+            # posts destructure mem_filter. Untouched goals flow to
+            # the generic finishers below.
+            if len(posts) > 1:
+                holes = ", ".join("?_" for _ in posts)
+                emit(f"  refine ⟨{holes}⟩", first_ensures_line)
+            emit("  all_goals (try rfl)", first_ensures_line)
+            for fpred in _FILTER_PREDS:
+                emit(f"  all_goals (try (intro x_ hx_ hp_; "
+                     f"rw [VeriPy.Count_filter_of_pos {fpred} _ _ "
+                     f"(decide_eq_true hp_)]))", first_ensures_line)
+            emit("  all_goals (try (intro x_ hx_; "
+                 "simp only [List.mem_filter, decide_eq_true_eq] "
+                 "at hx_; "
+                 "first | exact hx_.1 | exact hx_.2 | omega))",
+                 first_ensures_line)
+        if _SORTED_UNIQUE_USED and loop is None and wloop is None:
+            # The sorted-unique class: one hole per post, then the
+            # pack's three spec-shaped lemmas as guarded finishers
+            # (strict adjacency, result-elements-in-source,
+            # source-elements-in-result). Bound side conditions fall
+            # to omega under the intro'd binder hypothesis; WF
+            # conjuncts and anything else flow to the generic
+            # finishers below.
+            if len(posts) > 1:
+                holes = ", ".join("?_" for _ in posts)
+                emit(f"  refine ⟨{holes}⟩", first_ensures_line)
+            emit("  all_goals (try (intro i_ hb_; first "
+                 "| exact VeriPy.SortedUnique_adjacent _ _ "
+                 "(by omega) (by omega) "
+                 "| exact VeriPy.SortedUnique_getD_mem_src _ _ "
+                 "(by omega) (by omega) "
+                 "| exact VeriPy.GetD_mem_SortedUnique _ _ "
+                 "(by omega) (by omega)))", first_ensures_line)
         emit("  repeat' split", first_ensures_line)
         # Bounded-quantifier goals open with ∀/→; intros peels them so
         # omega faces the linear body (∃ goals need witnesses no fixed
@@ -5700,6 +6071,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # the main theorem needs it wherever a lemma pack lands a
         # product in the goal.
         emit("  all_goals (try (congr 1 <;> omega))", first_ensures_line)
+        # A WF conjunct carrying TWO totalized reads is a conjunction
+        # of bounded ∀s, which `intros` cannot enter: split it and
+        # peel each side, guarded so any goal the shape does not fit
+        # is left for the finisher line (constructor's failure — or
+        # omega's on a non-linear side — backtracks the whole try).
+        emit("  all_goals (try (constructor <;> (intros; omega)))",
+             first_ensures_line)
         emit("  all_goals (first | omega | trivial)", first_ensures_line)
 
     # Ask Lean for every proved theorem's axiom footprint. The driver
