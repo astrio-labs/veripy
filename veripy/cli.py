@@ -650,27 +650,52 @@ def _backend_choices() -> list[str]:
 def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
                  mutant_cap: int, quick: bool,
                  backend: str = "dafny") -> int:
-    from .benchmark.runner import ERROR, FAIL, render_report, run_benchmark, scores_to_json
+    from .backends.base import available_backends
+    from .benchmark.runner import (ERROR, FAIL, render_cross_report,
+                                   render_report, run_benchmark,
+                                   scores_to_json)
 
     kwargs = dict(mutant_cap=mutant_cap, hunt_timeout=5,
-                  dafny_time_limit=60, difftest_examples=60,
-                  backend=backend)
+                  dafny_time_limit=60, difftest_examples=60)
     if quick:
         kwargs.update(mutant_cap=min(mutant_cap, 4), difftest_examples=20)
-    scores = run_benchmark(tasks, outdir, **kwargs)
-    if not scores:
-        print(f"no tasks found under {tasks}", file=sys.stderr)
-        return 2
-    print(render_report(scores))
-    if report is not None:
-        report.parent.mkdir(parents=True, exist_ok=True)
-        report.write_text(json.dumps(scores_to_json(scores), indent=1))
-        print(f"\nreport -> {report}")
+    if backend == "all":
+        # TRIPLE ADJUDICATION: one ladder per registered backend, and
+        # the cross report reads the same source three ways — runtime
+        # rungs, then one prove column per prover.
+        by_backend = {
+            b: run_benchmark(tasks, outdir / b, backend=b, **kwargs)
+            for b in available_backends()}
+        scores = [sc for group in by_backend.values() for sc in group]
+        if not scores:
+            print(f"no tasks found under {tasks}", file=sys.stderr)
+            return 2
+        print(render_cross_report(by_backend))
+        if report is not None:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(json.dumps(
+                {b: scores_to_json(g) for b, g in by_backend.items()},
+                indent=1))
+            print(f"\nreport -> {report}")
+    else:
+        scores = run_benchmark(tasks, outdir, backend=backend, **kwargs)
+        if not scores:
+            print(f"no tasks found under {tasks}", file=sys.stderr)
+            return 2
+        print(render_report(scores))
+        if report is not None:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(json.dumps(scores_to_json(scores), indent=1))
+            print(f"\nreport -> {report}")
     # Exit status mirrors the scorecard so CI can gate on it: 2 for an
     # incomplete run (tool errors), 1 for a regression (failed rungs).
+    # Triple mode is a MEASUREMENT, not a gate: a task outside one
+    # prover's fragment is expected data there (the Dafny single-run
+    # stays the CI gate), so only tool errors fail it.
     if any(r.status == ERROR for s in scores for r in s.rungs):
         return 2
-    if any(r.status == FAIL for s in scores for r in s.rungs):
+    if backend != "all" \
+            and any(r.status == FAIL for s in scores for r in s.rungs):
         return 1
     return 0
 
@@ -846,7 +871,7 @@ def main(argv: list[str] | None = None) -> int:
     p_benchmark.add_argument("--mutant-cap", type=int, default=12)
     p_benchmark.add_argument(
         "--backend", dest="proof_backend", default="dafny",
-        choices=_backend_choices(),
+        choices=_backend_choices() + ["all"],
         help="prover backend for the ladder's encode/prove rungs and "
              "the exams (R0-R2 and fidelity are prover-independent). "
              "The proof-repair roster follows the backend: only tasks "

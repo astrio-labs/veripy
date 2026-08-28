@@ -405,6 +405,82 @@ def run_benchmark(tasks_root: Path, workdir: Path, **kwargs) -> list[TaskScore]:
     return scores
 
 
+def render_cross_report(scores_by_backend: dict[str, list["TaskScore"]]) -> str:
+    """TRIPLE ADJUDICATION: the same source, three readings side by
+    side — the runtime rungs (hunt against its own specs, fidelity
+    against CPython), and one prove column per backend. The runtime
+    columns come from the FIRST backend's run (R0-R2 and R5 are
+    prover-independent, so whichever run supplied them is a
+    representative; a disagreement between runs' runtime rungs would
+    mean nondeterminism worth its own investigation, not a rendering
+    choice).
+
+    A prove column reads `proved`, `failed`, `outside` (the encode
+    rung refused: a NAMED fragment gap, not a proof failure),
+    `blocked` (an earlier rung stopped the ladder), or `error`."""
+    backends = list(scores_by_backend)
+    first = scores_by_backend[backends[0]]
+    by_task: dict[str, dict[str, "TaskScore"]] = {}
+    for b in backends:
+        for sc in scores_by_backend[b]:
+            by_task.setdefault(sc.task_id, {})[b] = sc
+
+    def rung(sc: "TaskScore | None", name: str) -> str:
+        if sc is None:
+            return "-"
+        for r in sc.rungs:
+            if r.name == name:
+                return r.status
+        return "-"
+
+    def prove_cell(sc: "TaskScore | None") -> str:
+        if sc is None:
+            return "-"
+        statuses = {r.name: r.status for r in sc.rungs}
+        if statuses.get("prove") == PASS:
+            return "proved"
+        if statuses.get("prove") == FAIL:
+            return "failed"
+        if statuses.get("prove") == ERROR:
+            return "error"
+        if statuses.get("encode") == FAIL:
+            return "outside"
+        return "blocked"
+
+    header = ["task", "hunt", "mutants"] + [f"{b}" for b in backends] \
+        + ["fidelity"]
+    rows = [header]
+    agree = outside = disagree = 0
+    for task_id in sorted(by_task):
+        cells = by_task[task_id]
+        rep = cells.get(backends[0]) or next(iter(cells.values()))
+        proves = [prove_cell(cells.get(b)) for b in backends]
+        rows.append([task_id, rung(rep, "hunt"), rung(rep, "mutants"),
+                     *proves, rung(rep, "fidelity")])
+        concl = [p for p in proves if p in ("proved", "failed")]
+        if len(set(proves)) == 1 and proves[0] == "proved":
+            agree += 1
+        elif "outside" in proves or "blocked" in proves:
+            outside += 1
+        elif len(set(concl)) > 1:
+            disagree += 1
+    widths = [max(len(r[i]) for r in rows) for i in range(len(header))]
+    lines = ["  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip()
+             for r in rows]
+    lines.append("")
+    lines.append(
+        f"{agree} task(s) proved under EVERY backend; "
+        f"{outside} with a named fragment gap or blocked ladder; "
+        f"{disagree} conclusive disagreement(s)")
+    if disagree:
+        lines.append(
+            "a conclusive disagreement (proved under one prover, failed "
+            "under another, neither outside its fragment) is a soundness "
+            "alarm for one of the two encoders — investigate before "
+            "quoting either number")
+    return "\n".join(lines)
+
+
 # Below this, a per-task refutation RATE carries too little information to
 # compare against another task's: 1/1 is one bit. Such panels still count
 # in the corpus total (where they pool), but the per-task cell is marked so

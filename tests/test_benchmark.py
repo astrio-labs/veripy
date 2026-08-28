@@ -744,3 +744,69 @@ def test_adjudicated_timeout_is_not_credited_as_spec_strength(tmp_path,
             + len(score.adjudicated_timeouts) + len(score.survivors)
             + len(score.timeouts)) == score.mutants_total
     assert "diverged" in rung.detail and "not credited" in rung.detail
+
+
+# --- P4 phase 2: triple adjudication ---------------------------------------
+
+def test_cross_report_reads_three_ways():
+    from veripy.benchmark.runner import (ERROR, FAIL, PASS, Rung,
+                                         TaskScore, render_cross_report)
+
+    def score(task, **rungs):
+        sc = TaskScore(task_id=task)
+        for name, status in rungs.items():
+            sc.rungs.append(Rung(name, status))
+        return sc
+
+    by_backend = {
+        "dafny": [
+            score("both_prove", hunt=PASS, mutants=PASS, encode=PASS,
+                  prove=PASS, fidelity=PASS),
+            score("lean_gap", hunt=PASS, mutants=PASS, encode=PASS,
+                  prove=PASS, fidelity=PASS),
+            score("alarm", hunt=PASS, mutants=PASS, encode=PASS,
+                  prove=PASS, fidelity=PASS),
+        ],
+        "lean": [
+            score("both_prove", hunt=PASS, mutants=PASS, encode=PASS,
+                  prove=PASS, fidelity=PASS),
+            # A refused encode is a NAMED fragment gap, not a failure.
+            score("lean_gap", hunt=PASS, mutants=PASS, encode=FAIL),
+            # Proved under one prover, failed under the other, neither
+            # outside its fragment: a soundness alarm, said out loud.
+            score("alarm", hunt=PASS, mutants=PASS, encode=PASS,
+                  prove=FAIL, fidelity=PASS),
+        ],
+    }
+    out = render_cross_report(by_backend)
+    lines = {ln.split()[0]: ln for ln in out.splitlines() if ln}
+    assert "proved" in lines["both_prove"]
+    assert "outside" in lines["lean_gap"]
+    assert "failed" in lines["alarm"]
+    assert "1 task(s) proved under EVERY backend" in out
+    assert "soundness alarm" in out
+
+
+def test_benchmark_backend_all_runs_every_backend(monkeypatch, tmp_path):
+    # `--backend all` dispatches one ladder per registered backend and
+    # exits 0 on FAILs (a measurement, not a gate) — only tool errors
+    # fail the run.
+    from veripy import cli as cli_mod
+    from veripy.benchmark.runner import PASS, FAIL, Rung, TaskScore
+
+    calls = []
+
+    def fake_run_benchmark(tasks, outdir, backend="dafny", **kwargs):
+        calls.append(backend)
+        sc = TaskScore(task_id="t")
+        sc.rungs.append(Rung("hunt", PASS))
+        sc.rungs.append(Rung("prove", PASS if backend == "dafny" else FAIL))
+        return [sc]
+
+    import veripy.benchmark.runner as runner_mod
+    monkeypatch.setattr(runner_mod, "run_benchmark", fake_run_benchmark)
+    rc = cli_mod.cmd_benchmark(tmp_path, tmp_path / "out", None,
+                               mutant_cap=3, quick=True, backend="all")
+    from veripy.backends.base import available_backends
+    assert calls == available_backends()
+    assert rc == 0
