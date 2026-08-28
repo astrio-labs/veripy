@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.11"
+PRELUDE_VERSION = "lean-0.12"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -143,6 +143,19 @@ instance IntBexDec (P : Int → Prop) [DecidablePred P] (lo hi : Int) :
           exact ⟨b, ⟨h1, by omega⟩, hp⟩
         · rintro ⟨b, ⟨h1, h2⟩, hp⟩
           exact ⟨b, ⟨h1, by omega⟩, hp⟩)
+
+-- Counting survives a filter the counted element passes: the spine of
+-- the filtered-comprehension class (`[x for x in l if P]` preserves
+-- multiplicity of every element satisfying P).
+theorem Count_filter_of_pos (p : Int → Bool) (a : Int) (l : List Int)
+    (h : p a = true) : (l.filter p).count a = l.count a := by
+  induction l with
+  | nil => rfl
+  | cons x xs ih =>
+    by_cases hx : p x = true
+    · simp [hx, List.count_cons, ih]
+    · have hxa : ¬(x = a) := fun he => hx (he ▸ h)
+      simp [hx, ih, hxa]
 
 theorem SqGeSelf (a : Int) : a ≤ a * a := by
   rcases Int.lt_or_le a 1 with h | h

@@ -1255,9 +1255,8 @@ def _list_expr(e: ast.expr, names: set[str], line: int,
             raise _reject("only one comprehension generator in this "
                           "slice", line)
         comp = e.generators[0]
-        if comp.ifs or comp.is_async:
-            raise _reject("a FILTERED comprehension changes the list's "
-                          "length, which this slice does not model",
+        if comp.is_async:
+            raise _reject("async comprehensions are outside this slice",
                           line)
         if not isinstance(comp.target, ast.Name):
             raise _reject("destructuring comprehension targets are "
@@ -1270,6 +1269,24 @@ def _list_expr(e: ast.expr, names: set[str], line: int,
         if v in names:
             raise _reject(f"comprehension binder {v!r} shadows a name in "
                           f"scope — outside this slice", line)
+        if comp.ifs:
+            # The filtered-comprehension class: ONLY the identity
+            # element (`[x for x in xs if P]`), so the result is
+            # `xs.filter` and Count_filter_of_pos speaks about it
+            # directly. A mapped-and-filtered body would need a
+            # composed story none of the ladder knows yet.
+            if len(comp.ifs) != 1:
+                raise _reject("one filter condition per comprehension "
+                              "in this slice", line)
+            if not (isinstance(e.elt, ast.Name) and e.elt.id == v):
+                raise _reject(
+                    "a FILTERED comprehension keeps elements unchanged "
+                    "in this slice — `[x for x in xs if P]`; mapping "
+                    "and filtering at once is outside it", line)
+            test = _prop_expr(comp.ifs[0], names | {v}, line, lc=lc)
+            pred = f"(fun {_ident(v)} : Int => (decide {test}))"
+            _FILTER_PREDS.append(pred)
+            return f"({_ident(comp.iter.id)}.filter {pred})"
         body = _int_expr(e.elt, names | {v}, line, lc=lc)
         return f"({_ident(comp.iter.id)}.map (fun {_ident(v)} => {body}))"
     raise _reject("a list return must be a list parameter or a "
@@ -2018,6 +2035,14 @@ def _loop_invariants(spec_fn: FunctionSpec,
 # synthesized existential) and stay live for the Dafny backend, so
 # the misplacement rule skips them. Reset per encode_module_lean call.
 _ABSORBED_INNER_SPANS: list[tuple[int, int]] = []
+
+
+# The filter predicates emitted this encode (`[x for x in l if P]` ->
+# `l.filter (fun v => decide P)`), as the exact lambda text: the spec
+# theorem's ladder needs each one to instantiate Count_filter_of_pos
+# explicitly (rw's higher-order unification cannot be trusted to
+# reconstruct the pattern). Reset per encode_module_lean call.
+_FILTER_PREDS: list[str] = []
 
 
 def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
@@ -2890,6 +2915,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # Proof sidecars are live (P3). `proof_lemmas` is the set of names
     # the pack declares, already whitelist-validated by the loader.
     _ABSORBED_INNER_SPANS.clear()
+    _FILTER_PREDS.clear()
     module = ast.parse(source)
     # `x += e` is `x = x + e`. Rewriting the whole module once means
     # every path downstream sees a single spelling; desugaring at
