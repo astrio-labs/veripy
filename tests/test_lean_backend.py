@@ -4264,3 +4264,59 @@ def test_end_to_end_unique_proves_and_lies_fail(tmp_path):
         bad.write_text(base.replace(frm, to))
         assert verify_structured(bad, tmp_path / f"ob{k}",
                                  backend="lean")["status"] == "failed", k
+
+
+def test_optional_max_class_matches_strictly():
+    # The OptionalMax class (slice 30, he_9): an `int | None` running
+    # accumulator beside a list builder, MATCHED strictly rather than
+    # translated — the emitted template was proved end to end before
+    # the emitter existed, and the matcher's strictness is what lets
+    # the template stand in for translation. Near-misses are rejected
+    # with the pattern named, never mistranslated.
+    src = Path("examples/contact/he_humaneval_9.py").read_text()
+    out = _encode(src).lean_source
+    assert "Option Int × List Int" in out
+    assert "VeriPy.ListMax" in out
+    assert "rolling_max_assert0" in out       # the slice-extension hint
+    # A body deviation: min is not the class.
+    with pytest.raises(EncodeError, match="OptionalMax"):
+        _encode(src.replace("running_max = max(running_max, n)",
+                            "running_max = min(running_max, n)"))
+    # A spec deviation: the wrong prefix bound is refused, not proved.
+    with pytest.raises(EncodeError, match="OptionalMax"):
+        _encode(src.replace(
+            "#@ ensures forall i in range(len(numbers)) :: "
+            "result[i] == max(numbers[:i + 1])",
+            "#@ ensures forall i in range(len(numbers)) :: "
+            "result[i] == max(numbers[:i])"))
+    # A missing invariant: four are required, by name.
+    with pytest.raises(EncodeError, match="four invariants"):
+        _encode(src.replace(
+            "        #@ invariant (running_max is None) <==> "
+            "(len(maxes) == 0)\n", ""))
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_rolling_max_proves(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/he_humaneval_9.py")
+    good = tmp_path / "rmax.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    # In-template lies are impossible by construction (every part of
+    # the shape is pinned), so the teeth here are the REFUSALS: a
+    # mutated body or spec must never reach `ok`.
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            ("running_max = max(running_max, n)",
+             "running_max = min(running_max, n)"),
+            ("max(numbers[:i + 1])", "max(numbers[:i])"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        st = verify_structured(bad, tmp_path / f"ob{k}",
+                               backend="lean")["status"]
+        assert st == "encode-error", (k, st)
