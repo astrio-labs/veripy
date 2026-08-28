@@ -725,10 +725,17 @@ def _computed_read_wf(expr: ast.expr, lc: "_ListCtx",
         idx = sub.slice
         lname = sub.value.id
         if lname == "result":
-            # The one structural license a result read has: the
-            # binder-over-`range(len(result))` pair.
+            # BOTH the gate's structural licenses, restated: the
+            # binder-over-`range(len(result))` pair, and an index
+            # safe for the list an earlier ensures proved result
+            # matches (missing the second appended redundant
+            # obligations and shifted the parity endgame's post
+            # count — caught by the intersperse e2e).
             return (isinstance(idx, ast.Name)
-                    and lc.safe_idx.get(idx.id) == "@result")
+                    and (lc.safe_idx.get(idx.id) == "@result"
+                         or (lc.result_list is not None
+                             and lc.safe_for(idx.id,
+                                             lc.result_list))))
         if isinstance(idx, ast.Name) and lc.safe_for(idx.id, lname):
             return True
         if isinstance(idx, ast.Constant) and isinstance(idx.value, int) \
@@ -825,6 +832,20 @@ def _quantifier_body_lc(lc: "_ListCtx",
             and isinstance(hi.args[0], ast.Name) \
             and hi.args[0].id in lc.lists:
         safe[v] = hi.args[0].id
+    # The translator's "@result" license, restated (missed at first:
+    # `result[i]` under `forall i in range(len(result))` looked
+    # unlicensed to the WF walk, and the redundant obligations
+    # shifted the parity endgame's post count). Same strictness as
+    # the translator: a ZERO lower bound, not merely nonnegative.
+    lo_is_zero = (len(args) == 1
+                  or (isinstance(args[0], ast.Constant)
+                      and args[0].value == 0))
+    if lo_is_zero and isinstance(hi, ast.Call) \
+            and isinstance(hi.func, ast.Name) and hi.func.id == "len" \
+            and len(hi.args) == 1 \
+            and isinstance(hi.args[0], ast.Name) \
+            and hi.args[0].id == "result" and lc.result_is_list:
+        safe[v] = "@result"
     # PROGRESSIVE, like the translator: a nonneg binder joins the
     # nonneg set so the NEXT generator's `range(i + 1, ...)` lower
     # bound checks out (missed at first, and the pre-pass then
@@ -3156,7 +3177,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # verify mathematical abs/min/max while Python calls the user's def.
     for shadow in by_name:
         if shadow in ("abs", "min", "max", "old", "all", "any", "range",
-                      "len", "sum", "bool", "result"):
+                      "len", "sum", "bool", "result", "enumerate",
+                      "sorted", "list", "set"):
             raise _reject(
                 f"module-level def {shadow!r} shadows an encoder builtin "
                 f"— call sites would verify the builtin while Python "

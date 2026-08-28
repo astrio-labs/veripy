@@ -1726,11 +1726,14 @@ def test_list_returns_and_comprehensions():
     # clause — the list analogue of cross-clause positivity.
     assert "(«incr_list» «l»).getD («i»).toNat 0" in enc.lean_source
 
-    # Without that earlier clause there is nothing to bound the index.
+    # Without that earlier clause the read is no longer REJECTED
+    # (slice 29): the scaffold totalizes it and the WF pre-pass
+    # appends the in-bounds conjunct to the goal instead — the same
+    # not-vacuously-true guarantee, delivered the Dafny way.
     unlicensed = INCR_LIST.replace(
         "#@ ensures len(result) == len(l)\n", "")
-    with pytest.raises(EncodeError, match="needs an earlier `ensures`"):
-        _encode(unlicensed)
+    enc2 = _encode(unlicensed)
+    assert "(«incr_list» «l»).length" in enc2.lean_source
 
     # A FILTERED comprehension changes the length, so it stays out.
     filtered = INCR_LIST.replace("for e in l]", "for e in l if e > 0]")

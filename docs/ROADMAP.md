@@ -216,8 +216,8 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 
 | | |
 |---|---|
-| contact corpus under Lean | **14/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`, `he_43`, `he_40`, `he_48`, `he_30`) — `he_43` now EXCEEDS Dafny, whose fragment lacks `enumerate` |
-| prelude | `lean-0.12` (`Count_filter_of_pos`: counting survives a filter the element passes — the filtered-comprehension class; `IntBexDec` stays the nested-search spine) |
+| contact corpus under Lean | **15/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`, `he_43`, `he_40`, `he_48`, `he_30`, `he_34`) — `he_43` now EXCEEDS Dafny, whose fragment lacks `enumerate` |
+| prelude | `lean-0.13` (`SortedUnique` pack: insertion sort that drops duplicates, strict adjacency + both membership directions — the sorted-unique class; `Count_filter_of_pos`, `IntBexDec` before it) |
 | slices landed | P2 1–20, P3 (sidecar channel) |
 | `.proofs.lean` packs in existence | **4** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr`; `he_31`: `ModPredOne` (with a Dafny twin, the first task packed under BOTH provers) — all kernel-checked, clean axiom footprints) |
 
@@ -238,7 +238,6 @@ work list and not a countdown):
 | DP / indexed assignment — **cut by decision** | `mbpp_402`, `mbpp_620`, `mbpp_247` (2-D table), `mbpp_149` (dp array) |
 | `int \| None` accumulator — a real fragment addition, not a body-shape issue (earlier table binned it by its first error) | `he_9` |
 | `dict` | `mbpp_885` (also `sorted`), `mbpp_97` (also nested comprehension) |
-| `sorted` | `he_34` |
 
 The earlier revision of this table grouped `mbpp_247`, `mbpp_885`, and
 `mbpp_97` under `str` parameters and `mbpp_149` under "two loops" —
