@@ -4026,6 +4026,53 @@ def test_search_matcher_and_substitution_are_defensive():
     assert _ast.unparse(out2) == "any((q < 0 for q in range(b + xs[i])))"
 
 
+def test_nested_search_flattens_through_decidable_exists():
+    # The nested-search class: an inner pure search becomes
+    # `if any(TEST for j in range(a, b))` -- the prelude's IntBexDec
+    # makes the bounded ∃ decidable, and the instance COMPOSES, so
+    # the triple loop flattens through the same rewrite with zero
+    # extra machinery (measured: depth 3 proved the moment depth 2
+    # did). enumerate normalizes first (i, x -> i with x := l[i],
+    # lexically). The or-accumulator wraps the ∀-clean invariant
+    # through a ¬ -- without the flip, found ↔ clean was FALSE at
+    # the first hit -- and index-bound conjuncts are DROPPED: they
+    # are loop-head guard facts, false at the fold's exit index and
+    # on the empty list.
+    src = Path("examples/contact/he_humaneval_43.py").read_text()
+    out = _encode(src).lean_source
+    assert "decide (∃ «j» : Int," in out
+    assert "(¬(«b'» = true)) ↔" in out or "¬«b'» = true" in out
+    # bounds conjunct dropped from the carried invariant
+    assert "0 ≤ «i» ∧ «i» <" not in out.split("_inv»")[1].split("\n")[1]
+
+    src3 = Path("examples/contact/he_humaneval_40.py").read_text()
+    out3 = _encode(src3).lean_source
+    # depth 3: an ∃ inside the decide's ∃
+    inner = out3.split("decide (∃")[1][:400]
+    assert "∃" in inner
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_nested_searches_prove_and_lies_fail(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    for stem in ("he_humaneval_43", "he_humaneval_40"):
+        src = Path(f"examples/contact/{stem}.py")
+        good = tmp_path / f"{stem}.py"
+        shutil.copy(src, good)
+        assert verify_structured(good, tmp_path / f"o{stem}",
+                                 backend="lean")["status"] == "ok", stem
+
+    base = Path("examples/contact/he_humaneval_43.py").read_text()
+    for k, (frm, to) in enumerate((
+            ("if l1 + l[j] == 0:", "if l1 + l[j] != 0:"),
+            ("l[a] + l[b] != 0", "l[a] + l[b] != 1"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        assert verify_structured(bad, tmp_path / f"ob{k}",
+                                 backend="lean")["status"] == "failed", k
+
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_computed_reads_carry_wellformedness_obligations(tmp_path):
     from veripy.agentio import verify_structured
@@ -4049,3 +4096,57 @@ def test_computed_reads_carry_wellformedness_obligations(tmp_path):
     shutil.copy(Path("examples/contact/he_humaneval_5.py"), good)
     assert verify_structured(good, tmp_path / "o2",
                              backend="lean")["status"] == "ok"
+
+
+def test_flattener_declines_shadowed_enumerate_and_inner_else():
+    # Review-caught pair on the nested-search path. (1) A parameter
+    # or local named `enumerate` shadows the builtin -- Python calls
+    # the binding, so normalizing to range(len(l)) would certify
+    # builtin iteration for code that raises TypeError at runtime.
+    shadowed = (
+        "#@ verified\n"
+        "#@ ensures result == (exists i in range(len(l)) :: l[i] == 0)\n"
+        "def f(l: list[int], enumerate: int) -> bool:\n"
+        "    for i, x in enumerate(l):\n"
+        "        #@ invariant True\n"
+        "        if x == 0:\n"
+        "            return True\n"
+        "    return False\n")
+    with pytest.raises(EncodeError):
+        _encode(shadowed)
+    # (2) An inner `for ... else` runs its else suite on a HITLESS
+    # search; flattening to `if any(...)` dropped it, certifying the
+    # opposite Boolean on the no-hit path. Both flatten paths now
+    # decline, and the still-nested shape is refused.
+    # (3, follow-up) A SIBLING top-level def named `enumerate` is a
+    # module-scope shadow the per-function walk cannot see: the
+    # module builtin-shadow gate now owns it, same as sum/len.
+    sibling = (
+        "def enumerate(l: list[int]) -> int:\n"
+        "    return 0\n"
+        "#@ verified\n"
+        "#@ ensures result == (exists i in range(len(l)) :: l[i] == 0)\n"
+        "def f(l: list[int]) -> bool:\n"
+        "    for i, x in enumerate(l):\n"
+        "        #@ invariant True\n"
+        "        if x == 0:\n"
+        "            return True\n"
+        "    return False\n")
+    with pytest.raises(EncodeError, match="shadows an encoder builtin"):
+        _encode(sibling)
+    inner_else = (
+        "#@ verified\n"
+        "#@ ensures result == (exists i in range(len(l)) :: "
+        "exists j in range(len(l)) :: l[i] + l[j] == 0)\n"
+        "def g(l: list[int]) -> bool:\n"
+        "    for i in range(len(l)):\n"
+        "        #@ invariant True\n"
+        "        for j in range(len(l)):\n"
+        "            #@ invariant True\n"
+        "            if l[i] + l[j] == 0:\n"
+        "                return True\n"
+        "        else:\n"
+        "            pass\n"
+        "    return False\n")
+    with pytest.raises(EncodeError):
+        _encode(inner_else)

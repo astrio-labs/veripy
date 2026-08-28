@@ -216,8 +216,8 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 
 | | |
 |---|---|
-| contact corpus under Lean | **10/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`) |
-| prelude | `lean-0.10` (`GetD_append_left`/`GetD_append_last` added for the trailing-append class) |
+| contact corpus under Lean | **12/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`, `he_43`, `he_40`) — `he_43` now EXCEEDS Dafny, whose fragment lacks `enumerate` |
+| prelude | `lean-0.11` (`IntBexDec`: range-bounded `∃` is decidable — the nested-search flattener) |
 | slices landed | P2 1–20, P3 (sidecar channel) |
 | `.proofs.lean` packs in existence | **4** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr`; `he_31`: `ModPredOne` (with a Dafny twin, the first task packed under BOTH provers) — all kernel-checked, clean axiom footprints) |
 
@@ -236,7 +236,6 @@ work list and not a countdown):
 | blocker | tasks |
 |---|---|
 | `str` parameters | `he_48` |
-| nested loops | `he_40`, `he_43` |
 | DP / indexed assignment — **cut by decision** | `mbpp_402`, `mbpp_620`, `mbpp_247` (2-D table), `mbpp_149` (dp array) |
 | `int \| None` accumulator — a real fragment addition, not a body-shape issue (earlier table binned it by its first error) | `he_9` |
 | filtered comprehension | `he_30` |
