@@ -3939,3 +3939,40 @@ def test_new_paths_inherit_scope_binders_and_rename():
     out3 = _encode(ren3).lean_source
     assert "«x» + «f'»" in out3
     assert "«x» + «f»)" not in out3
+
+
+def test_search_matcher_and_substitution_are_defensive():
+    # Review-caught pair on the search-accumulator path. (1) The
+    # ensures matcher guarded nothing: `any()` without a generator
+    # crashed with IndexError/AttributeError -- a tool-error verdict
+    # on a merely-unsupported spec. Every malformed shape now falls to
+    # the boundary's own message.
+    HEAD = ("def f(xs: list[int]) -> bool:\n    b = 0\n"
+            "    for i in range(len(xs)):\n"
+            "        #@ invariant b == sum(xs[:i])\n"
+            "        b += xs[i]\n"
+            "        if b < 0:\n            return True\n"
+            "    return False\n")
+    for bad in ("#@ ensures result == any([True])\n" + HEAD,
+                "#@ ensures result == any()\n" + HEAD):
+        with pytest.raises(EncodeError,
+                           match="search-accumulator loop needs"):
+            _encode(bad)
+
+    # (2) _SubstExprs replaced BOUND names: a comprehension binder
+    # named like the accumulator came out as
+    # `for b + xs[i] in range(i)` -- the binder itself replaced by
+    # the step. Substitution is lexical now: shadowed occurrences
+    # untouched, and only the FIRST generator's iterable (Python's
+    # enclosing-scope position) sees the mapping.
+    import ast as _ast, copy as _copy
+    from veripy.backends.lean.encoder import _SubstExprs
+    step = _ast.parse("b + xs[i]", mode="eval").body
+    shadowed = _ast.parse("any(xs[b] < 0 for b in range(i))",
+                          mode="eval").body
+    out = _SubstExprs({"b": step}).visit(_copy.deepcopy(shadowed))
+    assert _ast.unparse(out) == "any((xs[b] < 0 for b in range(i)))"
+    encl = _ast.parse("any(q < 0 for q in range(b))",
+                      mode="eval").body
+    out2 = _SubstExprs({"b": step}).visit(_copy.deepcopy(encl))
+    assert _ast.unparse(out2) == "any((q < 0 for q in range(b + xs[i])))"
