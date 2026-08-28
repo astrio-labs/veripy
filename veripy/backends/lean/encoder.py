@@ -364,6 +364,21 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             f"in range(len({e.value.id}))`, a quantifier binder over "
             f"`range(len({e.value.id}))`, or a literal below a "
             f"requires-clause length bound", line)
+    if isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute) \
+            and e.func.attr == "count" and len(e.args) == 1 \
+            and not e.keywords \
+            and isinstance(e.func.value, ast.Name) \
+            and (e.func.value.id in lc.lists
+                 or (e.func.value.id == "result" and result is not None
+                     and lc.result_is_list)):
+        # `xs.count(v)` is List.count — a Nat, cast to Int so it lives
+        # in the one arithmetic world the fragment models (Python's
+        # count is a plain int). The filtered-comprehension class
+        # states its multiplicity posts with this.
+        base = (result if e.func.value.id == "result"
+                else _lref(e.func.value.id, rename))
+        a = _int_expr(e.args[0], names, line, result, rename, lc)
+        return f"(({base}.count {a} : Nat) : Int)"
     if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):
         args = e.args
         if e.func.id in _MATH_FNS:
@@ -830,6 +845,61 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         raise _reject("filtered or destructuring quantifier binders are "
                       "outside slice 2", line)
     it = comp.iter
+    if isinstance(it, ast.Name) \
+            and (it.id in (lc or _NO_LISTS).lists
+                 or (it.id == "result" and result is not None
+                     and (lc or _NO_LISTS).result_is_list)):
+        # MEMBERSHIP domain (`forall x in xs ::`): the binder ranges
+        # over the list's ELEMENTS, not its indices, so it grants no
+        # safe-index or take license — and it SHADOWS any outer
+        # licenses under its name. The desugarer spells `==>` as
+        # `(not A) or B`; the arrow is recovered here — a brand-new
+        # context with no prior scripts relying on the ∨ spelling —
+        # so the filter class's count script can intro the
+        # antecedent.
+        lc_m = lc or _NO_LISTS
+        v = comp.target.id
+        if v in lc_m.lists:
+            raise _reject(f"quantifier binder {v!r} shadows a list "
+                          f"parameter — outside this slice", line)
+        lst = result if it.id == "result" else _lref(it.id, rename)
+        safe_m = {k: l_ for k, l_ in lc_m.safe_idx.items() if k != v}
+        body_lc = _ListCtx(lc_m.lists, safe_m,
+                           None if lc_m.take_idx == v else lc_m.take_idx,
+                           lc_m.scaffold, lc_m.min_len,
+                           frozenset(lc_m.pos_names - {v}),
+                           lc_m.result_list, lc_m.result_is_list,
+                           frozenset(lc_m.nonneg_names - {v}))
+        body_rename = {k: r for k, r in (rename or {}).items() if k != v}
+        binder = v
+        if avoid:
+            while binder in avoid:
+                binder += "'"
+        if binder != v:
+            body_rename[v] = binder
+        body_avoid = (avoid or frozenset()) | {binder}
+        elt = gen.elt
+        if e.func.id == "all" and isinstance(elt, ast.BoolOp) \
+                and isinstance(elt.op, ast.Or) \
+                and len(elt.values) == 2 \
+                and isinstance(elt.values[0], ast.UnaryOp) \
+                and isinstance(elt.values[0].op, ast.Not):
+            ante = _prop_expr(elt.values[0].operand, names | {v}, line,
+                              result, body_rename or None,
+                              result_is_bool, body_avoid, body_lc)
+            cons = _prop_expr(elt.values[1], names | {v}, line, result,
+                              body_rename or None, result_is_bool,
+                              body_avoid, body_lc)
+            body_m = f"({ante} → {cons})"
+        else:
+            body_m = _prop_expr(elt, names | {v}, line, result,
+                                body_rename or None, result_is_bool,
+                                body_avoid, body_lc)
+        if e.func.id == "all":
+            return (f"(∀ {_ident(binder)} : Int, "
+                    f"{_ident(binder)} ∈ {lst} → {body_m})")
+        return (f"(∃ {_ident(binder)} : Int, "
+                f"{_ident(binder)} ∈ {lst} ∧ {body_m})")
     if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
             and it.func.id == "range" and it.func.id not in names
             and not it.keywords and len(it.args) in (1, 2)):
@@ -1051,6 +1121,42 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
                 "slice — Python's bool is a subtype of int, so this is "
                 "legal Python whose meaning (0/1 coercion) the encoder "
                 "does not model", line)
+    if isinstance(e, ast.Compare) and len(e.ops) == 1 \
+            and type(e.ops[0]) in (ast.Eq, ast.NotEq):
+        # Whole-list equality (`result == [x for x in l if x > 0]`):
+        # both sides must be list-valued terms; a mixed comparison
+        # falls through to the generic paths, whose messages are
+        # better.
+        def _lterm(x: ast.expr) -> str | None:
+            lc_ = lc or _NO_LISTS
+            if isinstance(x, ast.Name) and x.id == "result" \
+                    and result is not None and lc_.result_is_list:
+                return result
+            if isinstance(x, (ast.ListComp, ast.List)) \
+                    or (isinstance(x, ast.Name) and x.id in lc_.lists):
+                return _list_expr(x, names, line, lc_, rename, result)
+            return None
+        la, ra = _lterm(e.left), _lterm(e.comparators[0])
+        if la is not None and ra is not None:
+            eq = f"({la} = {ra})"
+            return eq if isinstance(e.ops[0], ast.Eq) else f"(¬{eq})"
+    if isinstance(e, ast.Compare) and len(e.ops) == 1 \
+            and type(e.ops[0]) in (ast.In, ast.NotIn) \
+            and isinstance(e.comparators[0], ast.Name) \
+            and (e.comparators[0].id in (lc or _NO_LISTS).lists
+                 or (e.comparators[0].id == "result"
+                     and result is not None
+                     and (lc or _NO_LISTS).result_is_list)):
+        # `x in xs` on a list parameter (or a list-valued result) is
+        # List membership — same shape as the membership quantifier's
+        # domain, and Python's `in` on list[int] is exactly ∈ on the
+        # embedded List Int.
+        target = e.comparators[0]
+        lst = result if target.id == "result" else _lref(target.id,
+                                                         rename)
+        a = _int_expr(e.left, names, line, result, rename, lc)
+        mem = f"({a} ∈ {lst})"
+        return mem if isinstance(e.ops[0], ast.In) else f"(¬{mem})"
     if isinstance(e, ast.Compare):
         parts = []
         left = e.left
@@ -1236,19 +1342,21 @@ def _bool_expr(e: ast.expr, names: set[str], line: int,
 
 
 def _list_expr(e: ast.expr, names: set[str], line: int,
-               lc: _ListCtx) -> str:
+               lc: _ListCtx, rename: dict[str, str] | None = None,
+               result: str | None = None) -> str:
     """A `List Int`-valued Lean term. `[f(x) for x in xs]` becomes
     `xs.map (fun x => f x)`, which is the same order and length as
     Python's comprehension. Filtered comprehensions change the length
     and stay out of this slice."""
     if isinstance(e, ast.Name) and e.id in lc.lists:
-        return _ident(e.id)
+        return _lref(e.id, rename)
     if isinstance(e, ast.List):
         # A literal list, `[]` above all: it is what a guard returns in
         # `if not numbers: return []`.
         if not e.elts:
             return "([] : List Int)"
-        items = ", ".join(_int_expr(x, names, line, lc=lc) for x in e.elts)
+        items = ", ".join(_int_expr(x, names, line, result, rename,
+                                     lc) for x in e.elts)
         return f"([{items}] : List Int)"
     if isinstance(e, ast.ListComp):
         if len(e.generators) != 1:
@@ -1283,12 +1391,15 @@ def _list_expr(e: ast.expr, names: set[str], line: int,
                     "a FILTERED comprehension keeps elements unchanged "
                     "in this slice — `[x for x in xs if P]`; mapping "
                     "and filtering at once is outside it", line)
-            test = _prop_expr(comp.ifs[0], names | {v}, line, lc=lc)
+            test = _prop_expr(comp.ifs[0], names | {v}, line, result,
+                              rename, lc=lc)
             pred = f"(fun {_ident(v)} : Int => (decide {test}))"
-            _FILTER_PREDS.append(pred)
-            return f"({_ident(comp.iter.id)}.filter {pred})"
-        body = _int_expr(e.elt, names | {v}, line, lc=lc)
-        return f"({_ident(comp.iter.id)}.map (fun {_ident(v)} => {body}))"
+            if pred not in _FILTER_PREDS:
+                _FILTER_PREDS.append(pred)
+            return f"({_lref(comp.iter.id, rename)}.filter {pred})"
+        body = _int_expr(e.elt, names | {v}, line, result, rename, lc)
+        return (f"({_lref(comp.iter.id, rename)}.map "
+                f"(fun {_ident(v)} => {body}))")
     raise _reject("a list return must be a list parameter or a "
                   "comprehension over one in this slice", line)
 
