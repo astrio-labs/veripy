@@ -216,11 +216,11 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 
 | | |
 |---|---|
-| contact corpus under Lean | **15/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`, `he_43`, `he_40`, `he_48`, `he_30`, `he_34`) — `he_43` now EXCEEDS Dafny, whose fragment lacks `enumerate` |
-| prelude | `lean-0.13` (`SortedUnique` pack: insertion sort that drops duplicates, strict adjacency + both membership directions — the sorted-unique class; `Count_filter_of_pos`, `IntBexDec` before it) |
+| contact corpus under Lean | **16/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`, `he_43`, `he_40`, `he_48`, `he_30`, `he_34`, `he_9`) — every non-cut, non-`dict` task; `he_43` EXCEEDS Dafny, whose fragment lacks `enumerate` |
+| prelude | `lean-0.14` (`ListMax` pack + `SqLeSq`: prefix-max extension for the OptionalMax class and squaring monotonicity for the square-maximality endgame; `SortedUnique`, `Count_filter_of_pos`, `IntBexDec` before them) |
 | slices landed | P2 1–20, P3 (sidecar channel) |
 | `.proofs.lean` packs in existence | **4** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr`; `he_31`: `ModPredOne` (with a Dafny twin, the first task packed under BOTH provers) — all kernel-checked, clean axiom footprints) |
-| triple adjudication (benchmark corpus, 16 tasks) | **8 proved under BOTH provers**, 7 named Lean fragment gaps (`#@ proof` clauses whose packs are Dafny sidecars, plus the `rolling_max` Optional body), **1 conclusive split**: `isqrt` — Dafny/Z3 closes the squaring-monotonicity maximality post natively, the fixed Lean ladder has no move for it (the square-maximality endgame is the named follow-up). Re-run: `veripy benchmark --backend all` |
+| triple adjudication (benchmark corpus, 16 tasks) | **8 proved under BOTH provers**, 7 named Lean fragment gaps (`#@ proof` clauses whose packs are Dafny sidecars, plus the `rolling_max` Optional body), **the 1 conclusive split is RESOLVED**: `isqrt`'s squaring-monotonicity maximality post (Z3-native) now closes under the fixed Lean ladder via the square-maximality endgame (`SqLeSq` + split on `k ≤ result` against the exit condition) — **9 under both provers**, and the long-pinned "fails until noticed" assertion flipped to `ok`. Re-run: `veripy benchmark --backend all` |
 | exams under `--backend lean` | roster follows the backend's sidecars; all 4 Lean packs screen **load-bearing**; the he_31 exam restores end to end with the scripted golden |
 
 `he_60` is the first while-loop task with a nonlinear postcondition
@@ -238,8 +238,16 @@ work list and not a countdown):
 | blocker | tasks |
 |---|---|
 | DP / indexed assignment — **cut by decision** | `mbpp_402`, `mbpp_620`, `mbpp_247` (2-D table), `mbpp_149` (dp array) |
-| `int \| None` accumulator — a real fragment addition, not a body-shape issue (earlier table binned it by its first error) | `he_9` |
 | `dict` | `mbpp_885` (also `sorted`), `mbpp_97` (also nested comprehension) |
+
+`he_9` (slice 30) is the OptionalMax class: the `int | None`
+accumulator beside its list builder is MATCHED strictly rather than
+translated — the emitted fold over `Option Int × List Int`, induction
+theorem, and spec proof are a template proved end to end before the
+emitter existed, `X == E` on the Optional spelled `X = some E`
+(faithful on both constructors, unlike a `getD` read), and the in-loop
+slice-extension assert becomes its own theorem via `Take_succ_getD`.
+Near-misses are rejected with the pattern named, never mistranslated.
 
 The earlier revision of this table grouped `mbpp_247`, `mbpp_885`, and
 `mbpp_97` under `str` parameters and `mbpp_149` under "two loops" —

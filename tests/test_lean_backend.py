@@ -1211,18 +1211,21 @@ def test_squaring_while_loop_verifies_without_the_maximality_clause(tmp_path):
     assert verify_structured(src, tmp_path / "o1",
                              backend="lean")["status"] == "ok"
 
-    # The maximality clause is the one that does NOT come free here: it
-    # needs squaring MONOTONICITY under a quantifier, which no fixed
-    # linear script supplies. Dafny gets it from Z3's nonlinear
-    # arithmetic; in Lean it waits for the sidecar channel (P3). Pinned
-    # so the day it starts passing is noticed.
+    # The maximality clause needed squaring MONOTONICITY under a
+    # quantifier — Z3-native, and for a long stretch outside the fixed
+    # ladder (this assertion was pinned `failed` "so the day it starts
+    # passing is noticed"). The day arrived with the square-maximality
+    # endgame the triple run demanded: split on k ≤ result, close the
+    # beaten side by SqLeSq against the exit condition. The corpus
+    # isqrt now proves under BOTH provers with no sidecar under
+    # either.
     full = tmp_path / "isqrt_full.py"
     full.write_text(src.read_text().replace(
         "def isqrt(n: int) -> int:",
         "#@ ensures forall k in range(0, n + 1) :: k * k > n or k <= result\n"
         "def isqrt(n: int) -> int:"))
     assert verify_structured(full, tmp_path / "o2",
-                             backend="lean")["status"] == "failed"
+                             backend="lean")["status"] == "ok"
 
 
 COUNT2 = ("#@ requires n >= 0\n"
@@ -4261,3 +4264,74 @@ def test_end_to_end_unique_proves_and_lies_fail(tmp_path):
         bad.write_text(base.replace(frm, to))
         assert verify_structured(bad, tmp_path / f"ob{k}",
                                  backend="lean")["status"] == "failed", k
+
+
+def test_optional_max_class_matches_strictly():
+    # The OptionalMax class (slice 30, he_9): an `int | None` running
+    # accumulator beside a list builder, MATCHED strictly rather than
+    # translated — the emitted template was proved end to end before
+    # the emitter existed, and the matcher's strictness is what lets
+    # the template stand in for translation. Near-misses are rejected
+    # with the pattern named, never mistranslated.
+    src = Path("examples/contact/he_humaneval_9.py").read_text()
+    out = _encode(src).lean_source
+    assert "Option Int × List Int" in out
+    assert "VeriPy.ListMax" in out
+    assert "rolling_max_assert0" in out       # the slice-extension hint
+    # A body deviation: min is not the class.
+    with pytest.raises(EncodeError, match="OptionalMax"):
+        _encode(src.replace("running_max = max(running_max, n)",
+                            "running_max = min(running_max, n)"))
+    # A spec deviation: the wrong prefix bound is refused, not proved.
+    with pytest.raises(EncodeError, match="OptionalMax"):
+        _encode(src.replace(
+            "#@ ensures forall i in range(len(numbers)) :: "
+            "result[i] == max(numbers[:i + 1])",
+            "#@ ensures forall i in range(len(numbers)) :: "
+            "result[i] == max(numbers[:i])"))
+    # A sibling def named after a template declaration collides
+    # loudly, not in Lean's lap (review-caught).
+    sib = (src + "\n\n#@ verified\n#@ ensures result >= 0\n"
+           "def rolling_max_loop(n: int) -> int:\n    return 0\n")
+    with pytest.raises(EncodeError, match="collides with another"):
+        _encode(sib)
+    # ...but only names the emitter actually creates: an ASSERT-LESS
+    # shape reserves no f_assert0, so that sibling coexists
+    # (review-caught over-reservation).
+    no_assert = src.replace(
+        "        assert numbers[:i + 1] == numbers[:i] + [numbers[i]]\n",
+        "")
+    sib2 = (no_assert + "\n\n#@ verified\n#@ ensures result >= 0\n"
+            "def rolling_max_assert0(n: int) -> int:\n    return 0\n")
+    assert "VeriPy.ListMax" in _encode(sib2).lean_source
+    # A missing invariant: four are required, by name.
+    with pytest.raises(EncodeError, match="four invariants"):
+        _encode(src.replace(
+            "        #@ invariant (running_max is None) <==> "
+            "(len(maxes) == 0)\n", ""))
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_rolling_max_proves(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/he_humaneval_9.py")
+    good = tmp_path / "rmax.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    # In-template lies are impossible by construction (every part of
+    # the shape is pinned), so the teeth here are the REFUSALS: a
+    # mutated body or spec must never reach `ok`.
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            ("running_max = max(running_max, n)",
+             "running_max = min(running_max, n)"),
+            ("max(numbers[:i + 1])", "max(numbers[:i])"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        st = verify_structured(bad, tmp_path / f"ob{k}",
+                               backend="lean")["status"]
+        assert st == "encode-error", (k, st)

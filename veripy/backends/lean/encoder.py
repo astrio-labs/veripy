@@ -1652,6 +1652,441 @@ class _LoopShape:
     asserts: list[ast.Assert] = field(default_factory=list)
 
 
+
+@dataclass(frozen=True)
+class _OptMaxShape:
+    """The OptionalMax class (rolling_max / he_9): an `int | None`
+    running accumulator beside a list builder."""
+    lst: str
+    index: str
+    opt: str
+    builder: str
+    elem: str
+    has_assert: bool
+    for_line: int
+    inv_line: int
+    ens_line: int
+    assert_line: int
+
+
+_OPTMAX_INTERNALS = frozenset({
+    "m_", "i_", "rm_", "mx_", "n_", "v_", "k_", "k2_", "hd_", "hd0_",
+    "hd1_", "hstep", "hinv", "hidx", "hilen", "hnnil", "hmx0", "hmxnil",
+    "hi0", "hlen_pos", "hv", "hi_ge1", "htake", "hkold", "hkeq", "hk0",
+    "hk2", "hn", "he", "h1", "h2", "h3", "h4", "g1", "g2", "g3", "g4",
+    "hx2",
+})
+
+
+def _optional_max_shape(fn: ast.FunctionDef, spec_fn: FunctionSpec,
+                        lists: frozenset[str]) -> _OptMaxShape | None:
+    """Match the OptionalMax class STRICTLY, or decline (None) when the
+    skeleton is absent. The class is matched, not translated: every
+    invariant and ensures is required to be byte-shape-identical (names
+    aside) to the rolling_max pattern, so emitting the proven template
+    IS emitting the translation — the strictness is what makes that
+    equation true, and near-misses are rejected with the pattern named
+    rather than mistranslated. The `int | None` accumulator is modeled
+    as `Option Int`, with `X == E` spelled `X = some E` (Python's
+    `None == int` is False, and so is `none = some e` — the spelling is
+    faithful on BOTH constructors, unlike a `getD` read).
+
+    The optional in-loop `assert L[:i+1] == L[:i] + [L[i]]` is the
+    slice-extension hint: it becomes its own theorem, proved by the
+    prelude's Take_succ_getD (a runtime check in CPython, a VC in
+    Dafny, a named lemma here)."""
+    body = fn.body
+    if len(body) != 4:
+        return None
+    s0, s1, s2, s3 = body
+    # X: int | None = None
+    if not (isinstance(s0, ast.AnnAssign) and isinstance(s0.target, ast.Name)
+            and isinstance(s0.annotation, ast.BinOp)
+            and isinstance(s0.annotation.op, ast.BitOr)
+            and isinstance(s0.annotation.left, ast.Name)
+            and s0.annotation.left.id == "int"
+            and isinstance(s0.annotation.right, ast.Constant)
+            and s0.annotation.right.value is None
+            and isinstance(s0.value, ast.Constant)
+            and s0.value.value is None):
+        return None
+    opt = s0.target.id
+    # Y: list[int] = []
+    if not (isinstance(s1, ast.AnnAssign) and isinstance(s1.target, ast.Name)
+            and isinstance(s1.value, ast.List) and not s1.value.elts):
+        return None
+    builder = s1.target.id
+    if not (isinstance(s2, ast.For) and not s2.orelse
+            and isinstance(s2.target, ast.Name)
+            and isinstance(s3, ast.Return)
+            and isinstance(s3.value, ast.Name)
+            and s3.value.id == builder):
+        return None
+    index = s2.target.id
+    it = s2.iter
+    if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
+            and it.func.id == "range" and len(it.args) == 1
+            and not it.keywords and isinstance(it.args[0], ast.Call)
+            and isinstance(it.args[0].func, ast.Name)
+            and it.args[0].func.id == "len"
+            and len(it.args[0].args) == 1
+            and isinstance(it.args[0].args[0], ast.Name)
+            and it.args[0].args[0].id in lists):
+        return None
+    lst = it.args[0].args[0].id
+
+    def expect(actual: ast.expr, source: str, what: str,
+               line: int) -> None:
+        want = ast.parse(source, mode="eval").body
+        if ast.dump(actual) != ast.dump(want):
+            raise _reject(
+                f"the OptionalMax class (an `int | None` running "
+                f"accumulator beside a list builder) admits exactly "
+                f"the rolling_max pattern; its {what} must be "
+                f"`{source}`", line)
+
+    # Loop body: n = L[i]; if X is None: X = n else: X = max(X, n);
+    # optional slice-extension assert; Y.append(X)
+    lb = list(s2.body)
+    if not (3 <= len(lb) <= 4 and isinstance(lb[0], ast.Assign)
+            and len(lb[0].targets) == 1
+            and isinstance(lb[0].targets[0], ast.Name)):
+        raise _reject(
+            "the OptionalMax class loop body is exactly `n = L[i]`, "
+            "the None-guarded max update, an optional slice-extension "
+            "assert, and `maxes.append(running)`", s2.lineno)
+    elem = lb[0].targets[0].id
+    expect(lb[0].value, f"{lst}[{index}]",
+           "element read", lb[0].lineno)
+    ifst = lb[1]
+    if not isinstance(ifst, ast.If):
+        raise _reject("the OptionalMax class updates through "
+                      "`if X is None: ... else: ...`", lb[1].lineno)
+    expect(ifst.test, f"{opt} is None", "guard", ifst.lineno)
+    if not (len(ifst.body) == 1 and isinstance(ifst.body[0], ast.Assign)
+            and len(ifst.orelse) == 1
+            and isinstance(ifst.orelse[0], ast.Assign)):
+        raise _reject("the OptionalMax class updates the accumulator "
+                      "in BOTH branches", ifst.lineno)
+    bthen, belse = ifst.body[0], ifst.orelse[0]
+    if not (len(bthen.targets) == 1
+            and isinstance(bthen.targets[0], ast.Name)
+            and bthen.targets[0].id == opt
+            and len(belse.targets) == 1
+            and isinstance(belse.targets[0], ast.Name)
+            and belse.targets[0].id == opt):
+        raise _reject("the OptionalMax class updates the SAME "
+                      "accumulator in both branches", ifst.lineno)
+    expect(bthen.value, f"{elem}", "None-branch update", bthen.lineno)
+    expect(belse.value, f"max({opt}, {elem})", "else-branch update",
+           belse.lineno)
+    has_assert = len(lb) == 4
+    assert_line = s2.lineno
+    if has_assert:
+        ast_a = lb[2]
+        if not isinstance(ast_a, ast.Assert):
+            raise _reject("the OptionalMax class admits one optional "
+                          "assert, before the append", lb[2].lineno)
+        expect(ast_a.test,
+               f"{lst}[:{index} + 1] == {lst}[:{index}] + "
+               f"[{lst}[{index}]]",
+               "assert (the slice-extension hint)", ast_a.lineno)
+        assert_line = ast_a.lineno
+    app = lb[-1]
+    ok_app = (isinstance(app, ast.Expr) and isinstance(app.value, ast.Call)
+              and isinstance(app.value.func, ast.Attribute)
+              and app.value.func.attr == "append"
+              and isinstance(app.value.func.value, ast.Name)
+              and app.value.func.value.id == builder
+              and len(app.value.args) == 1
+              and isinstance(app.value.args[0], ast.Name)
+              and app.value.args[0].id == opt)
+    if not ok_app:
+        raise _reject("the OptionalMax class ends its loop body with "
+                      "`maxes.append(running)`", app.lineno)
+
+    # Invariants: the four, in order, exactly.
+    invs = spec_fn.by_kind("invariant")
+    if len(invs) != 4:
+        raise _reject(
+            "the OptionalMax class needs exactly its four invariants "
+            "(builder length, None-iff-empty, the guarded running "
+            "value, and the prefix-max ∀)", s2.lineno)
+    inv_texts = [c.desugared if c.desugared is not None else c.raw
+                 for c in invs]
+    parsed = []
+    for c, text in zip(invs, inv_texts):
+        try:
+            parsed.append(ast.parse(text, mode="eval").body)
+        except SyntaxError as exc:
+            raise _reject(f"cannot parse invariant: {exc.msg}", c.line)
+    kb = "k"
+    # The prefix-∀ binder name is the one free choice in the invariant
+    # set; recover it so `expect` can name the exact source.
+    if isinstance(parsed[3], ast.Call) and parsed[3].args             and isinstance(parsed[3].args[0], ast.GeneratorExp)             and isinstance(parsed[3].args[0].generators[0].target,
+                           ast.Name):
+        kb = parsed[3].args[0].generators[0].target.id
+    expect(parsed[0], f"len({builder}) == {index}",
+           "first invariant", invs[0].line)
+    expect(parsed[1],
+           f"bool({opt} is None) == bool(len({builder}) == 0)",
+           "second invariant (spelled with <==>)", invs[1].line)
+    expect(parsed[2],
+           f"{opt} is None or {opt} == max({lst}[:len({builder})])",
+           "third invariant", invs[2].line)
+    expect(parsed[3],
+           f"all(({builder}[{kb}] == max({lst}[:{kb} + 1])) "
+           f"for {kb} in range(len({builder})))",
+           "fourth invariant (spelled with forall)", invs[3].line)
+
+    # Ensures: the two, in order, exactly.
+    posts = spec_fn.by_kind("ensures")
+    if len(posts) != 2:
+        raise _reject("the OptionalMax class states exactly two "
+                      "ensures (result length, and the prefix-max ∀)",
+                      spec_fn.lineno)
+    post_texts = [c.desugared if c.desugared is not None else c.raw
+                  for c in posts]
+    pp = []
+    for c, text in zip(posts, post_texts):
+        try:
+            pp.append(ast.parse(text, mode="eval").body)
+        except SyntaxError as exc:
+            raise _reject(f"cannot parse ensures: {exc.msg}", c.line)
+    ib = "i"
+    if isinstance(pp[1], ast.Call) and pp[1].args             and isinstance(pp[1].args[0], ast.GeneratorExp)             and isinstance(pp[1].args[0].generators[0].target, ast.Name):
+        ib = pp[1].args[0].generators[0].target.id
+    expect(pp[0], f"len(result) == len({lst})",
+           "first ensures", posts[0].line)
+    expect(pp[1],
+           f"all((result[{ib}] == max({lst}[:{ib} + 1])) "
+           f"for {ib} in range(len({lst})))",
+           "second ensures (spelled with forall)", posts[1].line)
+
+    if spec_fn.by_kind("requires") or spec_fn.by_kind("proof")             or spec_fn.by_kind("decreases"):
+        raise _reject("the OptionalMax class carries no requires, "
+                      "proof, or decreases clauses", spec_fn.lineno)
+    names_used = {node.id for node in ast.walk(fn)
+                  if isinstance(node, ast.Name)} | {fn.name}
+    if names_used & _OPTMAX_INTERNALS:
+        raise _reject(
+            "a name in this function collides with the OptionalMax "
+            "template's internal binders (the *_-suffixed set) — "
+            "rename it", fn.lineno)
+    return _OptMaxShape(lst=lst, index=index, opt=opt, builder=builder,
+                        elem=elem, has_assert=has_assert,
+                        for_line=s2.lineno, inv_line=invs[0].line,
+                        ens_line=posts[0].line,
+                        assert_line=assert_line)
+
+
+
+def _emit_optional_max(om: _OptMaxShape, fn: ast.FunctionDef,
+                       spec_fn: FunctionSpec, emit, theorems) -> None:
+    """Emit the OptionalMax class whole: fold over (Option Int × List
+    Int), the invariant Prop, the induction theorem whose succ case
+    splits on the constructor, the optional slice-extension assert
+    theorem, and the spec theorem. The scripts are the PINNED template
+    (proved end to end before this emitter existed); the matcher's
+    strictness is what lets the template stand in for translation."""
+    f = _ident(spec_fn.name)
+    L = _ident(om.lst)
+    fl = _ident(f"{spec_fn.name}_loop")
+    fi = _ident(f"{spec_fn.name}_inv")
+    fli = _ident(f"{spec_fn.name}_loop_inv")
+    fsp = f"{spec_fn.name}_spec"
+    fas = f"{spec_fn.name}_assert0"
+    IL, EL, SL = om.inv_line, om.ens_line, om.assert_line
+
+    emit("", None)
+    emit(f"def {fl} ({L} : List Int) : Nat → Int → Option Int → "
+         f"List Int → (Option Int × List Int)", om.for_line)
+    emit("  | 0, _, rm_, mx_ => (rm_, mx_)", om.for_line)
+    emit("  | (m_ + 1), i_, rm_, mx_ =>", om.for_line)
+    emit(f"      let n_ : Int := {L}.getD (i_).toNat 0", om.for_line)
+    emit("      let rm2_ : Option Int := match rm_ with", om.for_line)
+    emit("        | none => some n_", om.for_line)
+    emit("        | some v_ => some (max v_ n_)", om.for_line)
+    emit(f"      {fl} {L} m_ (i_ + 1) rm2_ (mx_ ++ [rm2_.getD 0])",
+         om.for_line)
+    emit("", None)
+    emit(f"def {f} ({L} : List Int) : List Int :=", om.for_line)
+    emit(f"  ({fl} {L} ((({L}.length : Int))).toNat 0 none []).2",
+         om.for_line)
+    emit("", None)
+    emit(f"def {fi} ({L} : List Int) (i_ : Int) (rm_ : Option Int) "
+         f"(mx_ : List Int) : Prop :=", IL)
+    emit("  (((mx_.length : Int)) = i_)", IL)
+    emit("  ∧ ((rm_ = none) ↔ (((mx_.length : Int)) = 0))", IL)
+    emit(f"  ∧ ((rm_ = none) ∨ (rm_ = some (VeriPy.ListMax "
+         f"({L}.take ((mx_.length : Int)).toNat))))", IL)
+    emit("  ∧ (∀ k_ : Int, (0 ≤ k_ ∧ k_ < ((mx_.length : Int))) →", IL)
+    emit(f"       ((mx_.getD (k_).toNat 0) = VeriPy.ListMax "
+         f"({L}.take ((k_ + 1)).toNat)))", IL)
+    if om.has_assert:
+        emit("", None)
+        theorems.append(fas)
+        emit(f"theorem {_ident(fas)} ({L} : List Int) : ∀ i_ : Int, "
+             f"0 ≤ i_ → i_ < (({L}.length : Int)) →", SL)
+        emit(f"    {L}.take ((i_ + 1)).toNat = {L}.take ((i_)).toNat "
+             f"++ [{L}.getD (i_).toNat 0] := by", SL)
+        emit("  intro i_ hd0_ hd1_", SL)
+        emit(f"  have hn := VeriPy.Take_succ_getD {L} (i_).toNat "
+             f"(by omega)", SL)
+        emit("  rw [show ((i_).toNat + 1) = ((i_ + 1)).toNat from by "
+             "omega] at hn", SL)
+        emit("  exact hn", SL)
+    emit("", None)
+    theorems.append(f"{spec_fn.name}_loop_inv")
+    emit(f"theorem {fli} ({L} : List Int) : ∀ (m_ : Nat) (i_ : Int) "
+         f"(rm_ : Option Int) (mx_ : List Int),", IL)
+    emit(f"    {fi} {L} i_ rm_ mx_ → 0 ≤ i_ → "
+         f"i_ + (m_ : Int) ≤ max ((({L}.length : Int))) i_ →", IL)
+    emit(f"    {fi} {L} (i_ + m_)", IL)
+    emit(f"      ({fl} {L} m_ i_ rm_ mx_).1 "
+         f"({fl} {L} m_ i_ rm_ mx_).2 := by", IL)
+    emit("  intro m_", IL)
+    emit("  induction m_ with", IL)
+    emit("  | zero =>", IL)
+    emit("      intro i_ rm_ mx_ h1 hd0_ hd1_", IL)
+    emit(f"      simpa only [{fl}, Int.natCast_zero, Int.add_zero] "
+         f"using h1", IL)
+    emit("  | succ k_ ih =>", IL)
+    emit("      intro i_ rm_ mx_ h1 hd0_ hd1_", IL)
+    emit("      obtain ⟨h1, h2, h3, h4⟩ := h1", IL)
+    emit(f"      have hilen : i_ < ({L}.length : Int) := by omega", IL)
+    emit(f"      have hnnil : {L} ≠ [] := by", IL)
+    emit("        intro he; rw [he] at hilen; simp at hilen; omega", IL)
+    emit("      have hidx : i_ + 1 + (k_ : Int) = "
+         "i_ + ((k_ + 1 : Nat) : Int) := by", IL)
+    emit("        push_cast; omega", IL)
+    emit("      cases rm_ with", IL)
+    emit("      | none =>", IL)
+    emit("          have hmx0 : ((mx_.length : Int)) = 0 := h2.mp rfl",
+         IL)
+    emit("          have hmxnil : mx_ = [] := by", IL)
+    emit("            have hn : mx_.length = 0 := by omega", IL)
+    emit("            exact List.eq_nil_of_length_eq_zero hn", IL)
+    emit("          have hi0 : i_ = 0 := by omega", IL)
+    emit("          subst hmxnil", IL)
+    emit(f"          simp only [{fl}]", IL)
+    emit(f"          have hstep := ih (i_ + 1) "
+         f"(some ({L}.getD (i_).toNat 0))", IL)
+    emit(f"            [{L}.getD (i_).toNat 0]", IL)
+    emit("            ?_ (by omega) (by (try push_cast at hd1_ ⊢); "
+         "omega)", IL)
+    emit("          · rw [hidx] at hstep", IL)
+    emit("            exact hstep", IL)
+    emit("          · refine ⟨by simp; omega, by simp, Or.inr ?_, "
+         "?_⟩", IL)
+    emit("            · simp only [List.length_cons, List.length_nil]",
+         IL)
+    emit("              rw [show ((((1 : Nat) : Int)).toNat = 1) "
+         "from rfl]", IL)
+    emit(f"              rw [VeriPy.ListMax_take_one {L} hnnil]", IL)
+    emit("              rw [show (i_).toNat = 0 from by omega]", IL)
+    emit("            · intro k2_ hk2", IL)
+    emit("              simp only [List.length_cons, List.length_nil] "
+         "at hk2", IL)
+    emit("              have hk0 : k2_ = 0 := by push_cast at hk2; "
+         "omega", IL)
+    emit("              subst hk0", IL)
+    emit("              simp only [Int.toNat_zero, "
+         "List.getD_cons_zero]", IL)
+    emit("              rw [show (((0 : Int) + 1)).toNat = 1 from "
+         "rfl]", IL)
+    emit(f"              rw [VeriPy.ListMax_take_one {L} hnnil]", IL)
+    emit("              rw [show (i_).toNat = 0 from by omega]", IL)
+    emit("      | some v_ =>", IL)
+    emit("          have hlen_pos : ((mx_.length : Int)) ≠ 0 := by",
+         IL)
+    emit("            intro he", IL)
+    emit("            have hx2 := h2.mpr he", IL)
+    emit("            simp at hx2", IL)
+    emit(f"          have hv : v_ = VeriPy.ListMax ({L}.take "
+         f"((mx_.length : Int)).toNat) := by", IL)
+    emit("            rcases h3 with h3 | h3", IL)
+    emit("            · exact absurd h3 (by simp)", IL)
+    emit("            · simpa using h3", IL)
+    emit("          have hi_ge1 : 1 ≤ i_ := by omega", IL)
+    emit(f"          have htake : VeriPy.ListMax ({L}.take "
+         f"((i_ + 1)).toNat)", IL)
+    emit(f"              = max (VeriPy.ListMax ({L}.take (i_).toNat)) "
+         f"({L}.getD (i_).toNat 0) := by", IL)
+    emit(f"            have hn := VeriPy.ListMax_take_succ {L} "
+         f"(i_).toNat", IL)
+    emit("              (by omega) (by omega)", IL)
+    emit("            rw [show ((i_).toNat + 1) = ((i_ + 1)).toNat "
+         "from by omega] at hn", IL)
+    emit("            exact hn", IL)
+    emit(f"          simp only [{fl}]", IL)
+    emit(f"          have hstep := ih (i_ + 1) (some (max v_ "
+         f"({L}.getD (i_).toNat 0)))", IL)
+    emit(f"            (mx_ ++ [max v_ ({L}.getD (i_).toNat 0)])", IL)
+    emit("            ?_ (by omega) (by (try push_cast at hd1_ ⊢); "
+         "omega)", IL)
+    emit("          · rw [hidx] at hstep", IL)
+    emit("            exact hstep", IL)
+    emit("          · refine ⟨?_, ?_, Or.inr ?_, ?_⟩", IL)
+    emit("            · simp [List.length_append]; omega", IL)
+    emit("            · constructor", IL)
+    emit("              · intro he; simp at he", IL)
+    emit("              · intro he", IL)
+    emit("                exact absurd he (by "
+         "simp [List.length_append]; omega)", IL)
+    emit(f"            · rw [show ((((mx_ ++ [max v_ ({L}.getD "
+         f"(i_).toNat 0)]).length : Int)).toNat)", IL)
+    emit("                    = ((i_ + 1)).toNat from by "
+         "simp [List.length_append]; omega]", IL)
+    emit("              rw [htake, hv]", IL)
+    emit("              rw [show ((mx_.length : Int)).toNat = "
+         "(i_).toNat from by omega]", IL)
+    emit("            · intro k2_ hk2", IL)
+    emit("              simp only [List.length_append, "
+         "List.length_cons,", IL)
+    emit("                         List.length_nil] at hk2", IL)
+    emit("              push_cast at hk2", IL)
+    emit("              by_cases hkold : k2_ < ((mx_.length : Int))",
+         IL)
+    emit(f"              · rw [VeriPy.GetD_append_left mx_ _ "
+         f"(k2_).toNat (by omega)]", IL)
+    emit("                exact h4 k2_ ⟨hk2.1, hkold⟩", IL)
+    emit("              · have hkeq : k2_ = ((mx_.length : Int)) := "
+         "by omega", IL)
+    emit("                subst hkeq", IL)
+    emit("                rw [show ((mx_.length : Int)).toNat = "
+         "mx_.length from by omega]", IL)
+    emit("                rw [VeriPy.GetD_append_last mx_ _]", IL)
+    emit("                rw [show (((mx_.length : Int)) + 1).toNat "
+         "= ((i_ + 1)).toNat", IL)
+    emit("                      from by omega]", IL)
+    emit("                rw [htake, hv]", IL)
+    emit("                rw [show ((mx_.length : Int)).toNat = "
+         "(i_).toNat from by omega]", IL)
+    emit("", None)
+    theorems.append(fsp)
+    emit(f"theorem {_ident(fsp)} ({L} : List Int) :", EL)
+    emit(f"    (((({f} {L}).length : Int)) = (({L}.length : Int)))",
+         EL)
+    emit(f"    ∧ (∀ i_ : Int, (0 ≤ i_ ∧ i_ < (({L}.length : Int))) →",
+         EL)
+    emit(f"        (({f} {L}).getD (i_).toNat 0", EL)
+    emit(f"          = VeriPy.ListMax ({L}.take ((i_ + 1)).toNat))) "
+         f":= by", EL)
+    emit(f"  unfold {f}", EL)
+    emit(f"  have hinv := {fli} {L} ((({L}.length : Int))).toNat 0 "
+         f"none []", EL)
+    emit("    ⟨by simp, by simp, Or.inl rfl, by intro k_ hk2; "
+         "simp at hk2; omega⟩", EL)
+    emit("    (by omega) (by omega)", EL)
+    emit("  obtain ⟨g1, g2, g3, g4⟩ := hinv", EL)
+    emit("  constructor", EL)
+    emit("  · omega", EL)
+    emit("  · intro i_ hd0_", EL)
+    emit("    have hn := g4 i_ (by omega)", EL)
+    emit("    simpa using hn", EL)
+
+
 def _requires_min_len(spec_fn: FunctionSpec,
                       lists: frozenset[str]) -> dict[str, int]:
     """Scan TOP-LEVEL requires conjuncts for `len(L) > c` / `len(L) >=
@@ -3474,6 +3909,28 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                             f"guessed", clause.line)
 
         binders = " ".join(f"({_ident(p)} : {ptypes[p]})" for p in params)
+        if is_list_ret and len(params) == 1:
+            om = _optional_max_shape(fn, spec_fn, lists0)
+            if om is not None:
+                # The template's generated declarations join the
+                # module-wide reservation set like every other
+                # shape's (review-caught: a sibling def named
+                # f_loop/f_inv/... would collide silently).
+                gen_names = [f"{spec_fn.name}_loop",
+                             f"{spec_fn.name}_inv",
+                             f"{spec_fn.name}_loop_inv"]
+                if om.has_assert:
+                    # Reserved only when the theorem is actually
+                    # emitted (review-caught: an assert-less shape
+                    # beside a sibling named f_assert0 was rejected
+                    # for a collision that could not happen).
+                    gen_names.append(f"{spec_fn.name}_assert0")
+                for g in gen_names:
+                    _check_name(g, "generated declaration for",
+                                fn.lineno, taken)
+                    taken.add(g)
+                _emit_optional_max(om, fn, spec_fn, emit, theorems)
+                continue
         loop = _split_loop(fn, spec_fn)
 
         wloop = None
@@ -6078,6 +6535,33 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # omega's on a non-linear side — backtracks the whole try).
         emit("  all_goals (try (constructor <;> (intros; omega)))",
              first_ensures_line)
+        if wloop is not None:
+            # The SQUARE-MAXIMALITY move (the isqrt class, cataloged
+            # by the triple run): "no k in range beats the answer"
+            # splits on k ≤ result; the beaten side closes by
+            # squaring monotonicity against the exit condition — Z3
+            # applies that natively, the fixed ladder needs SqLeSq
+            # spelled. The posts-∧ splits first so the ∀-post stands
+            # alone; both ∨ orientations offered; any goal the shape
+            # does not fit fails the alternatives and the try
+            # rescues untouched.
+            ret_w = (f"({_ident(f'{spec_fn.name}_loop')} {targsp}"
+                     f"(({_ident(gm)} {targsp}{w_inits}).toNat + 1) "
+                     f"{w_inits})")
+            emit("  all_goals (try (repeat' apply And.intro))",
+                 first_ensures_line)
+            emit("  all_goals (try (intro d_ hd_))",
+                 first_ensures_line)
+            emit("  all_goals (try (intro hd2_))", first_ensures_line)
+            emit(f"  all_goals (try (rcases Classical.em "
+                 f"(d_ ≤ {ret_w}) with hqle_ | hqgt_ <;> first "
+                 f"| exact Or.inr hqle_ "
+                 f"| exact Or.inl hqle_ "
+                 f"| (left; have hsq_ := VeriPy.SqLeSq ({ret_w} + 1) "
+                 f"d_ (by omega) (by omega); omega) "
+                 f"| (right; have hsq_ := VeriPy.SqLeSq ({ret_w} + 1) "
+                 f"d_ (by omega) (by omega); omega) "
+                 f"| omega))", first_ensures_line)
         emit("  all_goals (first | omega | trivial)", first_ensures_line)
 
     # Ask Lean for every proved theorem's axiom footprint. The driver
