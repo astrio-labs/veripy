@@ -270,6 +270,15 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             raise _reject(
                 "`result[...]` needs a function that RETURNS a list — "
                 "this one does not, so there is nothing to index", line)
+        if isinstance(idx, ast.Name) \
+                and lc.safe_idx.get(idx.id) == "@result":
+            # Licensed by the binder's own bound: the quantifier
+            # ranges over `range(len(result))`, so the read never
+            # leaves the list (the intersperse class). An UNBOUNDED
+            # result read stays rejected below -- totalizing it would
+            # let a spec Dafny refuses hold vacuously here.
+            return (f"({result}.getD "
+                    f"({_lref(idx.id, rename)}).toNat 0)")
         if lc.result_list is None:
             raise _reject(
                 "`result[...]` needs an earlier `ensures` proving "
@@ -304,6 +313,29 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             # In bounds by CONTRACT: a top-level requires conjunct
             # bounds the length below by more than this literal.
             return f"({_lref(e.value.id, rename)}.getD {idx.value} 0)"
+        if isinstance(idx, ast.UnaryOp) \
+                and isinstance(idx.op, ast.USub) \
+                and isinstance(idx.operand, ast.Constant) \
+                and idx.operand.value == 1 \
+                and (lc.min_len or {}).get(e.value.id, 0) >= 1:
+            # `xs[-1]` is the LAST element, licensed by a nonemptiness
+            # the context already holds (a requires length bound, or
+            # the fall-through of an `if not xs: return` guard) --
+            # Python raises on the empty list, so without that bound
+            # the totalized read would model a program that crashes.
+            base = _lref(e.value.id, rename)
+            return (f"({base}.getD ((({base}.length : Int)) - 1)"
+                    f".toNat 0)")
+        if lc.scaffold:
+            # SCAFFOLD positions (invariants, spec clauses) are proof
+            # machinery, never executed: the totalized getD needs no
+            # well-formedness story, and the invariant's own bounds
+            # carry the meaning (the intersperse class reads
+            # `numbers[k // 2]` under `k < len(out)`). Executable
+            # positions keep the structural check below.
+            it = _int_expr(idx, names, line, result, rename, lc)
+            return (f"({_lref(e.value.id, rename)}.getD "
+                    f"({it}).toNat 0)")
         raise _reject(
             f"index into {e.value.id!r} is not structurally in bounds — "
             f"this slice indexes a list only by the loop index of `for i "
@@ -336,6 +368,11 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             # namespaced one).
             return (f"(VeriPy.PyAbs "
                     f"{_int_expr(args[0], names, line, result, rename, lc)})")
+        if e.func.id == "len" and len(args) == 1 \
+                and isinstance(args[0], ast.Name) \
+                and args[0].id == "result" and result is not None \
+                and lc.result_is_list:
+            return f"(({result}.length : Int))"
         if e.func.id == "len" and len(args) == 1:
             if isinstance(args[0], ast.Name) \
                     and args[0].id == "result" and result is not None:
@@ -424,6 +461,16 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
     if isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute) \
             and e.func.attr in _MATH_FNS:
         raise _reject(_MATH_LEAN, line)
+    if isinstance(e, ast.IfExp):
+        # `A if C else B` in a SPEC position is Lean's ite; the
+        # condition rides the same decidability the Bool bridge uses
+        # (linear comparisons synthesize Decidable instances). The
+        # intersperse class needs it for the conditional length.
+        _reject_undecidable_quantifier(e.test, names, line, lc)
+        c = _prop_expr(e.test, names, line, result, rename, lc=lc)
+        a = _int_expr(e.body, names, line, result, rename, lc)
+        b = _int_expr(e.orelse, names, line, result, rename, lc)
+        return f"(if {c} then {a} else {b})"
     raise _reject(f"expression {ast.dump(e)[:60]}... is outside slice 1",
                   line)
 
@@ -591,6 +638,119 @@ def _slice_extension_shape(e: ast.expr, idx: str,
     return (_ident(a[0]), f"(fun {_ident(a[1])} => {body_t})")
 
 
+
+def _computed_read_wf(expr: ast.expr, lc: "_ListCtx",
+                      names: set[str]) -> ast.expr | None:
+    """The WELL-FORMEDNESS obligation for an ensures clause: for every
+    list read the scaffold would totalize (a computed index no
+    structural rule licenses), a quantified `0 <= idx < len(L)` under
+    the same binder prefix. One synthetic clause conjoining them all,
+    or None when every read is structurally licensed.
+
+    This is the Dafny parallel: where that backend emits an in-bounds
+    VC per read, this one appends the same claim as an extra post --
+    `xs[100] == 0` becomes unprovable instead of quietly true about
+    getD's default (review-caught)."""
+    obligations: list[ast.expr] = []
+
+    def structurally_ok(sub: ast.Subscript) -> bool:
+        idx = sub.slice
+        lname = sub.value.id
+        if isinstance(idx, ast.Name) and lc.safe_for(idx.id, lname):
+            return True
+        if isinstance(idx, ast.Constant) and isinstance(idx.value, int) \
+                and not isinstance(idx.value, bool) \
+                and lc.literal_ok(idx.value, lname):
+            return True
+        if isinstance(idx, ast.UnaryOp) \
+                and isinstance(idx.op, ast.USub) \
+                and isinstance(idx.operand, ast.Constant) \
+                and idx.operand.value == 1 \
+                and (lc.min_len or {}).get(lname, 0) >= 1:
+            return True
+        return False
+
+    def walk(e: ast.expr, prefix: list[ast.comprehension],
+             wlc: "_ListCtx") -> None:
+        if isinstance(e, ast.Call) and isinstance(e.func, ast.Name) \
+                and e.func.id in ("all", "any") and e.args \
+                and isinstance(e.args[0], ast.GeneratorExp):
+            gen = e.args[0]
+            inner_lc = wlc
+            for g in gen.generators:
+                if isinstance(g.target, ast.Name):
+                    inner_lc = _quantifier_body_lc(inner_lc, g)
+            walk(gen.elt, prefix + list(gen.generators), inner_lc)
+            return
+        if isinstance(e, ast.Subscript) \
+                and isinstance(e.value, ast.Name) \
+                and e.value.id in wlc.lists \
+                and not isinstance(e.slice, ast.Slice):
+            if not structurally_ok_in(e, wlc):
+                idx = e.slice
+                wf = ast.parse(
+                    f"0 <= 0 and 0 < len({e.value.id})",
+                    mode="eval").body
+                wf.values[0].comparators[0] = copy.deepcopy(idx)
+                wf.values[1].left = copy.deepcopy(idx)
+                body: ast.expr = wf
+                for g in reversed(prefix):
+                    body = ast.Call(
+                        func=ast.Name(id="all", ctx=ast.Load()),
+                        args=[ast.GeneratorExp(
+                            elt=body,
+                            generators=[copy.deepcopy(g)])],
+                        keywords=[])
+                obligations.append(body)
+        for child in ast.iter_child_nodes(e):
+            if isinstance(child, ast.expr):
+                walk(child, prefix, wlc)
+
+    def structurally_ok_in(sub: ast.Subscript,
+                           wlc: "_ListCtx") -> bool:
+        nonlocal lc
+        saved, lc = lc, wlc
+        try:
+            return structurally_ok(sub)
+        finally:
+            lc = saved
+
+    walk(expr, [], lc)
+    if not obligations:
+        return None
+    out = (obligations[0] if len(obligations) == 1
+           else ast.BoolOp(op=ast.And(), values=obligations))
+    ast.fix_missing_locations(ast.Expression(body=out))
+    return out
+
+
+def _quantifier_body_lc(lc: "_ListCtx",
+                        g: ast.comprehension) -> "_ListCtx":
+    """The safe/take context a single range-generator grants its body
+    -- the same rules the translator applies, restated for the WF
+    pre-pass."""
+    if not (isinstance(g.iter, ast.Call)
+            and isinstance(g.iter.func, ast.Name)
+            and g.iter.func.id == "range"
+            and isinstance(g.target, ast.Name)):
+        return lc
+    v = g.target.id
+    args = g.iter.args
+    hi = args[-1] if args else None
+    lo_zero_or_nonneg = (len(args) == 1
+                         or _nonneg_bound(args[0], lc))
+    safe = {k: lst for k, lst in lc.safe_idx.items() if k != v}
+    if lo_zero_or_nonneg and isinstance(hi, ast.Call) \
+            and isinstance(hi.func, ast.Name) and hi.func.id == "len" \
+            and len(hi.args) == 1 \
+            and isinstance(hi.args[0], ast.Name) \
+            and hi.args[0].id in lc.lists:
+        safe[v] = hi.args[0].id
+    return _ListCtx(lc.lists, safe, lc.take_idx, lc.scaffold,
+                    lc.min_len, lc.pos_names, lc.result_list,
+                    lc.result_is_list, lc.nonneg_names)
+
+
 def _quantifier(e: ast.Call, names: set[str], line: int,
                 result: str | None, rename: dict[str, str] | None,
                 result_is_bool: bool,
@@ -669,6 +829,16 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         body_pos.discard(v)   # the binder SHADOWS any outer fact
     if lc.scaffold:
         safe[v] = "*"
+    if isinstance(hi_arg, ast.Call) \
+            and isinstance(hi_arg.func, ast.Name) \
+            and hi_arg.func.id == "len" and not hi_arg.keywords \
+            and len(hi_arg.args) == 1 \
+            and isinstance(hi_arg.args[0], ast.Name) \
+            and hi_arg.args[0].id == "result" and lo_is_zero:
+        # A binder over range(len(result)) may read result at itself
+        # -- and this OVERRIDES the scaffold's param-list wildcard,
+        # which the result branch does not read.
+        safe[v] = "@result"
     elif lo_is_zero and isinstance(hi_arg, ast.Call) \
             and isinstance(hi_arg.func, ast.Name) \
             and hi_arg.func.id == "len" and not hi_arg.keywords \
@@ -843,6 +1013,14 @@ def _prop_expr(e: ast.expr, names: set[str], line: int,
                             result_is_bool, avoid, lc)
                  for v in e.values]
         return "(" + f" {op} ".join(parts) + ")"
+    if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not) \
+            and isinstance(e.operand, ast.Name) \
+            and e.operand.id in (lc or _NO_LISTS).lists:
+        # Python truthiness: `not xs` on a list is emptiness.
+        return f"((({_lref(e.operand.id, rename)}.length : Int)) = 0)"
+    if isinstance(e, ast.Name) and e.id in (lc or _NO_LISTS).lists:
+        # ...and a bare list in bool position is nonemptiness.
+        return f"(¬((({_lref(e.id, rename)}.length : Int)) = 0))"
     if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not):
         inner = _prop_expr(e.operand, names, line, result, rename,
                            result_is_bool, avoid, lc)
@@ -1159,6 +1337,14 @@ class _LoopShape:
     # slice-3 desugar documents.
     search_test: ast.expr | None = None
     search_hit: bool | None = None
+    # Trailing `acc.append(E)` calls between the loop and the return
+    # (P2 slice 25, the intersperse class): the returned value is the
+    # fold result with the appended elements concatenated, so the
+    # model is `fold ++ [e1] ++ ...`. List accumulators only, and the
+    # appended expressions read parameters only -- the loop state they
+    # could mention is exactly what the for path has no exit story
+    # for.
+    post_appends: list[ast.expr] = field(default_factory=list)
     # Trailing `assert`s between the loop and the return (P2 slice
     # 23). PARAMETERS-ONLY claims: the for path has no exit-state
     # machinery (that is the while path's), so a claim naming the
@@ -2084,12 +2270,24 @@ def _split_loop(fn: ast.FunctionDef,
     if early is not None:
         early.guards = guards
         return early
+    def _is_append(st: ast.stmt) -> bool:
+        return (isinstance(st, ast.Expr)
+                and isinstance(st.value, ast.Call)
+                and isinstance(st.value.func, ast.Attribute)
+                and st.value.func.attr == "append"
+                and isinstance(st.value.func.value, ast.Name)
+                and len(st.value.args) == 1
+                and not st.value.keywords)
+
     post_asserts: list[ast.Assert] = []
+    post_appends: list[ast.stmt] = []
     if len(stmts) >= 4 and isinstance(stmts[1], ast.For) \
             and isinstance(stmts[-1], ast.Return) \
-            and all(isinstance(x, ast.Assert) for x in stmts[2:-1]):
+            and all(isinstance(x, ast.Assert) or _is_append(x)
+                    for x in stmts[2:-1]):
         post_asserts = [x for x in stmts[2:-1]
                         if isinstance(x, ast.Assert)]
+        post_appends = [x for x in stmts[2:-1] if _is_append(x)]
         stmts = [stmts[0], stmts[1], stmts[-1]]
     if len(stmts) != 3 or not isinstance(stmts[0], (ast.Assign,
                                                     ast.AnnAssign)) \
@@ -2279,6 +2477,25 @@ def _split_loop(fn: ast.FunctionDef,
     if index == acc:
         raise _reject("the loop index cannot be the accumulator",
                       loop.lineno)
+    post_append_exprs: list[ast.expr] = []
+    for pa in post_appends:
+        if pa.value.func.value.id != acc:
+            raise _reject(
+                f"a trailing append must target the accumulator "
+                f"{acc!r} in this slice", pa.lineno)
+        if not (isinstance(init_value, ast.List)
+                and not init_value.elts):
+            raise _reject(
+                "a trailing append needs a LIST accumulator in this "
+                "slice", pa.lineno)
+        for nd in ast.walk(pa.value.args[0]):
+            if isinstance(nd, ast.Name) and nd.id in (index, acc):
+                raise _reject(
+                    f"a trailing append's expression may mention "
+                    f"parameters only in this slice — {nd.id!r} is "
+                    f"loop state, and the for path has no exit-state "
+                    f"machinery", pa.lineno)
+        post_append_exprs.append(pa.value.args[0])
     if ret_stmt.value is None:
         raise _reject("bare `return` has no value to encode",
                       ret_stmt.lineno)
@@ -2357,6 +2574,7 @@ def _split_loop(fn: ast.FunctionDef,
                       ret=ret_stmt.value, inv=inv_expr, inv_line=inv_line,
                       for_line=loop.lineno, acc_bool=acc_bool,
                       asserts=body_asserts, post_asserts=post_asserts,
+                      post_appends=post_append_exprs,
                       search_test=search_test, search_hit=search_hit)
 
 
@@ -3532,6 +3750,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             # additionally gets the index as a `xs[:i]` slice bound —
             # proof scaffolding evaluated at loop heads, where i ≥ 0.
             b = loop.bound
+            # `len(L)` licenses the index for L, and so does
+            # `len(L) - k` for a nonnegative literal k: the index only
+            # gets SMALLER (intersperse loops to len - 1).
+            if isinstance(b, ast.BinOp) and isinstance(b.op, ast.Sub) \
+                    and isinstance(b.right, ast.Constant) \
+                    and isinstance(b.right.value, int) \
+                    and not isinstance(b.right.value, bool) \
+                    and b.right.value >= 0:
+                b = b.left
             safe: dict[str, str] = {}
             if isinstance(b, ast.Call) and isinstance(b.func, ast.Name) \
                     and b.func.id == "len" and not b.keywords \
@@ -3866,6 +4093,21 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 f"({iv}).toNat + 1 from by omega] at *); "
                 f"simp_all [VeriPy.PySum_append_one]; try omega)"
                 if has_mapped_sum else "")
+            # The PARITY class (intersperse): a list accumulator whose
+            # elementwise invariants read through `% 2`-style mod.
+            # Every appended element is one seam; old indices route
+            # through GetD_append_left (once per append), each seam
+            # through GetD_append_left for the outer appends then
+            # GetD_append_last, and the LENGTH conjunct identifies the
+            # seams arithmetically. Rather than scripting the seam
+            # case-split per index, the alternative hands simp_all the
+            # seam equations as HAVES and lets the mod bridges close
+            # the parity residues.
+            has_parity = (loop.acc_list
+                          and isinstance(loop.step, ast.Tuple)
+                          and any(isinstance(nd, ast.BinOp)
+                                  and isinstance(nd.op, ast.Mod)
+                                  for nd in ast.walk(loop.inv)))
             emit(f"  | succ {kvar} ih =>", loop.inv_line)
             emit(f"      intro {iv} {av} h hi hb", loop.inv_line)
             emit(f"      simp only [{_ident(gen_loop)}]", loop.inv_line)
@@ -3958,6 +4200,104 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "        )",
                 ):
                     emit(tl, loop.inv_line)
+            elif has_parity:
+                # The PARITY class (intersperse): elementwise
+                # invariants read through constant-mod, and every
+                # appended element is one SEAM. Old indices route
+                # through GetD_append_left once per append level; each
+                # seam rewrites its position to the prefix length and
+                # closes by GetD_append_last, with the constant-div
+                # bridges turning the parity residues linear. The
+                # script is the scratch-proven probe, generalized over
+                # the append count and the invariant's arity.
+                napp = len(loop.step.elts)
+                n_conj_p = (len(loop.inv.values)
+                            if isinstance(loop.inv, ast.BoolOp)
+                            and isinstance(loop.inv.op, ast.And) else 1)
+                pj = ", ".join(f"hj{ci}_" for ci in range(n_conj_p))
+                ph = ", ".join("?_" for _ in range(n_conj_p))
+                inst = " | ".join(
+                    [f"(exact hj{ci}_ k_ ⟨hk_.1, by omega⟩)"
+                     for ci in range(n_conj_p)]
+                    + [f"(exact hj{ci}_ k_ hk_.1 (by omega))"
+                       for ci in range(n_conj_p)]
+                    + ["trivial"])
+                pbr_h, pbr_n = _const_div_bridges(fn, spec_fn)
+                left_chain = ", ".join(
+                    ["VeriPy.GetD_append_left _ _ _ (by "
+                     "simp [List.length_append]; try omega)"] * (napp - 1)
+                    + ["VeriPy.GetD_append_left _ _ _ hin_"])
+                for tl in (
+                    "        (by",
+                    f"          simp only [{_ident(gen_inv)}] at h ⊢",
+                    *(f"          {h_}" for h_ in pbr_h),
+                    f"          (try (obtain ⟨{pj}⟩ := h))",
+                    f"          refine ⟨{ph}⟩ <;>",
+                    "          first",
+                    "            | (simp [List.length_append]; "
+                    "all_goals omega)",
+                    "            | (intro k_ hk_",
+                    "               simp only [List.length_append, "
+                    "List.length_cons, List.length_nil] at hk_",
+                    "               rcases Classical.em ((k_).toNat "
+                    f"< {av}.length) with hin_ | hout_",
+                    f"               · rw [{left_chain}]",
+                    f"                 first | {inst}",
+                ):
+                    emit(tl, loop.inv_line)
+                for j in range(napp):
+                    outer = ", ".join(
+                        ["VeriPy.GetD_append_left _ _ _ (by "
+                         "simp [List.length_append]; try omega)"]
+                        * (napp - 1 - j))
+                    lead = ("               · " if j == 0
+                            else "                 · ")
+                    if j < napp - 1:
+                        emit(f"{lead}rcases Classical.em ((k_).toNat "
+                             f"= {av}.length + {j}) with hs{j}_ | "
+                             f"hsn{j}_", loop.inv_line)
+                        body_lead = "                 "
+                        seam_pos = (f"{av}.length + {j}" if j
+                                    else f"{av}.length")
+                        emit(f"{body_lead}· "
+                             + (f"rw [{outer}]; " if outer else "")
+                             + f"rw [show (k_).toNat = "
+                             f"{seam_pos} from by omega]",
+                             loop.inv_line)
+                    else:
+                        seam_pos = (f"{av}.length + {j}" if j
+                                    else f"{av}.length")
+                        emit(f"{lead}"
+                             + (f"rw [{outer}]; " if outer else "")
+                             + f"rw [show (k_).toNat = "
+                             f"{seam_pos} from by omega]",
+                             loop.inv_line)
+                        body_lead = "                 "
+                    ind = "                   "
+                    if j > 0:
+                        pref_terms = " ++ ".join(
+                            "[" + _int_expr(loop.step.elts[q],
+                                            body_names, loop.for_line,
+                                            lc=step_lc) + "]"
+                            for q in range(j))
+                        emit(f"{ind}rw [show ({av}.length + {j}) = "
+                             f"({av} ++ {pref_terms}).length from by "
+                             f"simp [List.length_append]; try omega]",
+                             loop.inv_line)
+                    emit(f"{ind}rw [VeriPy.GetD_append_last]",
+                         loop.inv_line)
+                    if pbr_n:
+                        emit(f"{ind}(try simp only "
+                             f"[{', '.join(pbr_n)}] at *)",
+                             loop.inv_line)
+                    emit(f"{ind}(try (have hdiv_ : k_ / 2 = {iv} "
+                         f":= by omega)); (try rw [hdiv_])",
+                         loop.inv_line)
+                    emit(f"{ind}all_goals (first | rfl | trivial | "
+                         f"omega | (left; omega) | (right; first | "
+                         f"rfl | trivial | omega))", loop.inv_line)
+                emit("            )", loop.inv_line)
+                emit("        )", loop.inv_line)
             elif loop.acc_list:
                 # A list accumulator's preservation step is about
                 # length and append, not prefix sums, so it gets its own
@@ -4121,6 +4461,28 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             ret_t = av if (loop.acc_bool or loop.acc_list) \
                 else _int_expr(loop.ret, names | {loop.acc}, fn.lineno,
                                lc=lc0)
+            # Trailing appends concatenate after the fold. Their
+            # expressions translate under GUARD-DERIVED nonemptiness:
+            # the fall-through of `if not L: return ...` has L
+            # nonempty, which is what licenses `L[-1]` -- exactly the
+            # intersperse shape, where CPython would raise on the
+            # empty list the guard already returned for.
+            if loop.post_appends:
+                gmin = dict(lc0.min_len or {})
+                for gc, _gv in loop.guards:
+                    if isinstance(gc, ast.UnaryOp) \
+                            and isinstance(gc.op, ast.Not) \
+                            and isinstance(gc.operand, ast.Name) \
+                            and gc.operand.id in lc0.lists:
+                        gmin[gc.operand.id] = max(
+                            gmin.get(gc.operand.id, 0), 1)
+                lc_app = _ListCtx(lc0.lists, lc0.safe_idx, lc0.take_idx,
+                                  lc0.scaffold, gmin, lc0.pos_names,
+                                  lc0.result_list, lc0.result_is_list,
+                                  lc0.nonneg_names)
+                pa_ts = [_int_expr(pe, names, fn.lineno, lc=lc_app)
+                         for pe in loop.post_appends]
+                ret_t = av + "".join(f" ++ [{t}]" for t in pa_ts)
             emit("", None)
             emit(f"def {_ident(spec_fn.name)} {binders} : {acc_ty} :=",
                  fn.lineno)
@@ -4229,9 +4591,20 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # assumptions, and each later clause only assumes what is
         # already established.
         posts = []
+        wf_extra: list[tuple[ast.expr, int]] = []
         earlier_posts: list[str] = []
-        post_lc = lc0
+        # Ensures are SPEC positions -- proof statements, never
+        # executed -- so they translate under scaffold like invariants
+        # do: computed indexing totalizes under the clause's own
+        # bounds. Everything else lc0 carries rides along unchanged.
+        post_lc = _ListCtx(lc0.lists, lc0.safe_idx, lc0.take_idx,
+                           True, lc0.min_len, lc0.pos_names,
+                           lc0.result_list, lc0.result_is_list,
+                           lc0.nonneg_names)
         for expr, line in ensures:
+            wf = _computed_read_wf(expr, post_lc, names)
+            if wf is not None:
+                wf_extra.append((wf, line))
             posts.append((_prop_expr(expr, names, line, result=app,
                                      rename=rename,
                                      result_is_bool=is_bool,
@@ -4256,6 +4629,16 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                    frozenset(post_lc.pos_names | e_pos),
                                    post_lc.result_list,
                                    post_lc.result_is_list)
+        # The WF obligations join the GOAL as one synthetic post: the
+        # spec theorem then certifies the contract AND every computed
+        # read's in-boundedness, exactly as the Dafny backend's VCs
+        # do. An out-of-range read makes the theorem unprovable
+        # rather than quietly true about getD's default.
+        for wfe, wfl in wf_extra:
+            posts.append((_prop_expr(wfe, names, wfl, result=app,
+                                     rename=rename,
+                                     result_is_bool=is_bool,
+                                     avoid=avoid, lc=post_lc), wfl))
         goal = " ∧ ".join(p for p, _ in posts)
         sig = " ".join(x for x in [thm_binders, *hyps] if x)
         first_ensures_line = posts[0][1]
@@ -4585,9 +4968,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                            *("  " + x for x in b)):
                     emit(tl, first_ensures_line)
             else:
+                # And.intro splits the goal-side conjunction FIRST:
+                # omega cannot split a goal ∧ that carries ∀-conjuncts
+                # (the gcd lesson, goal-side -- measured on the
+                # intersperse hi0, whose three-conjunct invariant with
+                # vacuous ∀s failed the unsplit ladder).
                 emit(f"  {gp}have hi0 : {_ident(f'{spec_fn.name}_inv')} "
                      f"{targsp}({t_start}) {t_init} := by "
                      f"simp only [{_ident(f'{spec_fn.name}_inv')}]; "
+                     f"all_goals (try (repeat' apply And.intro)); "
                      f"all_goals (try push_cast); all_goals (try omega); "
                      f"all_goals (try simp_all [VeriPy.PySum]); "
                      f"all_goals (try intros); "
@@ -4858,6 +5247,104 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # list task rewrote the goal while a hypothesis kept the old
         # form — one atom split into two, and a loop proof that had
         # been passing broke. Nothing outside this branch sees them.
+        # The PARITY-APPEND spec endgame (intersperse): the ensures
+        # read through the trailing append, so each ∀-post gets the
+        # seam script -- old indices through GetD_append_left into
+        # hfin's invariant, the seam through GetD_append_last with the
+        # constant-div bridges collapsing the parity residue. Gated
+        # tightly and atomic: any mismatch rolls back to the ladder.
+        if loop is not None and getattr(loop, "post_appends", None) \
+                and (loop.acc_list
+                     and any(isinstance(nd, ast.BinOp)
+                             and isinstance(nd.op, ast.Mod)
+                             for nd in ast.walk(loop.inv))):
+            napp_s = len(loop.post_appends)
+            n_conj_s = (len(loop.inv.values)
+                        if isinstance(loop.inv, ast.BoolOp)
+                        and isinstance(loop.inv.op, ast.And) else 1)
+            n_posts = len(posts)
+            sj = ", ".join(f"hf{ci}_" for ci in range(n_conj_s))
+            sph = ", ".join("?_" for _ in range(n_posts))
+            app_s = (f"({_ident(f'{spec_fn.name}_loop')} {targsp}"
+                     + (f"(({t_bound}) - ({t_start})).toNat "
+                        f"({t_start})" if loop.start is not None
+                        else f"({t_bound}).toNat 0")
+                     + " ([] : List Int))")
+            sinst = " | ".join(
+                [f"(exact hf{ci}_ k_ ⟨hk_.1, by omega⟩)"
+                 for ci in range(n_conj_s)]
+                + [f"(exact hf{ci}_ k_ hk_.1 (by omega))"
+                   for ci in range(n_conj_s)]
+                + ["trivial"])
+            sbr_h, sbr_n = _const_div_bridges(fn, spec_fn)
+            left_chain_s = ", ".join(
+                ["VeriPy.GetD_append_left _ _ _ (by "
+                 "simp [List.length_append]; try omega)"]
+                * (napp_s - 1)
+                + ["VeriPy.GetD_append_left _ _ _ hin_"])
+            for tl in (
+                "  all_goals (try (",
+                f"    generalize hfold_ : {app_s} = fold_",
+                "    (try rw [hfold_] at hfin)",
+                f"    obtain ⟨{sj}⟩ := hfin",
+                *(f"    {h_}" for h_ in sbr_h),
+                f"    refine ⟨{sph}⟩ <;>",
+                "    first",
+                "      | (simp [List.length_append]; all_goals omega)",
+                "      | (intro k_ hk_",
+                "         all_goals (try simp_all)",
+                "         all_goals omega)",
+                "      | (intro k_ hk_",
+                "         simp only [List.length_append, "
+                "List.length_cons, List.length_nil] at hk_",
+                "         rcases Classical.em ((k_).toNat "
+                "< fold_.length) with hin_ | hout_",
+                f"         · rw [{left_chain_s}]",
+                f"           first | {sinst}",
+            ):
+                emit(tl, first_ensures_line)
+            for j in range(napp_s):
+                outer_s = ", ".join(
+                    ["VeriPy.GetD_append_left _ _ _ (by "
+                     "simp [List.length_append]; try omega)"]
+                    * (napp_s - 1 - j))
+                lead = ("         · " if j == 0 else "           · ")
+                if j < napp_s - 1:
+                    emit(f"{lead}rcases Classical.em ((k_).toNat = "
+                         f"fold_.length + {j}) with hs{j}_ | "
+                         f"hsn{j}_", first_ensures_line)
+                    lead = "           · "
+                seam_pos = (f"fold_.length + {j}" if j
+                            else "fold_.length")
+                ind = "           "
+                emit(f"{lead}"
+                     + (f"rw [{outer_s}]; " if outer_s else "")
+                     + f"rw [show (k_).toNat = {seam_pos} by omega]",
+                     first_ensures_line)
+                if j > 0:
+                    pref = " ++ ".join(
+                        "[" + _int_expr(pe, names, fn.lineno,
+                                        rename=rename, lc=post_lc)
+                        + "]"
+                        for pe in loop.post_appends[:j])
+                    emit(f"{ind}rw [show (fold_.length + {j}) = "
+                         f"(fold_ ++ {pref}).length by "
+                         f"simp [List.length_append]; try omega]",
+                         first_ensures_line)
+                emit(f"{ind}rw [VeriPy.GetD_append_last]",
+                     first_ensures_line)
+                if sbr_n:
+                    emit(f"{ind}(try simp only "
+                         f"[{', '.join(sbr_n)}] at *)",
+                         first_ensures_line)
+                emit(f"{ind}(try (have hdiv_ : k_ / 2 = "
+                     f"(({t_bound})) := by omega)); "
+                     f"(try rw [hdiv_])", first_ensures_line)
+                emit(f"{ind}all_goals (first | rfl | trivial | omega "
+                     f"| (left; omega) | (right; first | rfl | "
+                     f"trivial | omega))", first_ensures_line)
+            emit("      )", first_ensures_line)
+            emit("  ))", first_ensures_line)
         if is_list_ret:
             emit("  all_goals (try simp only "
                  "[List.getD_eq_getElem?_getD, List.getElem?_map, "

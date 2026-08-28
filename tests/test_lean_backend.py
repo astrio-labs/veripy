@@ -3941,6 +3941,54 @@ def test_new_paths_inherit_scope_binders_and_rename():
     assert "«x» + «f»)" not in out3
 
 
+def test_intersperse_class_fragment_pieces():
+    # The trailing-append slice's fragment additions, pinned at the
+    # encoding level: list truthiness in guards, IfExp in specs,
+    # shortened-range indexing, [-1] licensed by guard-derived
+    # nonemptiness, and the appended return.
+    src = Path("examples/contact/he_humaneval_5.py").read_text()
+    out = _encode(src).lean_source
+    # guard: `not numbers` is emptiness; the fall-through wraps the
+    # loop value.
+    assert '(((«numbers».length : Int)) = 0)' in out
+    # IfExp: the conditional length as an ite.
+    assert "(if (((«numbers».length : Int)) = 0) then 0 else" in out
+    # [-1]: the last element read through length - 1.
+    assert '.getD (((«numbers».length : Int)) - 1).toNat 0' in out
+    # trailing append: the fold concatenated before return.
+    assert "++ [" in out.split("def «intersperse» ")[1].split("\n")[1]
+
+    # The [-1] read is licensed by the guard, not free: without the
+    # guard it is refused (Python raises on the empty list there).
+    unguarded = src.replace("    if not numbers:\n        return []\n\n",
+                            "")
+    with pytest.raises(EncodeError, match="structurally in bounds"):
+        _encode(unguarded)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_intersperse_proves_and_lies_fail(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/he_humaneval_5.py")
+    good = tmp_path / "isp.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            ("(i % 2 == 0 ==> result[i] == numbers[i // 2])",
+             "(i % 2 == 1 ==> result[i] == numbers[i // 2])"),
+            ("2 * len(numbers) - 1)", "2 * len(numbers))"),
+            ("    out.append(numbers[-1])",
+             "    out.append(numbers[-1])\n    out.append(delimeter)"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        assert verify_structured(bad, tmp_path / f"ob{k}",
+                                 backend="lean")["status"] == "failed", k
+
 def test_search_matcher_and_substitution_are_defensive():
     # Review-caught pair on the search-accumulator path. (1) The
     # ensures matcher guarded nothing: `any()` without a generator
@@ -3976,3 +4024,28 @@ def test_search_matcher_and_substitution_are_defensive():
                       mode="eval").body
     out2 = _SubstExprs({"b": step}).visit(_copy.deepcopy(encl))
     assert _ast.unparse(out2) == "any((q < 0 for q in range(b + xs[i])))"
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_computed_reads_carry_wellformedness_obligations(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # Review-caught: scaffolding the ensures totalized UNBOUNDED
+    # reads -- `xs[100] == 0` could hold about getD's default where
+    # Python cannot even evaluate. Every scaffold-computed read now
+    # joins the goal as a well-formedness conjunct (the Dafny VC
+    # parallel): out-of-range makes the theorem unprovable.
+    bad = tmp_path / "u.py"
+    bad.write_text("#@ ensures xs[100] == 0 or result >= 0\n"
+                   "def f(xs: list[int]) -> int:\n    return 0\n")
+    assert verify_structured(bad, tmp_path / "o1",
+                             backend="lean")["status"] == "failed"
+
+    # ...and a bounded computed read (the intersperse class) proves
+    # its obligation from the clause's own quantifier plus the
+    # length post.
+    import shutil
+    good = tmp_path / "isp.py"
+    shutil.copy(Path("examples/contact/he_humaneval_5.py"), good)
+    assert verify_structured(good, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
