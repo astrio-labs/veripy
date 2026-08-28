@@ -450,7 +450,7 @@ def render_cross_report(scores_by_backend: dict[str, list["TaskScore"]]) -> str:
     header = ["task", "hunt", "mutants"] + [f"{b}" for b in backends] \
         + ["fidelity"]
     rows = [header]
-    agree = outside = disagree = 0
+    agree = outside = disagree = errored = 0
     for task_id in sorted(by_task):
         cells = by_task[task_id]
         rep = cells.get(backends[0]) or next(iter(cells.values()))
@@ -460,6 +460,12 @@ def render_cross_report(scores_by_backend: dict[str, list["TaskScore"]]) -> str:
         concl = [p for p in proves if p in ("proved", "failed")]
         if len(set(proves)) == 1 and proves[0] == "proved":
             agree += 1
+        elif "error" in proves or "-" in proves:
+            # An errored or absent cell observed NOTHING: the task
+            # must not vanish from the totals as if adjudicated
+            # (review-caught) — it gets its own count and a rerun is
+            # the only cure.
+            errored += 1
         elif "outside" in proves or "blocked" in proves:
             outside += 1
         elif len(set(concl)) > 1:
@@ -471,7 +477,9 @@ def render_cross_report(scores_by_backend: dict[str, list["TaskScore"]]) -> str:
     lines.append(
         f"{agree} task(s) proved under EVERY backend; "
         f"{outside} with a named fragment gap or blocked ladder; "
-        f"{disagree} conclusive split(s)")
+        f"{disagree} conclusive split(s); "
+        f"{errored} unadjudicated (prover error or missing run — "
+        f"rerun before quoting)")
     if disagree:
         lines.append(
             "a conclusive split (proved under one prover, failed under "

@@ -780,12 +780,22 @@ def test_cross_report_reads_three_ways():
                   prove=FAIL, fidelity=PASS),
         ],
     }
+    # An errored cell must not vanish from the totals (review-caught):
+    # it observed nothing, and gets its own count.
+    by_backend["dafny"].append(
+        score("errored", hunt=PASS, mutants=PASS, encode=PASS,
+              prove=ERROR))
+    by_backend["lean"].append(
+        score("errored", hunt=PASS, mutants=PASS, encode=PASS,
+              prove=PASS, fidelity=PASS))
     out = render_cross_report(by_backend)
     lines = {ln.split()[0]: ln for ln in out.splitlines() if ln}
     assert "proved" in lines["both_prove"]
     assert "outside" in lines["lean_gap"]
     assert "failed" in lines["alarm"]
+    assert "error" in lines["errored"]
     assert "1 task(s) proved under EVERY backend" in out
+    assert "1 unadjudicated" in out
     assert "COMPLETENESS" in out
 
 
