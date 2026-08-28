@@ -4024,3 +4024,28 @@ def test_search_matcher_and_substitution_are_defensive():
                       mode="eval").body
     out2 = _SubstExprs({"b": step}).visit(_copy.deepcopy(encl))
     assert _ast.unparse(out2) == "any((q < 0 for q in range(b + xs[i])))"
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_computed_reads_carry_wellformedness_obligations(tmp_path):
+    from veripy.agentio import verify_structured
+
+    # Review-caught: scaffolding the ensures totalized UNBOUNDED
+    # reads -- `xs[100] == 0` could hold about getD's default where
+    # Python cannot even evaluate. Every scaffold-computed read now
+    # joins the goal as a well-formedness conjunct (the Dafny VC
+    # parallel): out-of-range makes the theorem unprovable.
+    bad = tmp_path / "u.py"
+    bad.write_text("#@ ensures xs[100] == 0 or result >= 0\n"
+                   "def f(xs: list[int]) -> int:\n    return 0\n")
+    assert verify_structured(bad, tmp_path / "o1",
+                             backend="lean")["status"] == "failed"
+
+    # ...and a bounded computed read (the intersperse class) proves
+    # its obligation from the clause's own quantifier plus the
+    # length post.
+    import shutil
+    good = tmp_path / "isp.py"
+    shutil.copy(Path("examples/contact/he_humaneval_5.py"), good)
+    assert verify_structured(good, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
