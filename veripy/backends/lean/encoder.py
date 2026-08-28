@@ -746,9 +746,15 @@ def _quantifier_body_lc(lc: "_ListCtx",
             and isinstance(hi.args[0], ast.Name) \
             and hi.args[0].id in lc.lists:
         safe[v] = hi.args[0].id
+    # PROGRESSIVE, like the translator: a nonneg binder joins the
+    # nonneg set so the NEXT generator's `range(i + 1, ...)` lower
+    # bound checks out (missed at first, and the pre-pass then
+    # injected obligations for binder-safe nested-∃ reads).
+    nn = (frozenset(lc.nonneg_names | {v}) if lo_zero_or_nonneg
+          else lc.nonneg_names)
     return _ListCtx(lc.lists, safe, lc.take_idx, lc.scaffold,
                     lc.min_len, lc.pos_names, lc.result_list,
-                    lc.result_is_list, lc.nonneg_names)
+                    lc.result_is_list, nn)
 
 
 def _quantifier(e: ast.Call, names: set[str], line: int,
