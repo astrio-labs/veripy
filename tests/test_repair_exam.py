@@ -471,3 +471,43 @@ def test_lean_pack_screens_load_bearing(tmp_path):
         (src / "he_humaneval_31.proofs.lean").read_text())
     r = screen_sidecar(task, backend="lean")
     assert r.verdict == "load-bearing", (r.verdict, r.detail)
+
+
+LEAN_PACKED = ["below_zero", "gcd", "modp", "rolling_max", "sum_squares"]
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+@pytest.mark.parametrize("task_id", LEAN_PACKED)
+def test_corpus_lean_packs_prove(task_id, tmp_path):
+    # The cross-prover corpus: each task with a `.proofs.lean` twin
+    # proves under Lean (gcd/modp ride ports of the he_13/he_49
+    # packs; below_zero/sum_squares/rolling_max packs are
+    # resolution-only — the prelude carries their content — and the
+    # per-backend screen says so honestly). sum_to_n is the measured
+    # exception: its exit-value assert would flip the DAFNY pack
+    # vacuous and cost a proof-repair exam row, so it stays
+    # Dafny-only until the Lean while-endgame derives exit values
+    # unaided.
+    import shutil
+    from veripy.agentio import verify_structured
+    src = REPO / "benchmark" / "tasks" / task_id
+    shutil.copy(src / "task.py", tmp_path / "task.py")
+    shutil.copy(src / "task.proofs.lean", tmp_path / "task.proofs.lean")
+    r = verify_structured(tmp_path / "task.py", tmp_path / "o",
+                          backend="lean", time_limit=60)
+    assert r["status"] == "ok", (task_id, r["failures"][:1])
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_resolution_only_lean_pack_screens_vacuous(tmp_path):
+    # A pack the Lean ladder does not need screens VACUOUS under
+    # Lean — the honest verdict that keeps it OFF the Lean exam
+    # roster while still resolving the task's `#@ proof` clause.
+    import shutil
+    src = REPO / "benchmark" / "tasks" / "below_zero"
+    task = tmp_path / "t"
+    task.mkdir()
+    shutil.copy(src / "task.py", task / "task.py")
+    shutil.copy(src / "task.proofs.lean", task / "task.proofs.lean")
+    r = screen_sidecar(task, backend="lean")
+    assert r.verdict == "vacuous", (r.verdict, r.detail)
