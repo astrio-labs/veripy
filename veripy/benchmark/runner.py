@@ -471,13 +471,15 @@ def render_cross_report(scores_by_backend: dict[str, list["TaskScore"]]) -> str:
     lines.append(
         f"{agree} task(s) proved under EVERY backend; "
         f"{outside} with a named fragment gap or blocked ladder; "
-        f"{disagree} conclusive disagreement(s)")
+        f"{disagree} conclusive split(s)")
     if disagree:
         lines.append(
-            "a conclusive disagreement (proved under one prover, failed "
-            "under another, neither outside its fragment) is a soundness "
-            "alarm for one of the two encoders — investigate before "
-            "quoting either number")
+            "a conclusive split (proved under one prover, failed under "
+            "another, neither outside its fragment) is a COMPLETENESS "
+            "gap in the failing prover's fixed automation — catalog "
+            "which VC fails before quoting either number. (A soundness "
+            "alarm would need contradictory PROOFS; a proof beside a "
+            "failure is not that.)")
     return "\n".join(lines)
 
 

@@ -773,7 +773,9 @@ def test_cross_report_reads_three_ways():
             # A refused encode is a NAMED fragment gap, not a failure.
             score("lean_gap", hunt=PASS, mutants=PASS, encode=FAIL),
             # Proved under one prover, failed under the other, neither
-            # outside its fragment: a soundness alarm, said out loud.
+            # outside its fragment: a completeness gap, named out loud
+            # (an alarm would need contradictory proofs, not a proof
+            # beside a failure).
             score("alarm", hunt=PASS, mutants=PASS, encode=PASS,
                   prove=FAIL, fidelity=PASS),
         ],
@@ -784,7 +786,7 @@ def test_cross_report_reads_three_ways():
     assert "outside" in lines["lean_gap"]
     assert "failed" in lines["alarm"]
     assert "1 task(s) proved under EVERY backend" in out
-    assert "soundness alarm" in out
+    assert "COMPLETENESS" in out
 
 
 def test_benchmark_backend_all_runs_every_backend(monkeypatch, tmp_path):
