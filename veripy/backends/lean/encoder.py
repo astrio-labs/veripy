@@ -6078,6 +6078,33 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # omega's on a non-linear side — backtracks the whole try).
         emit("  all_goals (try (constructor <;> (intros; omega)))",
              first_ensures_line)
+        if wloop is not None:
+            # The SQUARE-MAXIMALITY move (the isqrt class, cataloged
+            # by the triple run): "no k in range beats the answer"
+            # splits on k ≤ result; the beaten side closes by
+            # squaring monotonicity against the exit condition — Z3
+            # applies that natively, the fixed ladder needs SqLeSq
+            # spelled. The posts-∧ splits first so the ∀-post stands
+            # alone; both ∨ orientations offered; any goal the shape
+            # does not fit fails the alternatives and the try
+            # rescues untouched.
+            ret_w = (f"({_ident(f'{spec_fn.name}_loop')} {targsp}"
+                     f"(({_ident(gm)} {targsp}{w_inits}).toNat + 1) "
+                     f"{w_inits})")
+            emit("  all_goals (try (repeat' apply And.intro))",
+                 first_ensures_line)
+            emit("  all_goals (try (intro d_ hd_))",
+                 first_ensures_line)
+            emit("  all_goals (try (intro hd2_))", first_ensures_line)
+            emit(f"  all_goals (try (rcases Classical.em "
+                 f"(d_ ≤ {ret_w}) with hqle_ | hqgt_ <;> first "
+                 f"| exact Or.inr hqle_ "
+                 f"| exact Or.inl hqle_ "
+                 f"| (left; have hsq_ := VeriPy.SqLeSq ({ret_w} + 1) "
+                 f"d_ (by omega) (by omega); omega) "
+                 f"| (right; have hsq_ := VeriPy.SqLeSq ({ret_w} + 1) "
+                 f"d_ (by omega) (by omega); omega) "
+                 f"| omega))", first_ensures_line)
         emit("  all_goals (first | omega | trivial)", first_ensures_line)
 
     # Ask Lean for every proved theorem's axiom footprint. The driver

@@ -281,6 +281,12 @@ theorem GetD_mem_SortedUnique (l : List Int) (i : Int)
   rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem (by omega)]
   exact List.getElem_mem _
 
+-- Squaring is monotone on the nonnegatives: what Z3 applies natively
+-- for the isqrt-class maximality post ("no k in range beats the
+-- answer"), spelled once so the fixed while-endgame has the move.
+theorem SqLeSq (a b : Int) (h0 : 0 ≤ a) (h : a ≤ b) : a * a ≤ b * b :=
+  Int.mul_le_mul h h h0 (Int.le_trans h0 h)
+
 theorem SqGeSelf (a : Int) : a ≤ a * a := by
   rcases Int.lt_or_le a 1 with h | h
   · have hn : 0 ≤ (-a) * (-a) := Int.mul_nonneg (by omega) (by omega)

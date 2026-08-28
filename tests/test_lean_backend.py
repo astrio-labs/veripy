@@ -1211,18 +1211,21 @@ def test_squaring_while_loop_verifies_without_the_maximality_clause(tmp_path):
     assert verify_structured(src, tmp_path / "o1",
                              backend="lean")["status"] == "ok"
 
-    # The maximality clause is the one that does NOT come free here: it
-    # needs squaring MONOTONICITY under a quantifier, which no fixed
-    # linear script supplies. Dafny gets it from Z3's nonlinear
-    # arithmetic; in Lean it waits for the sidecar channel (P3). Pinned
-    # so the day it starts passing is noticed.
+    # The maximality clause needed squaring MONOTONICITY under a
+    # quantifier — Z3-native, and for a long stretch outside the fixed
+    # ladder (this assertion was pinned `failed` "so the day it starts
+    # passing is noticed"). The day arrived with the square-maximality
+    # endgame the triple run demanded: split on k ≤ result, close the
+    # beaten side by SqLeSq against the exit condition. The corpus
+    # isqrt now proves under BOTH provers with no sidecar under
+    # either.
     full = tmp_path / "isqrt_full.py"
     full.write_text(src.read_text().replace(
         "def isqrt(n: int) -> int:",
         "#@ ensures forall k in range(0, n + 1) :: k * k > n or k <= result\n"
         "def isqrt(n: int) -> int:"))
     assert verify_structured(full, tmp_path / "o2",
-                             backend="lean")["status"] == "failed"
+                             backend="lean")["status"] == "ok"
 
 
 COUNT2 = ("#@ requires n >= 0\n"
