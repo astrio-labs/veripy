@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.13"
+PRELUDE_VERSION = "lean-0.14"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -362,6 +362,45 @@ theorem PySum_take_succ (xs : List Int) (n : Nat) :
     | succ m =>
       simp only [List.take_succ_cons, PySum, List.getD_cons_succ, ih m]
       omega
+
+-- max over a list: head-seeded foldl, [] totalized to 0 (Python's
+-- max([]) raises, so every use site owes a nonemptiness story — the
+-- rolling_max class only ever applies it to nonempty prefixes).
+def ListMax : List Int → Int
+  | [] => 0
+  | x :: xs => xs.foldl max x
+
+theorem Foldl_max_append_one (a : Int) (xs : List Int) (y : Int) :
+    (xs ++ [y]).foldl max a = max (xs.foldl max a) y := by
+  induction xs generalizing a with
+  | nil => rfl
+  | cons z zs ih => simp [List.foldl_cons, ih]
+
+theorem ListMax_append_one (xs : List Int) (y : Int) (h : xs ≠ []) :
+    ListMax (xs ++ [y]) = max (ListMax xs) y := by
+  cases xs with
+  | nil => exact absurd rfl h
+  | cons x rest =>
+    simp only [ListMax, List.cons_append]
+    exact Foldl_max_append_one x rest y
+
+theorem ListMax_take_one (l : List Int) (h : l ≠ []) :
+    ListMax (l.take 1) = l.getD 0 0 := by
+  cases l with
+  | nil => exact absurd rfl h
+  | cons x xs => rfl
+
+theorem ListMax_take_succ (l : List Int) (n : Nat)
+    (h1 : 1 ≤ n) (h2 : n < l.length) :
+    ListMax (l.take (n + 1)) = max (ListMax (l.take n)) (l.getD n 0) := by
+  rw [Take_succ_getD l n h2]
+  apply ListMax_append_one
+  intro he
+  have hlen : (l.take n).length = n := by
+    simp [List.length_take]; omega
+  rw [he] at hlen
+  simp at hlen
+  omega
 
 end VeriPy
 """.format(version=PRELUDE_VERSION)
