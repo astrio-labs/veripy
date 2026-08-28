@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.12"
+PRELUDE_VERSION = "lean-0.13"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -156,6 +156,130 @@ theorem Count_filter_of_pos (p : Int → Bool) (a : Int) (l : List Int)
     · simp [hx, List.count_cons, ih]
     · have hxa : ¬(x = a) := fun he => hx (he ▸ h)
       simp [hx, ih, hxa]
+
+-- sorted(list(set(l))): insertion sort that DROPS duplicates,
+-- so strict adjacency, and both membership directions, fall to
+-- structural induction (core's eraseDups hides an accumulator
+-- that resists induction; mergeSort would still owe the
+-- nodup-to-strict step).
+def InsertUnique (a : Int) : List Int → List Int
+  | [] => [a]
+  | b :: bs =>
+      if a < b then a :: b :: bs
+      else if a = b then b :: bs
+      else b :: InsertUnique a bs
+
+def SortedUnique : List Int → List Int
+  | [] => []
+  | x :: xs => InsertUnique x (SortedUnique xs)
+
+theorem Mem_InsertUnique (x a : Int) (l : List Int) :
+    x ∈ InsertUnique a l ↔ (x = a ∨ x ∈ l) := by
+  induction l with
+  | nil => simp [InsertUnique]
+  | cons b bs ih =>
+    by_cases h1 : a < b
+    · simp [InsertUnique, h1]
+    · by_cases h2 : a = b
+      · subst h2
+        simp [InsertUnique, h1, List.mem_cons]
+      · simp only [InsertUnique, if_neg h1, if_neg h2,
+                   List.mem_cons, ih]
+        constructor
+        · rintro (h | h)
+          · exact Or.inr (Or.inl h)
+          · rcases h with h | h
+            · exact Or.inl h
+            · exact Or.inr (Or.inr h)
+        · rintro (h | h)
+          · exact Or.inr (Or.inl h)
+          · rcases h with h | h
+            · exact Or.inl h
+            · exact Or.inr (Or.inr h)
+
+theorem Mem_SortedUnique (x : Int) (l : List Int) :
+    x ∈ SortedUnique l ↔ x ∈ l := by
+  induction l with
+  | nil => simp [SortedUnique]
+  | cons y ys ih => simp [SortedUnique, Mem_InsertUnique, ih]
+
+theorem Pairwise_InsertUnique (a : Int) (l : List Int)
+    (h : List.Pairwise (· < ·) l) :
+    List.Pairwise (· < ·) (InsertUnique a l) := by
+  induction l with
+  | nil => simp [InsertUnique]
+  | cons b bs ih =>
+    rcases List.pairwise_cons.mp h with ⟨hb, hbs⟩
+    by_cases h1 : a < b
+    · simp only [InsertUnique, if_pos h1]
+      refine List.pairwise_cons.mpr ⟨?_, h⟩
+      intro y hy
+      rcases List.mem_cons.mp hy with h' | h'
+      · omega
+      · have := hb y h'
+        omega
+    · by_cases h2 : a = b
+      · subst h2
+        simpa [InsertUnique, h1] using h
+      · simp only [InsertUnique, if_neg h1, if_neg h2]
+        refine List.pairwise_cons.mpr ⟨?_, ih hbs⟩
+        intro y hy
+        rcases (Mem_InsertUnique y a bs).mp hy with h' | h'
+        · omega
+        · exact hb y h'
+
+theorem Pairwise_SortedUnique (l : List Int) :
+    List.Pairwise (· < ·) (SortedUnique l) := by
+  induction l with
+  | nil => simp [SortedUnique]
+  | cons y ys ih => exact Pairwise_InsertUnique y (SortedUnique ys) ih
+
+theorem Pairwise_getD_lt (l : List Int) (i : Int)
+    (hp : List.Pairwise (· < ·) l)
+    (h0 : 0 ≤ i) (h1 : i + 1 < (l.length : Int)) :
+    l.getD i.toNat 0 < l.getD (i + 1).toNat 0 := by
+  induction l generalizing i with
+  | nil => simp at h1; omega
+  | cons x xs ih =>
+    rcases List.pairwise_cons.mp hp with ⟨hx, hxs⟩
+    by_cases hz : i = 0
+    · subst hz
+      have hne : xs ≠ [] := by
+        intro he; subst he; simp at h1
+      simp only [Int.toNat_zero, List.getD_cons_zero]
+      have : (0 + 1 : Int).toNat = 1 := rfl
+      rw [this]
+      have hmem : xs.getD 0 0 ∈ xs := by
+        cases xs with
+        | nil => exact absurd rfl hne
+        | cons z zs => simp
+      exact hx _ (by simpa using hmem)
+    · have hpos : 0 < i := by omega
+      have e1 : i.toNat = (i - 1).toNat + 1 := by omega
+      have e2 : (i + 1).toNat = ((i - 1) + 1).toNat + 1 := by omega
+      rw [e1, e2, List.getD_cons_succ, List.getD_cons_succ]
+      exact ih (i - 1) hxs (by omega) (by simp at h1 ⊢; omega)
+
+-- The three spec-shaped corollaries the ladder instantiates.
+theorem SortedUnique_adjacent (l : List Int) (i : Int)
+    (h0 : 0 ≤ i) (h1 : i + 1 < ((SortedUnique l).length : Int)) :
+    (SortedUnique l).getD i.toNat 0 < (SortedUnique l).getD (i + 1).toNat 0 :=
+  Pairwise_getD_lt _ _ (Pairwise_SortedUnique l) h0 h1
+
+theorem SortedUnique_getD_mem_src (l : List Int) (i : Int)
+    (h0 : 0 ≤ i) (h1 : i < ((SortedUnique l).length : Int)) :
+    (SortedUnique l).getD i.toNat 0 ∈ l := by
+  have : (SortedUnique l).getD i.toNat 0 ∈ SortedUnique l := by
+    rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem (by omega)]
+    exact List.getElem_mem _
+  exact (Mem_SortedUnique _ l).mp this
+
+theorem GetD_mem_SortedUnique (l : List Int) (i : Int)
+    (h0 : 0 ≤ i) (h1 : i < (l.length : Int)) :
+    l.getD i.toNat 0 ∈ SortedUnique l := by
+  refine (Mem_SortedUnique _ l).mpr ?_
+  rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem (by omega)]
+  exact List.getElem_mem _
 
 theorem SqGeSelf (a : Int) : a ≤ a * a := by
   rcases Int.lt_or_le a 1 with h | h

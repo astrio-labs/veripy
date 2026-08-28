@@ -279,6 +279,18 @@ def _int_expr(e: ast.expr, names: set[str], line: int,
             # let a spec Dafny refuses hold vacuously here.
             return (f"({result}.getD "
                     f"({_lref(idx.id, rename)}).toNat 0)")
+        if lc.scaffold:
+            # Same story as the param-list scaffold fallback below,
+            # extended to `result` now that the WF pre-pass appends
+            # an in-bounds obligation for every read no structural
+            # rule licensed: the totalized getD is paired with a
+            # goal conjunct Dafny-style, so `result[i + 1]` under a
+            # binder over `range(len(result) - 1)` (the sorted-unique
+            # adjacency spec) is admitted and its bound is PROVED,
+            # while an unbounded read makes the theorem unprovable
+            # instead of quietly true.
+            it_ = _int_expr(idx, names, line, result, rename, lc)
+            return f"({result}.getD ({it_}).toNat 0)"
         if lc.result_list is None:
             raise _reject(
                 "`result[...]` needs an earlier `ensures` proving "
@@ -676,6 +688,25 @@ def _slice_extension_shape(e: ast.expr, idx: str,
 
 
 
+def _is_sorted_unique_call(node: ast.Call) -> bool:
+    """The ONE admitted `sorted` shape: `sorted(list(set(NAME)))` or
+    `sorted(set(NAME))` — the sorted-unique class. Anything else
+    keeps the pre-gate's rejection (bare `sorted(L)` preserves
+    duplicates: a different function, a different lemma pack)."""
+    if not (len(node.args) == 1 and not node.keywords):
+        return False
+    inner = node.args[0]
+    if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) \
+            and inner.func.id == "list" and len(inner.args) == 1 \
+            and not inner.keywords:
+        inner = inner.args[0]
+    return (isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Name)
+            and inner.func.id == "set" and len(inner.args) == 1
+            and not inner.keywords
+            and isinstance(inner.args[0], ast.Name))
+
+
 def _computed_read_wf(expr: ast.expr, lc: "_ListCtx",
                       names: set[str]) -> ast.expr | None:
     """The WELL-FORMEDNESS obligation for an ensures clause: for every
@@ -693,6 +724,11 @@ def _computed_read_wf(expr: ast.expr, lc: "_ListCtx",
     def structurally_ok(sub: ast.Subscript) -> bool:
         idx = sub.slice
         lname = sub.value.id
+        if lname == "result":
+            # The one structural license a result read has: the
+            # binder-over-`range(len(result))` pair.
+            return (isinstance(idx, ast.Name)
+                    and lc.safe_idx.get(idx.id) == "@result")
         if isinstance(idx, ast.Name) and lc.safe_for(idx.id, lname):
             return True
         if isinstance(idx, ast.Constant) and isinstance(idx.value, int) \
@@ -721,8 +757,14 @@ def _computed_read_wf(expr: ast.expr, lc: "_ListCtx",
             return
         if isinstance(e, ast.Subscript) \
                 and isinstance(e.value, ast.Name) \
-                and e.value.id in wlc.lists \
+                and (e.value.id in wlc.lists
+                     or (e.value.id == "result"
+                         and wlc.result_is_list)) \
                 and not isinstance(e.slice, ast.Slice):
+            # `result` reads ride the same rule: the scaffold
+            # totalizes them now, so every one not licensed by the
+            # binder-over-`range(len(result))` pair owes an
+            # in-bounds conjunct (`len(result)` translates in posts).
             if not structurally_ok_in(e, wlc):
                 idx = e.slice
                 wf = ast.parse(
@@ -1358,6 +1400,38 @@ def _list_expr(e: ast.expr, names: set[str], line: int,
         items = ", ".join(_int_expr(x, names, line, result, rename,
                                      lc) for x in e.elts)
         return f"([{items}] : List Int)"
+    if isinstance(e, ast.Call) and isinstance(e.func, ast.Name) \
+            and e.func.id == "sorted" and e.func.id not in names \
+            and len(e.args) == 1 and not e.keywords:
+        # `sorted(list(set(L)))` (and the equivalent `sorted(set(L))`)
+        # is the sorted-unique class: one prelude function computes
+        # it by insertion sort that DROPS duplicates, and the pack's
+        # lemmas give strict adjacency plus both membership
+        # directions. Bare `sorted(L)` (duplicates kept) is a
+        # different function with a different lemma story — rejected
+        # until that slice.
+        inner0 = e.args[0]
+        if isinstance(inner0, ast.Call) \
+                and isinstance(inner0.func, ast.Name) \
+                and inner0.func.id == "list" \
+                and inner0.func.id not in names \
+                and len(inner0.args) == 1 and not inner0.keywords:
+            inner0 = inner0.args[0]
+        if isinstance(inner0, ast.Call) \
+                and isinstance(inner0.func, ast.Name) \
+                and inner0.func.id == "set" \
+                and inner0.func.id not in names \
+                and len(inner0.args) == 1 and not inner0.keywords \
+                and isinstance(inner0.args[0], ast.Name) \
+                and inner0.args[0].id in lc.lists:
+            _SORTED_UNIQUE_USED.append(True)
+            return (f"(VeriPy.SortedUnique "
+                    f"{_lref(inner0.args[0].id, rename)})")
+        raise _reject(
+            "`sorted` is admitted only as `sorted(list(set(L)))` or "
+            "`sorted(set(L))` over a list parameter in this slice — "
+            "bare `sorted(L)` keeps duplicates, a different function "
+            "with a different lemma pack", line)
     if isinstance(e, ast.ListComp):
         if len(e.generators) != 1:
             raise _reject("only one comprehension generator in this "
@@ -2154,6 +2228,13 @@ _ABSORBED_INNER_SPANS: list[tuple[int, int]] = []
 # explicitly (rw's higher-order unification cannot be trusted to
 # reconstruct the pattern). Reset per encode_module_lean call.
 _FILTER_PREDS: list[str] = []
+
+
+# True when this encode emitted VeriPy.SortedUnique (the
+# `sorted(list(set(l)))` class): the ladder then offers the pack's
+# three spec-shaped lemmas as guarded finishers. Reset per
+# encode_module_lean call.
+_SORTED_UNIQUE_USED: list[bool] = []
 
 
 def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
@@ -3027,6 +3108,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # the pack declares, already whitelist-validated by the loader.
     _ABSORBED_INNER_SPANS.clear()
     _FILTER_PREDS.clear()
+    _SORTED_UNIQUE_USED.clear()
     module = ast.parse(source)
     # `x += e` is `x = x + e`. Rewriting the whole module once means
     # every path downstream sees a single spelling; desugaring at
@@ -3289,12 +3371,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     "slice has no strings", node.lineno)
             if isinstance(node, ast.Call) \
                     and isinstance(node.func, ast.Name) \
-                    and node.func.id == "sorted":
+                    and node.func.id == "sorted" \
+                    and not _is_sorted_unique_call(node):
                 raise _reject(
-                    "sorted is outside the Lean slice — the Dafny "
-                    "backend admits list[int] sorted as PySorted "
-                    "(permutation + order); this slice has no "
-                    "sequence-sort prelude", node.lineno)
+                    "sorted is outside the Lean slice except as "
+                    "`sorted(list(set(L)))` / `sorted(set(L))` (the "
+                    "sorted-unique class) — the Dafny backend admits "
+                    "list[int] sorted as PySorted (permutation + "
+                    "order); bare `sorted` keeps duplicates and "
+                    "waits for its own pack", node.lineno)
             if isinstance(node, ast.Call) \
                     and isinstance(node.func, ast.Attribute) \
                     and node.func.attr in _DAFNY_STR_METHODS:
@@ -5923,6 +6008,24 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                  "at hx_; "
                  "first | exact hx_.1 | exact hx_.2 | omega))",
                  first_ensures_line)
+        if _SORTED_UNIQUE_USED and loop is None and wloop is None:
+            # The sorted-unique class: one hole per post, then the
+            # pack's three spec-shaped lemmas as guarded finishers
+            # (strict adjacency, result-elements-in-source,
+            # source-elements-in-result). Bound side conditions fall
+            # to omega under the intro'd binder hypothesis; WF
+            # conjuncts and anything else flow to the generic
+            # finishers below.
+            if len(posts) > 1:
+                holes = ", ".join("?_" for _ in posts)
+                emit(f"  refine ⟨{holes}⟩", first_ensures_line)
+            emit("  all_goals (try (intro i_ hb_; first "
+                 "| exact VeriPy.SortedUnique_adjacent _ _ "
+                 "(by omega) (by omega) "
+                 "| exact VeriPy.SortedUnique_getD_mem_src _ _ "
+                 "(by omega) (by omega) "
+                 "| exact VeriPy.GetD_mem_SortedUnique _ _ "
+                 "(by omega) (by omega)))", first_ensures_line)
         emit("  repeat' split", first_ensures_line)
         # Bounded-quantifier goals open with ∀/→; intros peels them so
         # omega faces the linear body (∃ goals need witnesses no fixed
@@ -5946,6 +6049,13 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # the main theorem needs it wherever a lemma pack lands a
         # product in the goal.
         emit("  all_goals (try (congr 1 <;> omega))", first_ensures_line)
+        # A WF conjunct carrying TWO totalized reads is a conjunction
+        # of bounded ∀s, which `intros` cannot enter: split it and
+        # peel each side, guarded so any goal the shape does not fit
+        # is left for the finisher line (constructor's failure — or
+        # omega's on a non-linear side — backtracks the whole try).
+        emit("  all_goals (try (constructor <;> (intros; omega)))",
+             first_ensures_line)
         emit("  all_goals (first | omega | trivial)", first_ensures_line)
 
     # Ask Lean for every proved theorem's axiom footprint. The driver

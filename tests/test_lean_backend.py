@@ -4207,3 +4207,51 @@ def test_end_to_end_get_positive_proves_and_lies_fail(tmp_path):
         bad.write_text(base.replace(frm, to))
         assert verify_structured(bad, tmp_path / f"ob{k}",
                                  backend="lean")["status"] == "failed", k
+
+
+def test_sorted_unique_maps_and_disciplines():
+    # The sorted-unique class (slice 29): sorted(list(set(l))) is one
+    # prelude function (insertion sort that DROPS duplicates), and
+    # the pack proves strict adjacency plus both membership
+    # directions. Bare sorted(l) keeps duplicates -- a different
+    # function -- and stays rejected. Result reads with computed
+    # indices (result[i + 1] under a binder over range(len(result)
+    # - 1)) are totalized in scaffold positions and owe a WF
+    # conjunct, the same rule param lists got in the WF slice.
+    src = Path("examples/contact/he_humaneval_34.py").read_text()
+    out = _encode(src).lean_source
+    assert "VeriPy.SortedUnique" in out
+    assert "SortedUnique_adjacent" in out
+    with pytest.raises(EncodeError, match="sorted-unique class"):
+        _encode("#@ verified\n#@ ensures result == result\n"
+                "def f(l: list[int]) -> list[int]:\n"
+                "    return sorted(l)\n")
+
+
+def test_end_to_end_unique_proves_and_lies_fail(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/he_humaneval_34.py")
+    good = tmp_path / "uniq.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            # Order lie: adjacency reversed is falsified by any two
+            # distinct elements.
+            ("result[i] < result[i + 1]", "result[i] > result[i + 1]"),
+            # Implementation lie: identity keeps duplicates and order.
+            ("    return sorted(list(set(l)))", "    return l"),
+            # WF teeth on RESULT reads: an out-of-range ghost read
+            # makes its bound conjunct false, not vacuously true.
+            ("#@ ensures forall i in range(len(result)) :: "
+             "result[i] in l",
+             "#@ ensures forall i in range(len(result)) :: "
+             "result[i + 1] in l"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        assert verify_structured(bad, tmp_path / f"ob{k}",
+                                 backend="lean")["status"] == "failed", k
