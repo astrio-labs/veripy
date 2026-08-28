@@ -4118,6 +4118,22 @@ def test_flattener_declines_shadowed_enumerate_and_inner_else():
     # search; flattening to `if any(...)` dropped it, certifying the
     # opposite Boolean on the no-hit path. Both flatten paths now
     # decline, and the still-nested shape is refused.
+    # (3, follow-up) A SIBLING top-level def named `enumerate` is a
+    # module-scope shadow the per-function walk cannot see: the
+    # module builtin-shadow gate now owns it, same as sum/len.
+    sibling = (
+        "def enumerate(l: list[int]) -> int:\n"
+        "    return 0\n"
+        "#@ verified\n"
+        "#@ ensures result == (exists i in range(len(l)) :: l[i] == 0)\n"
+        "def f(l: list[int]) -> bool:\n"
+        "    for i, x in enumerate(l):\n"
+        "        #@ invariant True\n"
+        "        if x == 0:\n"
+        "            return True\n"
+        "    return False\n")
+    with pytest.raises(EncodeError, match="shadows an encoder builtin"):
+        _encode(sibling)
     inner_else = (
         "#@ verified\n"
         "#@ ensures result == (exists i in range(len(l)) :: "

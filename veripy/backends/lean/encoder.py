@@ -2865,7 +2865,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     # verify mathematical abs/min/max while Python calls the user's def.
     for shadow in by_name:
         if shadow in ("abs", "min", "max", "old", "all", "any", "range",
-                      "len", "sum", "bool", "result"):
+                      "len", "sum", "bool", "result", "enumerate"):
             raise _reject(
                 f"module-level def {shadow!r} shadows an encoder builtin "
                 f"— call sites would verify the builtin while Python "
