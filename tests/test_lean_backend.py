@@ -4289,6 +4289,12 @@ def test_optional_max_class_matches_strictly():
             "result[i] == max(numbers[:i + 1])",
             "#@ ensures forall i in range(len(numbers)) :: "
             "result[i] == max(numbers[:i])"))
+    # A sibling def named after a template declaration collides
+    # loudly, not in Lean's lap (review-caught).
+    sib = (src + "\n\n#@ verified\n#@ ensures result >= 0\n"
+           "def rolling_max_loop(n: int) -> int:\n    return 0\n")
+    with pytest.raises(EncodeError, match="collides with another"):
+        _encode(sib)
     # A missing invariant: four are required, by name.
     with pytest.raises(EncodeError, match="four invariants"):
         _encode(src.replace(

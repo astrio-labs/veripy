@@ -3912,6 +3912,17 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         if is_list_ret and len(params) == 1:
             om = _optional_max_shape(fn, spec_fn, lists0)
             if om is not None:
+                # The template's generated declarations join the
+                # module-wide reservation set like every other
+                # shape's (review-caught: a sibling def named
+                # f_loop/f_inv/... would collide silently).
+                for g in (f"{spec_fn.name}_loop",
+                          f"{spec_fn.name}_inv",
+                          f"{spec_fn.name}_loop_inv",
+                          f"{spec_fn.name}_assert0"):
+                    _check_name(g, "generated declaration for",
+                                fn.lineno, taken)
+                    taken.add(g)
                 _emit_optional_max(om, fn, spec_fn, emit, theorems)
                 continue
         loop = _split_loop(fn, spec_fn)
