@@ -5899,6 +5899,30 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             emit("  all_goals (try simp only "
                  "[List.getD_eq_getElem?_getD, List.getElem?_map, "
                  "List.length_map])", first_ensures_line)
+        if _FILTER_PREDS and loop is None and wloop is None:
+            # The filtered-comprehension class: split the goal into
+            # one hole per post, then three guarded finishers.
+            # Definitional posts (`result == [x for x in l if P]`)
+            # close by rfl. Count-preservation posts intro the
+            # membership AND the recovered antecedent, then rewrite
+            # with Count_filter_of_pos at the EXPLICIT predicate --
+            # rw's higher-order unification would otherwise guess a
+            # constant function and miss the pattern. Membership
+            # posts destructure mem_filter. Untouched goals flow to
+            # the generic finishers below.
+            if len(posts) > 1:
+                holes = ", ".join("?_" for _ in posts)
+                emit(f"  refine ⟨{holes}⟩", first_ensures_line)
+            emit("  all_goals (try rfl)", first_ensures_line)
+            for fpred in _FILTER_PREDS:
+                emit(f"  all_goals (try (intro x_ hx_ hp_; "
+                     f"rw [VeriPy.Count_filter_of_pos {fpred} _ _ "
+                     f"(decide_eq_true hp_)]))", first_ensures_line)
+            emit("  all_goals (try (intro x_ hx_; "
+                 "simp only [List.mem_filter, decide_eq_true_eq] "
+                 "at hx_; "
+                 "first | exact hx_.1 | exact hx_.2 | omega))",
+                 first_ensures_line)
         emit("  repeat' split", first_ensures_line)
         # Bounded-quantifier goals open with ∀/→; intros peels them so
         # omega faces the linear body (∃ goals need witnesses no fixed

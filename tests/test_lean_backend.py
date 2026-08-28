@@ -518,10 +518,11 @@ def test_list_misuse_is_refused_not_mistranslated():
         # only list[int] element types have a model
         ("#@ ensures result >= 0\ndef f(xs: list[str]) -> int:\n"
          "    return 0\n", "must be `int`, `str`, or `list"),
-        # lists CAN be returned now, but list-valued equality is not
-        # modeled: `result == xs` compares whole lists.
-        ("#@ ensures result == xs\ndef f(xs: list[int]) -> list[int]:\n"
-         "    return xs\n", "integer position"),
+        # whole-LIST equality is modeled now (slice 28), but a list
+        # against an INTEGER result still has no reading: it falls
+        # through to the integer translator's refusal.
+        ("#@ ensures result == xs\ndef f(xs: list[int]) -> int:\n"
+         "    return 0\n", "integer position"),
         # a quantifier binder shadowing a list parameter
         ("#@ ensures all(xs >= 0 for xs in range(n))\n"
          "def f(xs: list[int], n: int) -> int:\n"
@@ -4149,6 +4150,59 @@ def test_end_to_end_palindrome_proves_and_lies_fail(tmp_path):
             # Implementation lie: bail on the MATCH, keep mismatches.
             ("if text[i] != text[len(text) - 1 - i]:",
              "if text[i] == text[len(text) - 1 - i]:"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        assert verify_structured(bad, tmp_path / f"ob{k}",
+                                 backend="lean")["status"] == "failed", k
+
+
+def test_filtered_comprehension_maps_and_disciplines():
+    # The filtered-comprehension class (slice 28): the identity
+    # filter `[x for x in l if P]` is List.filter, membership
+    # quantifiers range over ELEMENTS (`∀ x ∈ l`) with `==>`
+    # recovered as an arrow in that body, `x in l` is ∈, and
+    # `xs.count(v)` is List.count cast to Int. The ladder proves
+    # count preservation through Count_filter_of_pos at the EXPLICIT
+    # emitted predicate.
+    src = Path("examples/contact/he_humaneval_30.py").read_text()
+    out = _encode(src).lean_source
+    assert ".filter (fun" in out
+    assert "∈" in out
+    assert ".count" in out
+    assert "Count_filter_of_pos" in out
+    # Mapping and filtering at once has no ladder story: rejected.
+    HEAD = ("#@ verified\n#@ ensures result == result\n"
+            "def f(l: list[int]) -> list[int]:\n")
+    with pytest.raises(EncodeError, match="keeps elements unchanged"):
+        _encode(HEAD + "    return [x * 2 for x in l if x > 0]\n")
+    with pytest.raises(EncodeError, match="one filter condition"):
+        _encode(HEAD + "    return [x for x in l if x > 0 if x < 9]\n")
+
+
+def test_end_to_end_get_positive_proves_and_lies_fail(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/he_humaneval_30.py")
+    good = tmp_path / "pos.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            # Polarity lie: the filter keeps positives, not negatives.
+            ("#@ ensures forall x in result :: x > 0",
+             "#@ ensures forall x in result :: x < 0"),
+            # Guard dropped: count preservation is FALSE for the
+            # non-positive elements the filter removes.
+            ("#@ ensures forall x in l :: x > 0 ==> "
+             "l.count(x) == result.count(x)",
+             "#@ ensures forall x in l :: "
+             "l.count(x) == result.count(x)"),
+            # Implementation lie: >= admits zero, breaking the > spec.
+            ("    return [e for e in l if e > 0]",
+             "    return [e for e in l if e >= 0]"))):
         bad = tmp_path / f"bad{k}.py"
         bad.write_text(base.replace(frm, to))
         assert verify_structured(bad, tmp_path / f"ob{k}",
