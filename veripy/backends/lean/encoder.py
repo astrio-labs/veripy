@@ -947,20 +947,56 @@ def _no_old(e: ast.expr, line: int) -> None:
 
 
 class _SubstExprs(ast.NodeTransformer):
-    """Replace free names with whole EXPRESSIONS. Used to make a loop
+    """Replace FREE names with whole EXPRESSIONS. Used to make a loop
     body's assignments sequential: each right-hand side is rewritten
     through the updates before it, so a step reading another
     accumulator sees its NEW value, exactly as CPython executes it.
-    Substituting simultaneously would model a different program."""
+    Substituting simultaneously would model a different program.
+
+    Free means free: a comprehension binder SHADOWS the name inside
+    its own scope (review-caught: a search test binding the
+    accumulator's name came out as `for b + xs[i] in range(i)` — the
+    binder itself replaced by the step), and Python evaluates only the
+    FIRST generator's iterable in the enclosing scope. Store-context
+    names are never touched."""
 
     def __init__(self, mapping: dict[str, ast.expr]) -> None:
         self.mapping = mapping
 
     def visit_Name(self, node: ast.Name) -> ast.expr:
+        if isinstance(node.ctx, ast.Store):
+            return node
         repl = self.mapping.get(node.id)
         if repl is None:
             return node
         return copy.deepcopy(repl)
+
+    def _visit_comp(self, node: ast.expr) -> ast.expr:
+        bound: set[str] = set()
+        for gi, g in enumerate(node.generators):
+            outer = self if gi == 0 else _SubstExprs(
+                {k: v for k, v in self.mapping.items()
+                 if k not in bound})
+            g.iter = outer.visit(g.iter)
+            for t in ast.walk(g.target):
+                if isinstance(t, ast.Name):
+                    bound.add(t.id)
+            inner = _SubstExprs({k: v for k, v in self.mapping.items()
+                                 if k not in bound})
+            g.ifs = [inner.visit(c) for c in g.ifs]
+        body_sub = _SubstExprs({k: v for k, v in self.mapping.items()
+                                if k not in bound})
+        if isinstance(node, ast.DictComp):
+            node.key = body_sub.visit(node.key)
+            node.value = body_sub.visit(node.value)
+        else:
+            node.elt = body_sub.visit(node.elt)
+        return node
+
+    visit_ListComp = _visit_comp
+    visit_SetComp = _visit_comp
+    visit_GeneratorExp = _visit_comp
+    visit_DictComp = _visit_comp
 
 
 class _SubstName(ast.NodeTransformer):
@@ -3223,6 +3259,23 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                        ast.Name)
                         and eexpr.comparators[0].func.id == "any"):
                     ecall = eexpr.comparators[0]
+                    # Guard the whole dereference chain: `any()`
+                    # without a generator, or with the wrong arity,
+                    # is simply NOT the licensed form -- it falls to
+                    # the reject below with the boundary's message
+                    # (review-caught: the raw chain crashed with
+                    # IndexError/AttributeError, a tool-error verdict
+                    # on a merely-unsupported spec).
+                    if not (len(ecall.args) == 1
+                            and not ecall.keywords
+                            and isinstance(ecall.args[0],
+                                           ast.GeneratorExp)
+                            and len(ecall.args[0].generators) == 1
+                            and not ecall.args[0].generators[0].ifs
+                            and isinstance(
+                                ecall.args[0].generators[0].iter,
+                                ast.Call)):
+                        continue
                     gen = ecall.args[0]
                     rng = gen.generators[0].iter
                     if (isinstance(rng, ast.Call) and len(rng.args) == 1
