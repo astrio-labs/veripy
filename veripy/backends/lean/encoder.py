@@ -2151,6 +2151,335 @@ def _emit_optional_max(om: _OptMaxShape, fn: ast.FunctionDef,
         emit("    exact hle", EL)
 
 
+
+@dataclass(frozen=True)
+class _SqrtSearchShape:
+    """The sqrt-search class (is_prime): a while-loop trial division
+    with an early `return False` on hit and the composite-has-a-
+    small-factor endgame at the True return."""
+    n: str            # the int parameter
+    var: str          # the scan variable
+    lemma: str        # the #@ proof clause's lemma name
+    guard_line: int
+    while_line: int
+    inv_line: int
+    ens_line: int
+
+
+_SQRTSEARCH_INTERNALS = frozenset({
+    "m_", "m2", "k_", "f_", "j", "hj2", "hjk", "hjj", "hjmod", "hb",
+    "hinv", "hflag", "hmono", "hjn", "hall", "hn2", "hgt", "hf", "hf1",
+    "hf2", "hc", "hlt", "hge", "hjeq", "hmod", "gcond", "g1", "g2",
+    "g3", "hff", "hg",
+})
+
+
+def _sqrt_search_shape(fn: ast.FunctionDef, spec_fn: FunctionSpec,
+                       proof_lemmas: frozenset[str],
+                       is_bool: bool) -> _SqrtSearchShape | None:
+    """Match the sqrt-search class STRICTLY, or decline. Like the
+    OptionalMax class, this is matched rather than translated — the
+    emitted fold over (Int × Bool), the combined induction theorem
+    (invariant AND exit condition in one statement), and the spec
+    proof are a template proved end to end before this matcher
+    existed. The strictness is what lets the template stand in for
+    translation; near-misses are rejected with the pattern named.
+
+    Two arguments the pin fixed: the flag's ∃-witness records
+    `j * j <= n` (the hit happened UNDER the loop condition), which
+    makes the too-big-witness refutation linear; and the `#@ proof`
+    lemma is APPLIED at the True exit with every side condition
+    discharged from the invariant and the negated condition — the
+    one class so far whose sidecar pack is load-bearing under Lean
+    by construction."""
+    if not is_bool:
+        return None
+    body = fn.body
+    if len(body) != 4:
+        return None
+    s0, s1, s2, s3 = body
+    if not (isinstance(s0, ast.If) and not s0.orelse
+            and len(s0.body) == 1 and isinstance(s0.body[0], ast.Return)
+            and isinstance(s0.body[0].value, ast.Constant)
+            and s0.body[0].value.value is False
+            and isinstance(s1, ast.Assign) and len(s1.targets) == 1
+            and isinstance(s1.targets[0], ast.Name)
+            and isinstance(s2, ast.While) and not s2.orelse
+            and isinstance(s3, ast.Return)
+            and isinstance(s3.value, ast.Constant)
+            and s3.value.value is True):
+        return None
+    if len(fn.args.args) != 1:
+        return None
+    n = fn.args.args[0].arg
+    var = s1.targets[0].id
+
+    def expect(actual: ast.expr, source: str, what: str,
+               line: int) -> None:
+        want = ast.parse(source, mode="eval").body
+        if ast.dump(actual) != ast.dump(want):
+            raise _reject(
+                f"the sqrt-search class (while trial division with an "
+                f"early return) admits exactly the is_prime pattern; "
+                f"its {what} must be `{source}`", line)
+
+    expect(s0.test, f"{n} < 2", "guard", s0.lineno)
+    expect(s1.value, "2", "scan initializer", s1.lineno)
+    expect(s2.test, f"{var} * {var} <= {n}", "while condition",
+           s2.lineno)
+    wb = s2.body
+    if not (len(wb) == 2 and isinstance(wb[0], ast.If)
+            and not wb[0].orelse and len(wb[0].body) == 1
+            and isinstance(wb[0].body[0], ast.Return)
+            and isinstance(wb[0].body[0].value, ast.Constant)
+            and wb[0].body[0].value.value is False
+            and isinstance(wb[1], ast.Assign)):
+        raise _reject("the sqrt-search class loop body is exactly "
+                      "`if n % k == 0: return False` then `k = k + 1`",
+                      s2.lineno)
+    expect(wb[0].test, f"{n} % {var} == 0", "hit test", wb[0].lineno)
+    if not (len(wb[1].targets) == 1
+            and isinstance(wb[1].targets[0], ast.Name)
+            and wb[1].targets[0].id == var):
+        raise _reject("the sqrt-search class steps its own scan "
+                      "variable", wb[1].lineno)
+    expect(wb[1].value, f"{var} + 1", "step", wb[1].lineno)
+
+    invs = spec_fn.by_kind("invariant")
+    if len(invs) != 2:
+        raise _reject("the sqrt-search class needs exactly its two "
+                      "invariants (the scan lower bound and the clean "
+                      "window ∀)", s2.lineno)
+    parsed = []
+    for c in invs:
+        text = c.desugared if c.desugared is not None else c.raw
+        try:
+            parsed.append(ast.parse(text, mode="eval").body)
+        except SyntaxError as exc:
+            raise _reject(f"cannot parse invariant: {exc.msg}", c.line)
+    jb = "j"
+    if isinstance(parsed[1], ast.Call) and parsed[1].args \
+            and isinstance(parsed[1].args[0], ast.GeneratorExp) \
+            and isinstance(parsed[1].args[0].generators[0].target,
+                           ast.Name):
+        jb = parsed[1].args[0].generators[0].target.id
+    expect(parsed[0], f"2 <= {var}", "first invariant", invs[0].line)
+    expect(parsed[1],
+           f"all(({n} % {jb} != 0) for {jb} in range(2, {var}))",
+           "second invariant (spelled with forall)", invs[1].line)
+    decs = spec_fn.by_kind("decreases")
+    if len(decs) != 1:
+        raise _reject("the sqrt-search class states one decreases "
+                      "clause", s2.lineno)
+    dtext = decs[0].desugared if decs[0].desugared is not None \
+        else decs[0].raw
+    try:
+        dparsed = ast.parse(dtext, mode="eval").body
+    except SyntaxError as exc:
+        raise _reject(f"cannot parse decreases: {exc.msg}",
+                      decs[0].line)
+    expect(dparsed, f"{n} - {var}", "decreases", decs[0].line)
+
+    posts = spec_fn.by_kind("ensures")
+    if len(posts) != 1:
+        raise _reject("the sqrt-search class states exactly one "
+                      "ensures (the primality iff)", spec_fn.lineno)
+    ptext = posts[0].desugared if posts[0].desugared is not None \
+        else posts[0].raw
+    try:
+        pp = ast.parse(ptext, mode="eval").body
+    except SyntaxError as exc:
+        raise _reject(f"cannot parse ensures: {exc.msg}",
+                      posts[0].line)
+    db = "d"
+    if isinstance(pp, ast.Compare) and len(pp.comparators) == 1 \
+            and isinstance(pp.comparators[0], ast.BoolOp) \
+            and len(pp.comparators[0].values) == 2:
+        inner = pp.comparators[0].values[1]
+        if isinstance(inner, ast.Call) and inner.args \
+                and isinstance(inner.args[0], ast.GeneratorExp) \
+                and isinstance(inner.args[0].generators[0].target,
+                               ast.Name):
+            db = inner.args[0].generators[0].target.id
+    expect(pp,
+           f"result == ({n} >= 2 and all(({n} % {db} != 0) "
+           f"for {db} in range(2, {n})))",
+           "ensures (spelled with forall)", posts[0].line)
+
+    clauses = spec_fn.by_kind("proof")
+    if len(clauses) != 1:
+        raise _reject("the sqrt-search class invokes exactly one "
+                      "`#@ proof` lemma at the True return (the "
+                      "composite-has-a-small-factor argument)",
+                      spec_fn.lineno)
+    ctext = clauses[0].desugared if clauses[0].desugared is not None \
+        else clauses[0].raw
+    try:
+        call = ast.parse(ctext, mode="eval").body
+    except SyntaxError as exc:
+        raise _reject(f"cannot parse proof clause: {exc.msg}",
+                      clauses[0].line)
+    if not (isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)):
+        raise _reject("a `#@ proof` clause names a lemma and its "
+                      "arguments, as `Lemma(a, b)`", clauses[0].line)
+    if call.func.id not in proof_lemmas:
+        raise _reject(
+            f"unknown lemma {call.func.id!r} — a `#@ proof` target "
+            f"must be declared in the proof sidecar "
+            f"(<stem>.proofs.lean); this one declares "
+            f"{sorted(proof_lemmas) or 'nothing'}", clauses[0].line)
+    expect(call, f"{call.func.id}({n}, {var})",
+           "proof clause (the lemma applied at (n, k))",
+           clauses[0].line)
+    if spec_fn.by_kind("requires"):
+        raise _reject("the sqrt-search class carries no requires",
+                      spec_fn.lineno)
+    names_used = {node.id for node in ast.walk(fn)
+                  if isinstance(node, ast.Name)} | {fn.name}
+    if names_used & _SQRTSEARCH_INTERNALS:
+        raise _reject(
+            "a name in this function collides with the sqrt-search "
+            "template's internal binders — rename it", fn.lineno)
+    return _SqrtSearchShape(n=n, var=var, lemma=call.func.id,
+                            guard_line=s0.lineno, while_line=s2.lineno,
+                            inv_line=invs[0].line,
+                            ens_line=posts[0].line)
+
+
+def _emit_sqrt_search(ss: _SqrtSearchShape, fn: ast.FunctionDef,
+                      spec_fn: FunctionSpec, emit, theorems) -> None:
+    """Emit the sqrt-search class whole, from the pinned template.
+    The `#@ proof` lemma is applied at the False-flag exit with the
+    hypothesis order (n k) (h2 : 2 ≤ n) (hk2 : 2 ≤ k)
+    (hk : n < k * k) (hclean : ∀ j, 2 ≤ j → j < k → ¬(PyMod n j = 0))
+    — a sidecar lemma with a different signature fails in Lean's lap
+    with its own name attached, which is the honest outcome."""
+    f = _ident(spec_fn.name)
+    N = _ident(ss.n)
+    fl = _ident(f"{spec_fn.name}_loop")
+    fi = _ident(f"{spec_fn.name}_inv")
+    fli = _ident(f"{spec_fn.name}_loop_inv")
+    fsp = f"{spec_fn.name}_spec"
+    LEM = ss.lemma
+    WL, IL, EL = ss.while_line, ss.inv_line, ss.ens_line
+    FOLD = f"({fl} {N} ((({N} - 2)).toNat.succ) 2 false)"
+
+    emit("", None)
+    emit(f"def {fl} ({N} : Int) : Nat → Int → Bool → (Int × Bool)", WL)
+    emit("  | 0, k_, f_ => (k_, f_)", WL)
+    emit("  | (m_ + 1), k_, f_ =>", WL)
+    emit(f"      if k_ * k_ ≤ {N} then", WL)
+    emit(f"        {fl} {N} m_ (k_ + 1)", WL)
+    emit(f"          (f_ || decide (VeriPy.PyMod {N} k_ = 0))", WL)
+    emit("      else (k_, f_)", WL)
+    emit("", None)
+    emit(f"def {f} ({N} : Int) : Bool :=", ss.guard_line)
+    emit(f"  if {N} < 2 then false", ss.guard_line)
+    emit(f"  else !({fl} {N} ((({N} - 2)).toNat.succ) 2 false).2",
+         ss.guard_line)
+    emit("", None)
+    emit(f"def {fi} ({N} : Int) (k_ : Int) (f_ : Bool) : Prop :=", IL)
+    emit("  (2 ≤ k_)", IL)
+    emit(f"  ∧ ((f_ = false) → (∀ j : Int, 2 ≤ j → j < k_ → "
+         f"¬(VeriPy.PyMod {N} j = 0)))", IL)
+    emit(f"  ∧ ((f_ = true) → (∃ j : Int, 2 ≤ j ∧ j * j ≤ {N} ∧ "
+         f"VeriPy.PyMod {N} j = 0))", IL)
+    emit("", None)
+    theorems.append(f"{spec_fn.name}_loop_inv")
+    emit(f"theorem {fli} ({N} : Int) : ∀ (m_ : Nat) (k_ : Int) "
+         f"(f_ : Bool),", IL)
+    emit(f"    {fi} {N} k_ f_ → {N} - k_ < (m_ : Int) →", IL)
+    emit(f"    {fi} {N} ({fl} {N} m_ k_ f_).1 ({fl} {N} m_ k_ f_).2",
+         IL)
+    emit(f"      ∧ ¬(({fl} {N} m_ k_ f_).1 * ({fl} {N} m_ k_ f_).1 "
+         f"≤ {N}) := by", IL)
+    emit("  intro m_", IL)
+    emit("  induction m_ with", IL)
+    emit("  | zero =>", IL)
+    emit("      intro k_ f_ h1 hb", IL)
+    emit("      constructor", IL)
+    emit(f"      · simpa only [{fl}] using h1", IL)
+    emit(f"      · simp only [{fl}]", IL)
+    emit("        obtain ⟨h1, h2, h3⟩ := h1", IL)
+    emit(f"        have hgt : {N} < k_ := by omega", IL)
+    emit("        have hmono : k_ * 2 ≤ k_ * k_ :=", IL)
+    emit("          Int.mul_le_mul_of_nonneg_left (by omega) "
+         "(by omega)", IL)
+    emit("        omega", IL)
+    emit("  | succ m2 ih =>", IL)
+    emit("      intro k_ f_ h1 hb", IL)
+    emit("      obtain ⟨h1, h2, h3⟩ := h1", IL)
+    emit(f"      by_cases hc : k_ * k_ ≤ {N}", IL)
+    emit(f"      · simp only [{fl}, if_pos hc]", IL)
+    emit("        apply ih", IL)
+    emit("        · refine ⟨by omega, ?_, ?_⟩", IL)
+    emit("          · intro hf j hj2 hjk", IL)
+    emit("            rcases Bool.or_eq_false_iff.mp hf with "
+         "⟨hf1, hf2⟩", IL)
+    emit("            rcases Classical.em (j < k_) with hlt | hge",
+         IL)
+    emit("            · exact h2 hf1 j hj2 hlt", IL)
+    emit("            · have hjeq : j = k_ := by omega", IL)
+    emit("              subst hjeq", IL)
+    emit("              intro hmod", IL)
+    emit("              rw [decide_eq_false_iff_not] at hf2", IL)
+    emit("              exact hf2 hmod", IL)
+    emit("          · intro hf", IL)
+    emit("            rcases Bool.or_eq_true_iff.mp hf with "
+         "hf1 | hf1", IL)
+    emit("            · exact h3 hf1", IL)
+    emit("            · have hmod := of_decide_eq_true hf1", IL)
+    emit("              exact ⟨k_, by omega, hc, hmod⟩", IL)
+    emit("        · omega", IL)
+    emit(f"      · simp only [{fl}, if_neg hc]", IL)
+    emit("        exact ⟨⟨h1, h2, h3⟩, hc⟩", IL)
+    emit("", None)
+    theorems.append(fsp)
+    emit(f"theorem {_ident(fsp)} ({N} : Int) :", EL)
+    emit(f"    (({f} {N}) = true) ↔", EL)
+    emit(f"      ((2 ≤ {N}) ∧ (∀ d : Int, 2 ≤ d → d < {N} → "
+         f"¬(VeriPy.PyMod {N} d = 0))) := by", EL)
+    emit(f"  unfold {f}", EL)
+    emit(f"  by_cases hg : {N} < 2", EL)
+    emit("  · simp only [if_pos hg]", EL)
+    emit("    constructor", EL)
+    emit("    · intro hff; simp at hff", EL)
+    emit("    · rintro ⟨hn2, _⟩; omega", EL)
+    emit("  · simp only [if_neg hg]", EL)
+    emit(f"    have hb : {N} - 2 < ((({N} - 2)).toNat.succ : Int) "
+         f":= by", EL)
+    emit("      push_cast", EL)
+    emit("      omega", EL)
+    emit(f"    have hinv := {fli} {N} ((({N} - 2)).toNat.succ) 2 "
+         f"false", EL)
+    emit("      ⟨by omega, by intro _ j hj2 hjk; omega, "
+         "by intro hf; simp at hf⟩", EL)
+    emit("      (by omega)", EL)
+    emit("    obtain ⟨⟨g1, g2, g3⟩, gcond⟩ := hinv", EL)
+    emit(f"    cases hflag : {FOLD}.2 with", EL)
+    emit("    | false =>", EL)
+    emit("        simp only [hflag, Bool.not_false]", EL)
+    emit("        constructor", EL)
+    emit("        · intro _", EL)
+    emit("          refine ⟨by omega, ?_⟩", EL)
+    emit(f"          exact {LEM} {N} ({FOLD}.1)", EL)
+    emit("            (by omega) g1 (by omega) (g2 hflag)", EL)
+    emit("        · intro _; trivial", EL)
+    emit("    | true =>", EL)
+    emit("        simp only [hflag, Bool.not_true]", EL)
+    emit("        constructor", EL)
+    emit("        · intro hff; simp at hff", EL)
+    emit("        · rintro ⟨hn2, hall⟩", EL)
+    emit("          obtain ⟨j, hj2, hjj, hjmod⟩ := g3 (by rw "
+         "[hflag])", EL)
+    emit("          have hmono : j * 2 ≤ j * j :=", EL)
+    emit("            Int.mul_le_mul_of_nonneg_left (by omega) "
+         "(by omega)", EL)
+    emit(f"          have hjn : j < {N} := by omega", EL)
+    emit("          exact absurd hjmod (hall j hj2 hjn)", EL)
+
+
 def _requires_min_len(spec_fn: FunctionSpec,
                       lists: frozenset[str]) -> dict[str, int]:
     """Scan TOP-LEVEL requires conjuncts for `len(L) > c` / `len(L) >=
@@ -4001,6 +4330,17 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         wloop = None
         if loop is None and any(isinstance(n, ast.While)
                                 for n in ast.walk(fn)):
+            ss = _sqrt_search_shape(fn, spec_fn,
+                                    frozenset(proof_lemmas), is_bool)
+            if ss is not None:
+                for g in (f"{spec_fn.name}_loop",
+                          f"{spec_fn.name}_inv",
+                          f"{spec_fn.name}_loop_inv"):
+                    _check_name(g, "generated declaration for",
+                                fn.lineno, taken)
+                    taken.add(g)
+                _emit_sqrt_search(ss, fn, spec_fn, emit, theorems)
+                continue
             # _split_while either matches or rejects with its own
             # message, so a `while` never falls through to the
             # "this function has no loop" error below.

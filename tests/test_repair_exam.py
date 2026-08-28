@@ -473,7 +473,8 @@ def test_lean_pack_screens_load_bearing(tmp_path):
     assert r.verdict == "load-bearing", (r.verdict, r.detail)
 
 
-LEAN_PACKED = ["below_zero", "gcd", "modp", "rolling_max", "sum_squares"]
+LEAN_PACKED = ["below_zero", "gcd", "is_prime", "modp",
+               "rolling_max", "sum_squares"]
 
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
@@ -511,3 +512,48 @@ def test_resolution_only_lean_pack_screens_vacuous(tmp_path):
     shutil.copy(src / "task.proofs.lean", task / "task.proofs.lean")
     r = screen_sidecar(task, backend="lean")
     assert r.verdict == "vacuous", (r.verdict, r.detail)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_sqrt_search_pack_screen_is_inconclusive_by_construction(tmp_path):
+    # The sqrt-search class REQUIRES its `#@ proof` clause, so the
+    # screen's counterfactual (strip clauses AND pack) hits the class
+    # gate before the prover — `inconclusive`, honestly: the class
+    # cannot run clause-less, so the screen observes nothing about
+    # provability. The EXAM's counterfactual (strip only the pack)
+    # is the real one: iteration-0 fails on resolution, restoration
+    # measures the composite lemma.
+    import shutil
+    src = REPO / "benchmark" / "tasks" / "is_prime"
+    task = tmp_path / "t"
+    task.mkdir()
+    shutil.copy(src / "task.py", task / "task.py")
+    shutil.copy(src / "task.proofs.lean", task / "task.proofs.lean")
+    r = screen_sidecar(task, backend="lean")
+    assert r.verdict == "inconclusive", (r.verdict, r.detail)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_lean_is_prime_exam_restores_with_scripted_golden(tmp_path):
+    # The first Lean exam row that is load-bearing BY CONSTRUCTION:
+    # the emitted endgame applies the sidecar's composite lemma, so
+    # stripping the pack fails at iteration 0 and restoration
+    # measures real proof content.
+    import shutil
+    src = REPO / "benchmark" / "tasks" / "is_prime"
+    corpus = tmp_path / "tasks"
+    task = corpus / "is_prime"
+    task.mkdir(parents=True)
+    shutil.copy(src / "task.py", task / "task.py")
+    golden = (src / "task.proofs.lean").read_text()
+    (task / "task.proofs.lean").write_text(golden)
+    attempts = tmp_path / "attempts"
+    attempts.mkdir()
+    (attempts / "1.lean").write_text(golden)
+    scores = run_repair_exam(corpus, tmp_path / "work",
+                             lambda: make_engine(f"file:{attempts}"),
+                             time_limit=60, backend="lean")
+    assert len(scores) == 1
+    s0 = scores[0]
+    assert s0.restored, s0.reason
+    assert s0.iterations == 1

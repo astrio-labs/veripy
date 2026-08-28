@@ -4335,3 +4335,27 @@ def test_end_to_end_rolling_max_proves(tmp_path):
         st = verify_structured(bad, tmp_path / f"ob{k}",
                                backend="lean")["status"]
         assert st == "encode-error", (k, st)
+
+
+def test_sqrt_search_class_matches_strictly():
+    # The sqrt-search class (is_prime): while trial division with an
+    # early return, matched strictly against the pinned template. The
+    # one class whose sidecar pack is load-bearing under Lean BY
+    # CONSTRUCTION: the emitted endgame applies the clause's lemma at
+    # the True exit with every side condition discharged from the
+    # invariant and the negated condition.
+    src = Path("benchmark/tasks/is_prime/task.py").read_text()
+    lemmas = frozenset({"CompositeHasSmallFactor"})
+
+    def enc(text):
+        return encode_module_lean(text, parse_source(text),
+                                  module_name="m.py",
+                                  proof_lemmas=lemmas)
+    out = enc(src).lean_source
+    assert "Int × Bool" in out
+    assert "CompositeHasSmallFactor" in out
+    with pytest.raises(EncodeError, match="sqrt-search"):
+        enc(src.replace("k = k + 1", "k = k + 2"))
+    with pytest.raises(EncodeError, match="proof"):
+        enc(src.replace(
+            "    #@ proof CompositeHasSmallFactor(n, k)\n", ""))
