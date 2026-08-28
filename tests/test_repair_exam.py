@@ -455,3 +455,19 @@ def test_ladder_climbs_under_lean_backend(tmp_path):
         pytest.skip(f"hunt unavailable here: {by_name}")
     assert by_name.get("encode") == "pass", score.rungs
     assert by_name.get("prove") == "pass", score.rungs
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_lean_pack_screens_load_bearing(tmp_path):
+    # The screen under --backend lean: he_31's pack must be doing work
+    # (a task the fixed ladder proves without its pack would make an
+    # exam row that measures nothing). All four contact packs screened
+    # load-bearing when this landed; one here keeps the seam honest.
+    src = REPO / "examples" / "contact"
+    task = tmp_path / "t"
+    task.mkdir()
+    (task / "task.py").write_text((src / "he_humaneval_31.py").read_text())
+    (task / "task.proofs.lean").write_text(
+        (src / "he_humaneval_31.proofs.lean").read_text())
+    r = screen_sidecar(task, backend="lean")
+    assert r.verdict == "load-bearing", (r.verdict, r.detail)

@@ -628,13 +628,15 @@ def cmd_difftest(paths: list[Path], outdir: Path, examples: int,
     return 2 if trouble else 0
 
 
-def cmd_screen(tasks: Path, time_limit: int = 60) -> int:
+def cmd_screen(tasks: Path, time_limit: int = 60,
+               backend: str = "dafny") -> int:
     """Report whether each task's proof pack is load-bearing — the gate a
-    candidate must clear before joining the exam roster."""
+    candidate must clear before joining the exam roster (of the NAMED
+    backend: each prover's roster is its own sidecars)."""
     from .benchmark.exam import exam_tasks, render_screen_report, screen_sidecar
 
-    results = [screen_sidecar(d, time_limit=time_limit)
-               for d in exam_tasks(tasks)]
+    results = [screen_sidecar(d, time_limit=time_limit, backend=backend)
+               for d in exam_tasks(tasks, backend)]
     print(render_screen_report(results))
     if not results:
         print(f"no sidecar-bearing tasks under {tasks}", file=sys.stderr)
@@ -1087,7 +1089,12 @@ def main(argv: list[str] | None = None) -> int:
                             min_functions=args.min_functions)
     if args.command == "benchmark":
         if args.screen:
-            return cmd_screen(args.tasks, time_limit=args.time_limit)
+            if args.proof_backend == "all":
+                print("--screen screens ONE backend's sidecars; name it",
+                      file=sys.stderr)
+                return 2
+            return cmd_screen(args.tasks, time_limit=args.time_limit,
+                              backend=args.proof_backend)
         if args.exam == "proof-repair":
             from .benchmark.exam import render_exam_report, run_repair_exam
             from .repair import make_engine

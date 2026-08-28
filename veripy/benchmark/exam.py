@@ -106,8 +106,10 @@ def strip_proof_clauses(source: str) -> str:
     return "".join(kept)
 
 
-def screen_sidecar(task_dir: Path, time_limit: int = 60) -> ScreenResult:
-    """Is this task's `.proofs.dfy` doing any work?
+def screen_sidecar(task_dir: Path, time_limit: int = 60,
+                   backend: str = "dafny") -> ScreenResult:
+    """Is this task's proof sidecar doing any work — under the NAMED
+    backend, screening ITS sidecar?
 
     A task Z3 proves from its invariants alone makes an exam row that
     measures nothing, so every roster task must fail WITHOUT its pack. The
@@ -126,21 +128,25 @@ def screen_sidecar(task_dir: Path, time_limit: int = 60) -> ScreenResult:
     it is what the old screen was silently reporting as a pass.
     """
     from ..agentio import verify_structured
+    from ..backends.base import get_backend
     from ..failures import PROVER_KINDS
 
+    be = get_backend(backend)
     task_id = task_dir.name
     source = (task_dir / "task.py").read_text()
-    sidecar = task_dir / "task.proofs.dfy"
+    sidecar = be.sidecar_path(task_dir / "task.py")
+    sidecar_name = sidecar.name
     if not sidecar.is_file():
-        return ScreenResult(task_id, "broken", "no task.proofs.dfy to screen")
+        return ScreenResult(task_id, "broken",
+                            f"no {sidecar_name} to screen")
 
     with tempfile.TemporaryDirectory() as tmp:
         golden_dir = Path(tmp) / "golden"
         golden_dir.mkdir()
         (golden_dir / "task.py").write_text(source)
-        (golden_dir / "task.proofs.dfy").write_text(sidecar.read_text())
+        (golden_dir / sidecar_name).write_text(sidecar.read_text())
         golden = verify_structured(golden_dir / "task.py", golden_dir / "out",
-                                   time_limit=time_limit)
+                                   time_limit=time_limit, backend=backend)
         if golden["status"] != "ok":
             return ScreenResult(
                 task_id, "broken",
@@ -151,7 +157,7 @@ def screen_sidecar(task_dir: Path, time_limit: int = 60) -> ScreenResult:
         bare_dir.mkdir()
         (bare_dir / "task.py").write_text(strip_proof_clauses(source))
         bare = verify_structured(bare_dir / "task.py", bare_dir / "out",
-                                 time_limit=time_limit)
+                                 time_limit=time_limit, backend=backend)
 
     status = bare["status"]
     if status == "ok":
