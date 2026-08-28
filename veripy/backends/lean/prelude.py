@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.10"
+PRELUDE_VERSION = "lean-0.11"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -102,6 +102,47 @@ theorem PyPow_succ (a : Int) (e : Int) (h : 0 ≤ e) :
 theorem PyMod_self (a : Int) : PyMod a a = 0 := Int.fmod_self
 
 theorem PyMod_zero_left (b : Int) : PyMod 0 b = 0 := Int.zero_fmod b
+
+-- Decidability of range-bounded ∃, by recursion on the WIDTH. This
+-- is what lets a nested pure search flatten into a single fold whose
+-- test is `decide (∃ ...)` -- and it composes, so a triple loop
+-- flattens the same way (nested ∃ of nested ∃ stays decidable).
+def IntBexWitness (P : Int → Prop) [DecidablePred P]
+    (lo : Int) : Nat → Bool
+  | 0 => false
+  | (w + 1) => decide (P lo) || IntBexWitness P (lo + 1) w
+
+theorem IntBexWitness_iff (P : Int → Prop) [DecidablePred P]
+    (lo : Int) (w : Nat) :
+    IntBexWitness P lo w = true ↔
+      ∃ b : Int, (lo ≤ b ∧ b < lo + w) ∧ P b := by
+  induction w generalizing lo with
+  | zero =>
+    simp [IntBexWitness]
+    intro b h1 h2
+    omega
+  | succ k ih =>
+    simp only [IntBexWitness, Bool.or_eq_true, decide_eq_true_eq,
+               ih (lo + 1)]
+    constructor
+    · rintro (hp | ⟨b, hb, hpb⟩)
+      · exact ⟨lo, ⟨by omega, by omega⟩, hp⟩
+      · exact ⟨b, ⟨by omega, by omega⟩, hpb⟩
+    · rintro ⟨b, ⟨hb1, hb2⟩, hpb⟩
+      rcases Classical.em (b = lo) with he | hne
+      · left; rw [← he]; exact hpb
+      · right; exact ⟨b, ⟨by omega, by omega⟩, hpb⟩
+
+instance IntBexDec (P : Int → Prop) [DecidablePred P] (lo hi : Int) :
+    Decidable (∃ b : Int, (lo ≤ b ∧ b < hi) ∧ P b) :=
+  decidable_of_iff
+    (IntBexWitness P lo (hi - lo).toNat = true)
+    (by rw [IntBexWitness_iff]
+        constructor
+        · rintro ⟨b, ⟨h1, h2⟩, hp⟩
+          exact ⟨b, ⟨h1, by omega⟩, hp⟩
+        · rintro ⟨b, ⟨h1, h2⟩, hp⟩
+          exact ⟨b, ⟨h1, by omega⟩, hp⟩)
 
 theorem SqGeSelf (a : Int) : a ≤ a * a := by
   rcases Int.lt_or_le a 1 with h | h

@@ -654,6 +654,28 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
             and isinstance(e.args[0], ast.GeneratorExp)):
         return None
     gen = e.args[0]
+    if len(gen.generators) > 1:
+        # `exists i in R1, j in R2 :: P` UNROLLS into nested
+        # single-binder quantifiers: the outer binds i, and its body
+        # is the same quantifier over the remaining generators --
+        # scoping flows naturally, since inner ranges may reference
+        # outer binders (`range(i + 1, len(l))`), and the prelude's
+        # IntBexDec composes over the nesting when the result lands
+        # in a decide position.
+        inner = ast.Call(
+            func=ast.Name(id=e.func.id, ctx=ast.Load()),
+            args=[ast.GeneratorExp(elt=gen.elt,
+                                   generators=gen.generators[1:])],
+            keywords=[])
+        outer = ast.Call(
+            func=ast.Name(id=e.func.id, ctx=ast.Load()),
+            args=[ast.GeneratorExp(elt=inner,
+                                   generators=[gen.generators[0]])],
+            keywords=[])
+        ast.copy_location(outer, e)
+        ast.fix_missing_locations(outer)
+        return _quantifier(outer, names, line, result, rename,
+                           result_is_bool, avoid, lc)
     if len(gen.generators) != 1:
         raise _reject("only one quantifier binder per clause in slice 2",
                       line)
@@ -726,12 +748,18 @@ def _quantifier(e: ast.Call, names: set[str], line: int,
         # -- and this OVERRIDES the scaffold's param-list wildcard,
         # which the result branch does not read.
         safe[v] = "@result"
-    elif lo_is_zero and isinstance(hi_arg, ast.Call) \
+    elif (lo_is_zero
+          or (len(it.args) == 2 and _nonneg_bound(it.args[0], lc))) \
+            and isinstance(hi_arg, ast.Call) \
             and isinstance(hi_arg.func, ast.Name) \
             and hi_arg.func.id == "len" and not hi_arg.keywords \
             and len(hi_arg.args) == 1 \
             and isinstance(hi_arg.args[0], ast.Name) \
             and hi_arg.args[0].id in lc.lists:
+        # In bounds needs 0 ≤ v ∧ v < len: the binder's own bound
+        # gives lo ≤ v < len, so any provably-NONNEGATIVE lo licenses
+        # the read -- `for j in range(i + 1, len(l))` with i the
+        # (nonnegative) outer index is the nested-search inner window.
         safe[v] = hi_arg.args[0].id
     # A binder over a provably-NONNEGATIVE range licenses `xs[:v]`
     # exactly as the loop index does: Python's negative slice bound
@@ -1030,6 +1058,14 @@ def _reject_undecidable_quantifier(
     `_prop_expr` in `decide` too."""
     for node in ast.walk(e):
         if isinstance(node, ast.Call):
+            # Range-bounded ∃ IS decidable now: the prelude's
+            # IntBexDec instance recurses on the width, and it
+            # composes, so nested `any` flattens too. `all` (∀) keeps
+            # the rejection until a ∀-instance earns its way in.
+            if isinstance(node.func, ast.Name) \
+                    and node.func.id == "any" \
+                    and node.func.id not in names:
+                continue
             q = _quantifier(node, names, line, None, None, False, None, lc)
             if q is not None:
                 raise _reject(
@@ -1224,6 +1260,10 @@ class _LoopShape:
     # slice-3 desugar documents.
     search_test: ast.expr | None = None
     search_hit: bool | None = None
+    # The or-accumulator wrapped a ∀-clean invariant through a ¬
+    # (nested-search class): preservation and endgame need the
+    # duality scripts, at this quantifier depth.
+    neg_wrap_depth: int = 0
     # Trailing `acc.append(E)` calls between the loop and the return
     # (P2 slice 25, the intersperse class): the returned value is the
     # fold result with the appended elements concatenated, so the
@@ -1730,7 +1770,9 @@ def _loop_invariants(spec_fn: FunctionSpec,
     every = spec_fn.by_kind("invariant")
     invs = [c for c in every
             if loop.lineno < c.line < loop.body[0].lineno]
-    misplaced = [c for c in every if c not in invs]
+    misplaced = [c for c in every if c not in invs
+                 and not any(lo < c.line <= hi
+                             for lo, hi in _ABSORBED_INNER_SPANS)]
     if misplaced:
         # This slice admits one loop per function, so EVERY invariant
         # in the function must sit at that loop's head — a stray one
@@ -1758,6 +1800,13 @@ def _loop_invariants(spec_fn: FunctionSpec,
     return expr, invs[0].line
 
 
+# Line spans of inner loops the nested-search flattener absorbed this
+# encode: their invariants are the flag's meaning (carried by the
+# synthesized existential) and stay live for the Dafny backend, so
+# the misplacement rule skips them. Reset per encode_module_lean call.
+_ABSORBED_INNER_SPANS: list[tuple[int, int]] = []
+
+
 def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
                        spec_fn: FunctionSpec) -> _LoopShape | None:
     """Match `for i in range(N): if TEST: return V; return W` (V, W
@@ -1775,6 +1824,106 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
             or not isinstance(stmts[1], ast.Return):
         return None
     loop, ret_stmt = stmts
+    # `for i, x in enumerate(l)` normalizes to `for i in
+    # range(len(l))` with x's free occurrences substituted by l[i]
+    # (the substitution is LEXICAL, so binders shadowing x survive).
+    if isinstance(loop.target, ast.Tuple) \
+            and len(loop.target.elts) == 2 \
+            and all(isinstance(t, ast.Name) for t in loop.target.elts) \
+            and isinstance(loop.iter, ast.Call) \
+            and isinstance(loop.iter.func, ast.Name) \
+            and loop.iter.func.id == "enumerate" \
+            and len(loop.iter.args) == 1 and not loop.iter.keywords \
+            and isinstance(loop.iter.args[0], ast.Name):
+        ivar, xvar = (t.id for t in loop.target.elts)
+        lname = loop.iter.args[0].id
+        repl = ast.parse(f"{lname}[{ivar}]", mode="eval").body
+        loop = copy.deepcopy(loop)
+        loop.target = ast.Name(id=ivar, ctx=ast.Store())
+        loop.iter = ast.parse(f"range(len({lname}))", mode="eval").body
+        loop.body = [_SubstExprs({xvar: repl}).visit(b)
+                     for b in loop.body]
+        ast.fix_missing_locations(loop)
+    # A nested PURE search flattens: an inner
+    # `for j in range(a, b): if TEST: return LIT` as the outer's only
+    # statement becomes `if any(TEST for j in range(a, b)): return
+    # LIT` -- the prelude's IntBexDec makes the bounded ∃ decidable,
+    # and the instance composes, so deeper nestings flatten level by
+    # level through this same rewrite. The inner loop's own
+    # invariants are absorbed: they state the flag's meaning, which
+    # the synthesized existential now carries (they remain live for
+    # the Dafny backend, which walks the original source).
+    def _flatten_innermost(fr: ast.For) -> bool:
+        """Rewrite the DEEPEST `for j: if TEST: return LIT` under fr
+        into its any-If form, one level per call. Returns True when a
+        rewrite happened."""
+        if not (len(fr.body) == 1 and isinstance(fr.body[0], ast.For)):
+            return False
+        child = fr.body[0]
+        if _flatten_innermost(child):
+            return True
+        if not (isinstance(child.target, ast.Name)
+                and isinstance(child.iter, ast.Call)
+                and isinstance(child.iter.func, ast.Name)
+                and child.iter.func.id == "range"
+                and len(child.body) == 1
+                and isinstance(child.body[0], ast.If)
+                and not child.body[0].orelse
+                and len(child.body[0].body) == 1
+                and isinstance(child.body[0].body[0], ast.Return)):
+            return False
+        itest = child.body[0].test
+        iret = child.body[0].body[0]
+        gen = ast.GeneratorExp(
+            elt=copy.deepcopy(itest),
+            generators=[ast.comprehension(
+                target=copy.deepcopy(child.target),
+                iter=copy.deepcopy(child.iter), ifs=[],
+                is_async=0)])
+        newif = ast.If(
+            test=ast.Call(func=ast.Name(id="any", ctx=ast.Load()),
+                          args=[gen], keywords=[]),
+            body=[copy.deepcopy(iret)], orelse=[])
+        ast.copy_location(newif, child)
+        fr.body = [newif]
+        ast.fix_missing_locations(fr)
+        _ABSORBED_INNER_SPANS.append((child.lineno, iret.lineno))
+        return True
+
+    if len(loop.body) == 1 and isinstance(loop.body[0], ast.For):
+        loop = copy.deepcopy(loop)
+        while _flatten_innermost(loop):
+            pass
+    while (len(loop.body) == 1 and isinstance(loop.body[0], ast.For)
+           and isinstance(loop.body[0].target, ast.Name)
+           and isinstance(loop.body[0].iter, ast.Call)
+           and isinstance(loop.body[0].iter.func, ast.Name)
+           and loop.body[0].iter.func.id == "range"
+           and len(loop.body[0].body) == 1
+           and isinstance(loop.body[0].body[0], ast.If)
+           and not loop.body[0].body[0].orelse
+           and len(loop.body[0].body[0].body) == 1
+           and isinstance(loop.body[0].body[0].body[0], ast.Return)):
+        inner = loop.body[0]
+        itest = inner.body[0].test
+        iret = inner.body[0].body[0]
+        gen = ast.GeneratorExp(
+            elt=copy.deepcopy(itest),
+            generators=[ast.comprehension(
+                target=copy.deepcopy(inner.target),
+                iter=copy.deepcopy(inner.iter), ifs=[],
+                is_async=0)])
+        newtest = ast.Call(func=ast.Name(id="any", ctx=ast.Load()),
+                           args=[gen], keywords=[])
+        newif = ast.If(test=newtest,
+                       body=[copy.deepcopy(iret)], orelse=[])
+        ast.copy_location(newif, inner)
+        loop = (loop if loop.body[0] is not inner else loop)
+        loop = copy.deepcopy(loop)
+        loop.body = [newif]
+        ast.fix_missing_locations(loop)
+        _ABSORBED_INNER_SPANS.append(
+            (inner.lineno, iret.lineno))
     body = list(loop.body)
     if any(isinstance(s, ast.Assert) for s in body) \
             and len([s for s in body
@@ -1825,6 +1974,19 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
     for node in ast.walk(fn):
         if isinstance(node, ast.Name):
             used.add(node.id)
+    # Spec comments are not in fn's AST: a quantifier binder named
+    # `b` in an invariant or ensures collides with the synthesized
+    # accumulator exactly as a code name would (measured on the
+    # nested-search class, whose double-binder invariants use a, b).
+    for kind in ("requires", "ensures", "invariant"):
+        for c in spec_fn.by_kind(kind):
+            text = c.desugared if c.desugared is not None else c.raw
+            try:
+                for node in ast.walk(ast.parse(text, mode="eval")):
+                    if isinstance(node, ast.Name):
+                        used.add(node.id)
+            except SyntaxError:
+                continue
     acc = "b"
     while acc in used:
         acc += "'"
@@ -1842,14 +2004,55 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
         if isinstance(node, ast.Name) and node.id == acc:
             raise _reject(f"synthesized accumulator {acc!r} collides "
                           f"inside the invariant", inv_line)
-    # The user's invariant states the still-searching prefix property;
-    # the synthesized accumulator tracks exactly that, so the generated
-    # invariant is their iff (`acc == <inv>` through the Bool bridge).
-    wrapped = ast.Compare(left=ast.Name(id=acc, ctx=ast.Load()),
-                          ops=[ast.Eq()], comparators=[inv_expr])
+    # The user's invariant states the still-searching prefix
+    # property. For the AND-accumulator (return False on hit) the
+    # accumulator tracks exactly that, so the iff is `acc == <inv>`.
+    # For the OR-accumulator (return True on hit) the accumulator
+    # tracks the HIT, i.e. the invariant's negation -- wrapping
+    # without the flip stated found ↔ clean, false at the first hit
+    # (measured on the nested-search class, which is the first
+    # or-accumulator task whose invariant is the ∀-clean form).
+    # Index-bound conjuncts (unquantified) ride OUTSIDE the iff:
+    # inside it, `0 <= i < len(l)` would tie the accumulator to list
+    # nonemptiness and make the initial invariant unprovable on [].
+    conjs = (list(inv_expr.values)
+             if isinstance(inv_expr, ast.BoolOp)
+             and isinstance(inv_expr.op, ast.And) else [inv_expr])
+    quant = [c for c in conjs
+             if any(isinstance(nd, ast.Call)
+                    and isinstance(nd.func, ast.Name)
+                    and nd.func.id in ("all", "any")
+                    for nd in ast.walk(c))]
+    plain = [c for c in conjs if c not in quant]
+    core = (quant[0] if len(quant) == 1
+            else ast.BoolOp(op=ast.And(), values=quant) if quant
+            else inv_expr)
+    lhs: ast.expr = ast.Name(id=acc, ctx=ast.Load())
+    neg_wrap_depth = 0
+    if hit_ret.value:
+        lhs = ast.UnaryOp(op=ast.Not(), operand=lhs)
+        # Quantifier depth of the wrapped core: total generators
+        # across the nested all-calls (a two-binder clause counts 2).
+        neg_wrap_depth = sum(
+            len(nd.args[0].generators)
+            for nd in ast.walk(core)
+            if isinstance(nd, ast.Call)
+            and isinstance(nd.func, ast.Name) and nd.func.id == "all"
+            and nd.args and isinstance(nd.args[0], ast.GeneratorExp))
+    wrapped = ast.Compare(left=lhs, ops=[ast.Eq()],
+                          comparators=[core])
+    # Plain (unquantified) conjuncts are DROPPED, not carried: they
+    # are loop-head guard facts (`0 <= i < len(l)`), structurally
+    # true wherever the fold applies its step via the induction's own
+    # bounds -- but FALSE at the exit index and on the empty list,
+    # where the fold's invariant must still hold. They stay live for
+    # the Dafny backend, whose loop-head semantics is where they
+    # belong.
+    del plain
     ast.copy_location(wrapped, inv_expr)
     ast.fix_missing_locations(wrapped)
     return _LoopShape(index=index, acc=acc,
+                      neg_wrap_depth=neg_wrap_depth,
                       init=ast.Constant(value=end_ret.value),
                       start=it.args[0] if len(it.args) == 2 else None,
                       bound=it.args[-1], step=step,
@@ -2473,6 +2676,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         raise EncodeError(f"spec error: {first.error}", first.line)
     # Proof sidecars are live (P3). `proof_lemmas` is the set of names
     # the pack declares, already whitelist-validated by the loader.
+    _ABSORBED_INNER_SPANS.clear()
     module = ast.parse(source)
     # `x += e` is `x = x + e`. Rewriting the whole module once means
     # every path downstream sees a single spelling; desugaring at
@@ -3653,9 +3857,18 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     and isinstance(b.args[0], ast.Name) \
                     and b.args[0].id in lc0.lists:
                 safe[loop.index] = b.args[0].id
+            # The index is NONNEGATIVE wherever the body runs when the
+            # start is (a 1-arg range starts at zero) -- which is what
+            # lets a flattened inner window `range(i + 1, len(l))`
+            # license its own reads.
+            step_nonneg = (frozenset(lc0.nonneg_names | {loop.index})
+                           if (loop.start is None
+                               or _nonneg_bound(loop.start, lc0))
+                           else lc0.nonneg_names)
             step_lc = _ListCtx(lc0.lists, safe, None,
                                min_len=lc0.min_len,
-                               pos_names=lc0.pos_names)
+                               pos_names=lc0.pos_names,
+                               nonneg_names=step_nonneg)
             inv_lc = _ListCtx(lc0.lists, dict(safe), loop.index,
                               scaffold=True, min_len=lc0.min_len,
                               pos_names=lc0.pos_names)
@@ -4234,6 +4447,46 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                     f"               have hpi := hall {iv} "
                     f"⟨hi, by omega⟩",
                     "               first | exact hpi | omega))",
+                ):
+                    emit(tl, loop.inv_line)
+            elif loop.neg_wrap_depth >= 2:
+                # The NESTED-SEARCH preservation (scratch-proven, then
+                # depth-parameterized): the ¬-wrapped ∀-chain extends
+                # by one outer index, whose fresh slice is exactly the
+                # flattened inner ∃'s negation.
+                D = loop.neg_wrap_depth
+                intro_chain = " ".join(
+                    f"a{k}_ ha{k}_" for k in range(1, D + 1))
+                apply_rest = " ".join(
+                    f"a{k}_ ha{k}_" for k in range(2, D + 1))
+                wit = "heq_"
+                for k in range(D, 1, -1):
+                    wit = (f"⟨a{k}_, ha{k}_, {wit}⟩")
+                for tl in (
+                    "        (by",
+                    f"          simp only [{_ident(gen_inv)}, "
+                    f"Bool.or_eq_true, decide_eq_true_eq, not_or] "
+                    f"at h ⊢",
+                    "          first",
+                    "          | omega",
+                    "          | (constructor",
+                    f"             · rintro ⟨hb_, hnex_⟩ "
+                    f"{intro_chain} heq_",
+                    f"               rcases Classical.em "
+                    f"(a1_ < {iv}) with hlt_ | hge_",
+                    f"               · exact h.mp hb_ a1_ "
+                    f"⟨ha1_.1, hlt_⟩ {apply_rest} heq_",
+                    f"               · have hae_ : a1_ = {iv} := "
+                    f"by omega",
+                    "                 subst hae_",
+                    f"                 exact hnex_ {wit}",
+                    "             · intro hall_",
+                    f"               refine ⟨h.mpr (fun {intro_chain} "
+                    f"=> hall_ a1_ ⟨ha1_.1, by omega⟩ "
+                    f"{apply_rest}), ?_⟩",
+                    f"               rintro {wit}",
+                    f"               exact hall_ {iv} ⟨hi, by omega⟩ "
+                    f"{apply_rest} heq_))",
                 ):
                     emit(tl, loop.inv_line)
             else:
@@ -5120,6 +5373,53 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # list task rewrote the goal while a hypothesis kept the old
         # form — one atom split into two, and a loop proof that had
         # been passing broke. Nothing outside this branch sees them.
+        # The NESTED-SEARCH spec endgame: hfin carries the
+        # ¬-wrapped ∀-chain, the ensures wants the ∃-chain -- the
+        # classical duality, term-mode at the invariant's depth, with
+        # both bound spellings (simp curries them nondeterministically)
+        # as alternatives.
+        if loop is not None and loop.search_test is None \
+                and getattr(loop, "neg_wrap_depth", 0) >= 2:
+            D = loop.neg_wrap_depth
+            lam_c = " ".join(f"a{k}_ ha{k}_" for k in range(1, D + 1))
+            lam_u = " ".join(f"a{k}_ h{k}a_ h{k}b_"
+                             for k in range(1, D + 1))
+            wit_c = "heq_"
+            for k in range(D, 0, -1):
+                wit_c = f"⟨a{k}_, ha{k}_, {wit_c}⟩"
+            wit_u = "heq_"
+            for k in range(D, 0, -1):
+                wit_u = f"⟨a{k}_, ⟨h{k}a_, h{k}b_⟩, {wit_u}⟩"
+            pat = "hp_"
+            for k in range(D, 0, -1):
+                pat = f"⟨a{k}_, ha{k}_, {pat}⟩"
+            app_c = " ".join(f"a{k}_ ha{k}_" for k in range(1, D + 1))
+            app_u = " ".join(f"a{k}_ ha{k}_.1 ha{k}_.2"
+                             for k in range(1, D + 1))
+            for tl in (
+                "  all_goals (try (first",
+                "    | (constructor",
+                "       · intro hfx_",
+                "         refine Classical.byContradiction "
+                "(fun hne_ => ?_)",
+                f"         exact (hfin.mpr (fun {lam_c} heq_ => "
+                f"hne_ {wit_c})) hfx_",
+                f"       · rintro {pat}",
+                "         refine Classical.byContradiction "
+                "(fun hnf_ => ?_)",
+                f"         exact (hfin.mp hnf_) {app_c} hp_)",
+                "    | (constructor",
+                "       · intro hfx_",
+                "         refine Classical.byContradiction "
+                "(fun hne_ => ?_)",
+                f"         exact (hfin.mpr (fun {lam_u} heq_ => "
+                f"hne_ {wit_u})) hfx_",
+                f"       · rintro {pat}",
+                "         refine Classical.byContradiction "
+                "(fun hnf_ => ?_)",
+                f"         exact (hfin.mp hnf_) {app_u} hp_)))",
+            ):
+                emit(tl, first_ensures_line)
         # The PARITY-APPEND spec endgame (intersperse): the ensures
         # read through the trailing append, so each ∀-post gets the
         # seam script -- old indices through GetD_append_left into
