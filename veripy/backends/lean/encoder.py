@@ -1869,7 +1869,12 @@ def _optional_max_shape(fn: ast.FunctionDef, spec_fn: FunctionSpec,
            "second ensures (spelled with forall)", posts[1].line)
     has_dom = len(posts) == 3
     if has_dom:
-        i2 = j2 = None
+        # Defaults are legal identifiers, NOT None: a third ensures
+        # that is not the nested quantifier must fail the dump
+        # comparison and get the class's rejection — an f-string
+        # holding None would build unparseable expected source and
+        # ESCAPE as a SyntaxError (review-caught).
+        i2, j2 = "i", "j"
         if isinstance(pp[2], ast.Call) and pp[2].args and isinstance(pp[2].args[0], ast.GeneratorExp):
             g_out = pp[2].args[0]
             if isinstance(g_out.generators[0].target, ast.Name):

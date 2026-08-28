@@ -4304,6 +4304,15 @@ def test_optional_max_class_matches_strictly():
     sib2 = (no_assert + "\n\n#@ verified\n#@ ensures result >= 0\n"
             "def rolling_max_assert0(n: int) -> int:\n    return 0\n")
     assert "VeriPy.ListMax" in _encode(sib2).lean_source
+    # A malformed THIRD ensures gets the class rejection, never an
+    # escaping SyntaxError from the expected-source build
+    # (review-caught: None binders made unparseable f-strings).
+    bad3 = src.replace(
+        "def rolling_max(numbers: list[int]) -> list[int]:",
+        "#@ ensures len(result) >= 0\n"
+        "def rolling_max(numbers: list[int]) -> list[int]:")
+    with pytest.raises(EncodeError, match="OptionalMax"):
+        _encode(bad3)
     # A missing invariant: four are required, by name.
     with pytest.raises(EncodeError, match="four invariants"):
         _encode(src.replace(
