@@ -4131,6 +4131,7 @@ def test_str_code_point_model_maps_and_disciplines():
             _encode("#@ verified\n" + bad_ens + HEAD)
 
 
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_palindrome_proves_and_lies_fail(tmp_path):
     from veripy.agentio import verify_structured
     import shutil
@@ -4182,6 +4183,7 @@ def test_filtered_comprehension_maps_and_disciplines():
         _encode(HEAD + "    return [x for x in l if x > 0 if x < 9]\n")
 
 
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_get_positive_proves_and_lies_fail(tmp_path):
     from veripy.agentio import verify_structured
     import shutil
@@ -4231,6 +4233,7 @@ def test_sorted_unique_maps_and_disciplines():
                 "    return sorted(l)\n")
 
 
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
 def test_end_to_end_unique_proves_and_lies_fail(tmp_path):
     from veripy.agentio import verify_structured
     import shutil
