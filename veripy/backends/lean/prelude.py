@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.14"
+PRELUDE_VERSION = "lean-0.15"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -287,6 +287,26 @@ theorem GetD_mem_SortedUnique (l : List Int) (i : Int)
 theorem SqLeSq (a b : Int) (h0 : 0 ≤ a) (h : a ≤ b) : a * a ≤ b * b :=
   Int.mul_le_mul h h h0 (Int.le_trans h0 h)
 
+-- A square is nonnegative, and so is a sum of squares: what Z3 knows
+-- natively for the sum_squares-class `result >= 0` post. Core Lean has
+-- no `positivity`, so both are spelled once.
+theorem SqNonNeg (x : Int) : 0 ≤ x * x := by
+  rcases Classical.em (0 ≤ x) with h | h
+  · exact Int.mul_nonneg h h
+  · have h2 : 0 ≤ -x := by omega
+    have h3 := Int.mul_nonneg h2 h2
+    have h4 : (-x) * (-x) = x * x := Int.neg_mul_neg x x
+    omega
+
+theorem PySum_sq_nonneg (l : List Int) :
+    0 ≤ PySum (l.map (fun x => x * x)) := by
+  induction l with
+  | nil => simp [PySum]
+  | cons x xs ih =>
+    simp only [List.map_cons, PySum]
+    have hx := SqNonNeg x
+    omega
+
 theorem SqGeSelf (a : Int) : a ≤ a * a := by
   rcases Int.lt_or_le a 1 with h | h
   · have hn : 0 ≤ (-a) * (-a) := Int.mul_nonneg (by omega) (by omega)
@@ -407,6 +427,60 @@ theorem ListMax_take_succ (l : List Int) (n : Nat)
   rw [he] at hlen
   simp at hlen
   omega
+
+-- ListMax dominates every member of the list — the rolling_max
+-- domination post (`numbers[j] <= result[i]` for j ≤ i) reduces to
+-- membership of the prefix. Seed and member dominance are spelled for
+-- the head-seeded foldl, then getD-of-take membership connects them.
+theorem Foldl_max_ge_seed (a : Int) (xs : List Int) :
+    a ≤ xs.foldl max a := by
+  induction xs generalizing a with
+  | nil => exact Int.le_refl a
+  | cons z zs ih =>
+    have h1 : a ≤ max a z := Int.le_max_left a z
+    exact Int.le_trans h1 (ih (max a z))
+
+theorem Foldl_max_ge_mem (a x : Int) (xs : List Int) (h : x ∈ xs) :
+    x ≤ xs.foldl max a := by
+  induction xs generalizing a with
+  | nil => simp at h
+  | cons z zs ih =>
+    rcases List.mem_cons.mp h with h1 | h1
+    · subst h1
+      have h2 : x ≤ max a x := Int.le_max_right a x
+      exact Int.le_trans h2 (Foldl_max_ge_seed (max a x) zs)
+    · exact ih (max a z) h1
+
+theorem Mem_le_ListMax (t : List Int) (x : Int) (h : x ∈ t) :
+    x ≤ ListMax t := by
+  cases t with
+  | nil => simp at h
+  | cons a rest =>
+    rcases List.mem_cons.mp h with h1 | h1
+    · subst h1; exact Foldl_max_ge_seed x rest
+    · exact Foldl_max_ge_mem a x rest h1
+
+theorem GetD_mem_take (l : List Int) (m j : Nat)
+    (hjm : j < m) (hjl : j < l.length) :
+    l.getD j 0 ∈ l.take m := by
+  induction l generalizing m j with
+  | nil => simp at hjl
+  | cons a rest ih =>
+    cases m with
+    | zero => omega
+    | succ m2 =>
+      cases j with
+      | zero => simp [List.take_succ_cons]
+      | succ j2 =>
+        simp only [List.getD_cons_succ, List.take_succ_cons]
+        exact List.mem_cons_of_mem a
+          (ih m2 j2 (by omega) (by simpa using hjl))
+
+theorem GetD_le_ListMax_take (l : List Int) (j i : Int)
+    (h0 : 0 ≤ j) (h1 : j ≤ i) (h2 : i < (l.length : Int)) :
+    l.getD (j).toNat 0 ≤ ListMax (l.take ((i + 1)).toNat) :=
+  Mem_le_ListMax _ _ (GetD_mem_take l ((i + 1)).toNat (j).toNat
+    (by omega) (by omega))
 
 end VeriPy
 """.format(version=PRELUDE_VERSION)

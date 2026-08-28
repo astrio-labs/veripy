@@ -1663,6 +1663,7 @@ class _OptMaxShape:
     builder: str
     elem: str
     has_assert: bool
+    has_domination: bool
     for_line: int
     inv_line: int
     ens_line: int
@@ -1679,7 +1680,9 @@ _OPTMAX_INTERNALS = frozenset({
 
 
 def _optional_max_shape(fn: ast.FunctionDef, spec_fn: FunctionSpec,
-                        lists: frozenset[str]) -> _OptMaxShape | None:
+                        lists: frozenset[str],
+                        proof_lemmas: frozenset[str]) -> \
+        _OptMaxShape | None:
     """Match the OptionalMax class STRICTLY, or decline (None) when the
     skeleton is absent. The class is matched, not translated: every
     invariant and ensures is required to be byte-shape-identical (names
@@ -1839,11 +1842,13 @@ def _optional_max_shape(fn: ast.FunctionDef, spec_fn: FunctionSpec,
            f"for {kb} in range(len({builder})))",
            "fourth invariant (spelled with forall)", invs[3].line)
 
-    # Ensures: the two, in order, exactly.
+    # Ensures: two, or three with the domination ∀∀ (the corpus
+    # rolling_max), in order, exactly.
     posts = spec_fn.by_kind("ensures")
-    if len(posts) != 2:
+    if len(posts) not in (2, 3):
         raise _reject("the OptionalMax class states exactly two "
-                      "ensures (result length, and the prefix-max ∀)",
+                      "ensures (result length, and the prefix-max ∀), "
+                      "plus optionally the domination ∀∀",
                       spec_fn.lineno)
     post_texts = [c.desugared if c.desugared is not None else c.raw
                   for c in posts]
@@ -1862,10 +1867,46 @@ def _optional_max_shape(fn: ast.FunctionDef, spec_fn: FunctionSpec,
            f"all((result[{ib}] == max({lst}[:{ib} + 1])) "
            f"for {ib} in range(len({lst})))",
            "second ensures (spelled with forall)", posts[1].line)
+    has_dom = len(posts) == 3
+    if has_dom:
+        i2 = j2 = None
+        if isinstance(pp[2], ast.Call) and pp[2].args and isinstance(pp[2].args[0], ast.GeneratorExp):
+            g_out = pp[2].args[0]
+            if isinstance(g_out.generators[0].target, ast.Name):
+                i2 = g_out.generators[0].target.id
+            if isinstance(g_out.elt, ast.Call) and g_out.elt.args and isinstance(g_out.elt.args[0], ast.GeneratorExp) and isinstance(g_out.elt.args[0].generators[0].target, ast.Name):
+                j2 = g_out.elt.args[0].generators[0].target.id
+        expect(pp[2],
+               f"all((all(({lst}[{j2}] <= result[{i2}]) "
+               f"for {j2} in range({i2} + 1))) "
+               f"for {i2} in range(len({lst})))",
+               "third ensures (the domination ∀∀)", posts[2].line)
 
-    if spec_fn.by_kind("requires") or spec_fn.by_kind("proof")             or spec_fn.by_kind("decreases"):
-        raise _reject("the OptionalMax class carries no requires, "
-                      "proof, or decreases clauses", spec_fn.lineno)
+    if spec_fn.by_kind("requires") or spec_fn.by_kind("decreases"):
+        raise _reject("the OptionalMax class carries no requires or "
+                      "decreases clauses", spec_fn.lineno)
+    # `#@ proof` clauses RESOLVE against the sidecar (the standard
+    # unknown-lemma rule) but the template invokes none of them: the
+    # class proves its posts from the prelude packs, and the sidecar
+    # lemma — the Dafny pack's twin — rides along kernel-checked but
+    # unused (its screen verdict says so honestly).
+    for clause in spec_fn.by_kind("proof"):
+        text = clause.desugared if clause.desugared is not None else clause.raw
+        try:
+            call = ast.parse(text, mode="eval").body
+        except SyntaxError as exc:
+            raise _reject(f"cannot parse proof clause: {exc.msg}",
+                          clause.line)
+        if not (isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)):
+            raise _reject("a `#@ proof` clause names a lemma and its "
+                          "arguments, as `Lemma(a, b)`", clause.line)
+        if call.func.id not in proof_lemmas:
+            raise _reject(
+                f"unknown lemma {call.func.id!r} — a `#@ proof` "
+                f"target must be declared in the proof sidecar "
+                f"(<stem>.proofs.lean); this one declares "
+                f"{sorted(proof_lemmas) or 'nothing'}", clause.line)
     names_used = {node.id for node in ast.walk(fn)
                   if isinstance(node, ast.Name)} | {fn.name}
     if names_used & _OPTMAX_INTERNALS:
@@ -1875,6 +1916,7 @@ def _optional_max_shape(fn: ast.FunctionDef, spec_fn: FunctionSpec,
             "rename it", fn.lineno)
     return _OptMaxShape(lst=lst, index=index, opt=opt, builder=builder,
                         elem=elem, has_assert=has_assert,
+                        has_domination=has_dom,
                         for_line=s2.lineno, inv_line=invs[0].line,
                         ens_line=posts[0].line,
                         assert_line=assert_line)
@@ -2071,8 +2113,15 @@ def _emit_optional_max(om: _OptMaxShape, fn: ast.FunctionDef,
     emit(f"    ∧ (∀ i_ : Int, (0 ≤ i_ ∧ i_ < (({L}.length : Int))) →",
          EL)
     emit(f"        (({f} {L}).getD (i_).toNat 0", EL)
-    emit(f"          = VeriPy.ListMax ({L}.take ((i_ + 1)).toNat))) "
-         f":= by", EL)
+    tail2 = "" if om.has_domination else " := by"
+    emit(f"          = VeriPy.ListMax ({L}.take ((i_ + 1)).toNat)))"
+         f"{tail2}", EL)
+    if om.has_domination:
+        emit(f"    ∧ (∀ i_ : Int, (0 ≤ i_ ∧ i_ < (({L}.length : "
+             f"Int))) →", EL)
+        emit("        (∀ k_ : Int, (0 ≤ k_ ∧ k_ < (i_ + 1)) →", EL)
+        emit(f"          (({L}.getD (k_).toNat 0) ≤ "
+             f"(({f} {L}).getD (i_).toNat 0)))) := by", EL)
     emit(f"  unfold {f}", EL)
     emit(f"  have hinv := {fli} {L} ((({L}.length : Int))).toNat 0 "
          f"none []", EL)
@@ -2082,9 +2131,24 @@ def _emit_optional_max(om: _OptMaxShape, fn: ast.FunctionDef,
     emit("  obtain ⟨g1, g2, g3, g4⟩ := hinv", EL)
     emit("  constructor", EL)
     emit("  · omega", EL)
-    emit("  · intro i_ hd0_", EL)
-    emit("    have hn := g4 i_ (by omega)", EL)
-    emit("    simpa using hn", EL)
+    if not om.has_domination:
+        emit("  · intro i_ hd0_", EL)
+        emit("    have hn := g4 i_ (by omega)", EL)
+        emit("    simpa using hn", EL)
+    else:
+        emit("  constructor", EL)
+        emit("  · intro i_ hd0_", EL)
+        emit("    have hn := g4 i_ (by omega)", EL)
+        emit("    simpa using hn", EL)
+        # The domination ∀∀: the i-th result IS the prefix max (g4),
+        # and the prefix max dominates every member of the prefix.
+        emit("  · intro i_ hd0_", EL)
+        emit("    intro k_ hd1_", EL)
+        emit("    have hn := g4 i_ (by omega)", EL)
+        emit(f"    have hle := VeriPy.GetD_le_ListMax_take {L} "
+             f"k_ i_ (by omega) (by omega) (by omega)", EL)
+        emit("    rw [hn]", EL)
+        emit("    exact hle", EL)
 
 
 def _requires_min_len(spec_fn: FunctionSpec,
@@ -3910,7 +3974,8 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
 
         binders = " ".join(f"({_ident(p)} : {ptypes[p]})" for p in params)
         if is_list_ret and len(params) == 1:
-            om = _optional_max_shape(fn, spec_fn, lists0)
+            om = _optional_max_shape(fn, spec_fn, lists0,
+                                      frozenset(proof_lemmas))
             if om is not None:
                 _emit_optional_max(om, fn, spec_fn, emit, theorems)
                 continue
@@ -6517,6 +6582,10 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # is left for the finisher line (constructor's failure — or
         # omega's on a non-linear side — backtracks the whole try).
         emit("  all_goals (try (constructor <;> (intros; omega)))",
+             first_ensures_line)
+        # A sum of squares is nonnegative (the sum_squares-class
+        # `result >= 0` post) — Z3-native, one guarded exact here.
+        emit("  all_goals (try (exact VeriPy.PySum_sq_nonneg _))",
              first_ensures_line)
         if wloop is not None:
             # The SQUARE-MAXIMALITY move (the isqrt class, cataloged

@@ -25,4 +25,5 @@ def modp(n: int, p: int) -> int:
         #@ proof PowStepTwo(i)
         ret = (2 * ret) % p
         i = i + 1
+    assert i == n
     return ret
