@@ -638,6 +638,119 @@ def _slice_extension_shape(e: ast.expr, idx: str,
     return (_ident(a[0]), f"(fun {_ident(a[1])} => {body_t})")
 
 
+
+def _computed_read_wf(expr: ast.expr, lc: "_ListCtx",
+                      names: set[str]) -> ast.expr | None:
+    """The WELL-FORMEDNESS obligation for an ensures clause: for every
+    list read the scaffold would totalize (a computed index no
+    structural rule licenses), a quantified `0 <= idx < len(L)` under
+    the same binder prefix. One synthetic clause conjoining them all,
+    or None when every read is structurally licensed.
+
+    This is the Dafny parallel: where that backend emits an in-bounds
+    VC per read, this one appends the same claim as an extra post --
+    `xs[100] == 0` becomes unprovable instead of quietly true about
+    getD's default (review-caught)."""
+    obligations: list[ast.expr] = []
+
+    def structurally_ok(sub: ast.Subscript) -> bool:
+        idx = sub.slice
+        lname = sub.value.id
+        if isinstance(idx, ast.Name) and lc.safe_for(idx.id, lname):
+            return True
+        if isinstance(idx, ast.Constant) and isinstance(idx.value, int) \
+                and not isinstance(idx.value, bool) \
+                and lc.literal_ok(idx.value, lname):
+            return True
+        if isinstance(idx, ast.UnaryOp) \
+                and isinstance(idx.op, ast.USub) \
+                and isinstance(idx.operand, ast.Constant) \
+                and idx.operand.value == 1 \
+                and (lc.min_len or {}).get(lname, 0) >= 1:
+            return True
+        return False
+
+    def walk(e: ast.expr, prefix: list[ast.comprehension],
+             wlc: "_ListCtx") -> None:
+        if isinstance(e, ast.Call) and isinstance(e.func, ast.Name) \
+                and e.func.id in ("all", "any") and e.args \
+                and isinstance(e.args[0], ast.GeneratorExp):
+            gen = e.args[0]
+            inner_lc = wlc
+            for g in gen.generators:
+                if isinstance(g.target, ast.Name):
+                    inner_lc = _quantifier_body_lc(inner_lc, g)
+            walk(gen.elt, prefix + list(gen.generators), inner_lc)
+            return
+        if isinstance(e, ast.Subscript) \
+                and isinstance(e.value, ast.Name) \
+                and e.value.id in wlc.lists \
+                and not isinstance(e.slice, ast.Slice):
+            if not structurally_ok_in(e, wlc):
+                idx = e.slice
+                wf = ast.parse(
+                    f"0 <= 0 and 0 < len({e.value.id})",
+                    mode="eval").body
+                wf.values[0].comparators[0] = copy.deepcopy(idx)
+                wf.values[1].left = copy.deepcopy(idx)
+                body: ast.expr = wf
+                for g in reversed(prefix):
+                    body = ast.Call(
+                        func=ast.Name(id="all", ctx=ast.Load()),
+                        args=[ast.GeneratorExp(
+                            elt=body,
+                            generators=[copy.deepcopy(g)])],
+                        keywords=[])
+                obligations.append(body)
+        for child in ast.iter_child_nodes(e):
+            if isinstance(child, ast.expr):
+                walk(child, prefix, wlc)
+
+    def structurally_ok_in(sub: ast.Subscript,
+                           wlc: "_ListCtx") -> bool:
+        nonlocal lc
+        saved, lc = lc, wlc
+        try:
+            return structurally_ok(sub)
+        finally:
+            lc = saved
+
+    walk(expr, [], lc)
+    if not obligations:
+        return None
+    out = (obligations[0] if len(obligations) == 1
+           else ast.BoolOp(op=ast.And(), values=obligations))
+    ast.fix_missing_locations(ast.Expression(body=out))
+    return out
+
+
+def _quantifier_body_lc(lc: "_ListCtx",
+                        g: ast.comprehension) -> "_ListCtx":
+    """The safe/take context a single range-generator grants its body
+    -- the same rules the translator applies, restated for the WF
+    pre-pass."""
+    if not (isinstance(g.iter, ast.Call)
+            and isinstance(g.iter.func, ast.Name)
+            and g.iter.func.id == "range"
+            and isinstance(g.target, ast.Name)):
+        return lc
+    v = g.target.id
+    args = g.iter.args
+    hi = args[-1] if args else None
+    lo_zero_or_nonneg = (len(args) == 1
+                         or _nonneg_bound(args[0], lc))
+    safe = {k: lst for k, lst in lc.safe_idx.items() if k != v}
+    if lo_zero_or_nonneg and isinstance(hi, ast.Call) \
+            and isinstance(hi.func, ast.Name) and hi.func.id == "len" \
+            and len(hi.args) == 1 \
+            and isinstance(hi.args[0], ast.Name) \
+            and hi.args[0].id in lc.lists:
+        safe[v] = hi.args[0].id
+    return _ListCtx(lc.lists, safe, lc.take_idx, lc.scaffold,
+                    lc.min_len, lc.pos_names, lc.result_list,
+                    lc.result_is_list, lc.nonneg_names)
+
+
 def _quantifier(e: ast.Call, names: set[str], line: int,
                 result: str | None, rename: dict[str, str] | None,
                 result_is_bool: bool,
@@ -4731,6 +4844,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         # assumptions, and each later clause only assumes what is
         # already established.
         posts = []
+        wf_extra: list[tuple[ast.expr, int]] = []
         earlier_posts: list[str] = []
         # Ensures are SPEC positions -- proof statements, never
         # executed -- so they translate under scaffold like invariants
@@ -4741,6 +4855,9 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                            lc0.result_list, lc0.result_is_list,
                            lc0.nonneg_names)
         for expr, line in ensures:
+            wf = _computed_read_wf(expr, post_lc, names)
+            if wf is not None:
+                wf_extra.append((wf, line))
             posts.append((_prop_expr(expr, names, line, result=app,
                                      rename=rename,
                                      result_is_bool=is_bool,
@@ -4765,6 +4882,16 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                                    frozenset(post_lc.pos_names | e_pos),
                                    post_lc.result_list,
                                    post_lc.result_is_list)
+        # The WF obligations join the GOAL as one synthetic post: the
+        # spec theorem then certifies the contract AND every computed
+        # read's in-boundedness, exactly as the Dafny backend's VCs
+        # do. An out-of-range read makes the theorem unprovable
+        # rather than quietly true about getD's default.
+        for wfe, wfl in wf_extra:
+            posts.append((_prop_expr(wfe, names, wfl, result=app,
+                                     rename=rename,
+                                     result_is_bool=is_bool,
+                                     avoid=avoid, lc=post_lc), wfl))
         goal = " ∧ ".join(p for p, _ in posts)
         sig = " ".join(x for x in [thm_binders, *hyps] if x)
         first_ensures_line = posts[0][1]
@@ -5435,7 +5562,7 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             n_conj_s = (len(loop.inv.values)
                         if isinstance(loop.inv, ast.BoolOp)
                         and isinstance(loop.inv.op, ast.And) else 1)
-            n_posts = len(_parse_clause(spec_fn, "ensures"))
+            n_posts = len(posts)
             sj = ", ".join(f"hf{ci}_" for ci in range(n_conj_s))
             sph = ", ".join("?_" for _ in range(n_posts))
             app_s = (f"({_ident(f'{spec_fn.name}_loop')} {targsp}"
@@ -5464,6 +5591,9 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 f"    refine ⟨{sph}⟩ <;>",
                 "    first",
                 "      | (simp [List.length_append]; all_goals omega)",
+                "      | (intro k_ hk_",
+                "         all_goals (try simp_all)",
+                "         all_goals omega)",
                 "      | (intro k_ hk_",
                 "         simp only [List.length_append, "
                 "List.length_cons, List.length_nil] at hk_",
