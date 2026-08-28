@@ -3806,6 +3806,66 @@ def test_end_to_end_sum_squares_proves_and_lies_fail(tmp_path):
                                  backend="lean")["status"] == "failed", k
 
 
+def test_search_accumulator_shape_and_boundaries():
+    # The below_zero class: acc-step, then `if TEST: return True`,
+    # trailing `return False` -- an (Int × Bool) fold whose flag
+    # or-tracks the test over the POST-step accumulator. The user's
+    # invariants are carried CONDITIONALLY on the flag being false
+    # (Dafny owes an invariant only at loop heads the program
+    # reaches), and the flag's own invariant is the ensures' exists
+    # localized to the processed prefix.
+    src = ("#@ ensures result == (exists n in range(len(xs) + 1) :: "
+           "sum(xs[:n]) < 0)\n"
+           "def f(xs: list[int]) -> bool:\n    b = 0\n"
+           "    for i in range(len(xs)):\n"
+           "        #@ invariant b == sum(xs[:i])\n"
+           "        b += xs[i]\n"
+           "        if b < 0:\n            return True\n"
+           "    return False\n")
+    out = _encode(src).lean_source
+    assert "Nat → Int → Int → Bool → Int × Bool" in out
+    assert "(f_ || decide" in out
+    assert "((f_ = false) →" in out
+    assert "((f_ = true) ↔" in out
+
+    # `return False` on hit inverts the flag against the ensures'
+    # exists -- refused, not guessed at.
+    inv_hit = src.replace("return True", "return XX").replace(
+        "return False", "return True").replace("return XX",
+                                               "return False")
+    with pytest.raises(EncodeError, match="returns `True` on hit"):
+        _encode(inv_hit)
+
+    # The flag's meaning comes from ONE ensures of the licensed form;
+    # a range that is not bound + 1 is refused.
+    wide = src.replace("range(len(xs) + 1)", "range(len(xs) + 2)")
+    with pytest.raises(EncodeError, match="exists n in range"):
+        _encode(wide)
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_below_zero_proves_and_lies_fail(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/he_humaneval_3.py")
+    good = tmp_path / "bz.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0",
+                             backend="lean")["status"] == "ok"
+
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            (":: sum(operations[:n]) < 0)",
+             ":: sum(operations[:n]) >= 0)"),
+            ("if balance < 0:", "if balance > 0:"),
+            ("#@ invariant balance == sum(operations[:i])",
+             "#@ invariant balance == sum(operations[:i]) + 1"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        assert verify_structured(bad, tmp_path / f"ob{k}",
+                                 backend="lean")["status"] == "failed", k
+
 def test_new_paths_inherit_scope_binders_and_rename():
     # Three review-caught instances of one family -- a new path not
     # inheriting existing context. (1) The slice-extension detector
@@ -3879,3 +3939,40 @@ def test_new_paths_inherit_scope_binders_and_rename():
     out3 = _encode(ren3).lean_source
     assert "«x» + «f'»" in out3
     assert "«x» + «f»)" not in out3
+
+
+def test_search_matcher_and_substitution_are_defensive():
+    # Review-caught pair on the search-accumulator path. (1) The
+    # ensures matcher guarded nothing: `any()` without a generator
+    # crashed with IndexError/AttributeError -- a tool-error verdict
+    # on a merely-unsupported spec. Every malformed shape now falls to
+    # the boundary's own message.
+    HEAD = ("def f(xs: list[int]) -> bool:\n    b = 0\n"
+            "    for i in range(len(xs)):\n"
+            "        #@ invariant b == sum(xs[:i])\n"
+            "        b += xs[i]\n"
+            "        if b < 0:\n            return True\n"
+            "    return False\n")
+    for bad in ("#@ ensures result == any([True])\n" + HEAD,
+                "#@ ensures result == any()\n" + HEAD):
+        with pytest.raises(EncodeError,
+                           match="search-accumulator loop needs"):
+            _encode(bad)
+
+    # (2) _SubstExprs replaced BOUND names: a comprehension binder
+    # named like the accumulator came out as
+    # `for b + xs[i] in range(i)` -- the binder itself replaced by
+    # the step. Substitution is lexical now: shadowed occurrences
+    # untouched, and only the FIRST generator's iterable (Python's
+    # enclosing-scope position) sees the mapping.
+    import ast as _ast, copy as _copy
+    from veripy.backends.lean.encoder import _SubstExprs
+    step = _ast.parse("b + xs[i]", mode="eval").body
+    shadowed = _ast.parse("any(xs[b] < 0 for b in range(i))",
+                          mode="eval").body
+    out = _SubstExprs({"b": step}).visit(_copy.deepcopy(shadowed))
+    assert _ast.unparse(out) == "any((xs[b] < 0 for b in range(i)))"
+    encl = _ast.parse("any(q < 0 for q in range(b))",
+                      mode="eval").body
+    out2 = _SubstExprs({"b": step}).visit(_copy.deepcopy(encl))
+    assert _ast.unparse(out2) == "any((q < 0 for q in range(b + xs[i])))"
