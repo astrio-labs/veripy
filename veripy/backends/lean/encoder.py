@@ -3916,10 +3916,16 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
                 # module-wide reservation set like every other
                 # shape's (review-caught: a sibling def named
                 # f_loop/f_inv/... would collide silently).
-                for g in (f"{spec_fn.name}_loop",
-                          f"{spec_fn.name}_inv",
-                          f"{spec_fn.name}_loop_inv",
-                          f"{spec_fn.name}_assert0"):
+                gen_names = [f"{spec_fn.name}_loop",
+                             f"{spec_fn.name}_inv",
+                             f"{spec_fn.name}_loop_inv"]
+                if om.has_assert:
+                    # Reserved only when the theorem is actually
+                    # emitted (review-caught: an assert-less shape
+                    # beside a sibling named f_assert0 was rejected
+                    # for a collision that could not happen).
+                    gen_names.append(f"{spec_fn.name}_assert0")
+                for g in gen_names:
                     _check_name(g, "generated declaration for",
                                 fn.lineno, taken)
                     taken.add(g)

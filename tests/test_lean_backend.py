@@ -4295,6 +4295,15 @@ def test_optional_max_class_matches_strictly():
            "def rolling_max_loop(n: int) -> int:\n    return 0\n")
     with pytest.raises(EncodeError, match="collides with another"):
         _encode(sib)
+    # ...but only names the emitter actually creates: an ASSERT-LESS
+    # shape reserves no f_assert0, so that sibling coexists
+    # (review-caught over-reservation).
+    no_assert = src.replace(
+        "        assert numbers[:i + 1] == numbers[:i] + [numbers[i]]\n",
+        "")
+    sib2 = (no_assert + "\n\n#@ verified\n#@ ensures result >= 0\n"
+            "def rolling_max_assert0(n: int) -> int:\n    return 0\n")
+    assert "VeriPy.ListMax" in _encode(sib2).lean_source
     # A missing invariant: four are required, by name.
     with pytest.raises(EncodeError, match="four invariants"):
         _encode(src.replace(
