@@ -628,13 +628,15 @@ def cmd_difftest(paths: list[Path], outdir: Path, examples: int,
     return 2 if trouble else 0
 
 
-def cmd_screen(tasks: Path, time_limit: int = 60) -> int:
+def cmd_screen(tasks: Path, time_limit: int = 60,
+               backend: str = "dafny") -> int:
     """Report whether each task's proof pack is load-bearing — the gate a
-    candidate must clear before joining the exam roster."""
+    candidate must clear before joining the exam roster (of the NAMED
+    backend: each prover's roster is its own sidecars)."""
     from .benchmark.exam import exam_tasks, render_screen_report, screen_sidecar
 
-    results = [screen_sidecar(d, time_limit=time_limit)
-               for d in exam_tasks(tasks)]
+    results = [screen_sidecar(d, time_limit=time_limit, backend=backend)
+               for d in exam_tasks(tasks, backend)]
     print(render_screen_report(results))
     if not results:
         print(f"no sidecar-bearing tasks under {tasks}", file=sys.stderr)
@@ -642,28 +644,60 @@ def cmd_screen(tasks: Path, time_limit: int = 60) -> int:
     return 0 if all(r.adoptable for r in results) else 1
 
 
+def _backend_choices() -> list[str]:
+    from .backends.base import available_backends
+    return available_backends()
+
+
 def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
-                 mutant_cap: int, quick: bool) -> int:
-    from .benchmark.runner import ERROR, FAIL, render_report, run_benchmark, scores_to_json
+                 mutant_cap: int, quick: bool,
+                 backend: str = "dafny") -> int:
+    from .backends.base import available_backends
+    from .benchmark.runner import (ERROR, FAIL, render_cross_report,
+                                   render_report, run_benchmark,
+                                   scores_to_json)
 
     kwargs = dict(mutant_cap=mutant_cap, hunt_timeout=5,
                   dafny_time_limit=60, difftest_examples=60)
     if quick:
         kwargs.update(mutant_cap=min(mutant_cap, 4), difftest_examples=20)
-    scores = run_benchmark(tasks, outdir, **kwargs)
-    if not scores:
-        print(f"no tasks found under {tasks}", file=sys.stderr)
-        return 2
-    print(render_report(scores))
-    if report is not None:
-        report.parent.mkdir(parents=True, exist_ok=True)
-        report.write_text(json.dumps(scores_to_json(scores), indent=1))
-        print(f"\nreport -> {report}")
+    if backend == "all":
+        # TRIPLE ADJUDICATION: one ladder per registered backend, and
+        # the cross report reads the same source three ways — runtime
+        # rungs, then one prove column per prover.
+        by_backend = {
+            b: run_benchmark(tasks, outdir / b, backend=b, **kwargs)
+            for b in available_backends()}
+        scores = [sc for group in by_backend.values() for sc in group]
+        if not scores:
+            print(f"no tasks found under {tasks}", file=sys.stderr)
+            return 2
+        print(render_cross_report(by_backend))
+        if report is not None:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(json.dumps(
+                {b: scores_to_json(g) for b, g in by_backend.items()},
+                indent=1))
+            print(f"\nreport -> {report}")
+    else:
+        scores = run_benchmark(tasks, outdir, backend=backend, **kwargs)
+        if not scores:
+            print(f"no tasks found under {tasks}", file=sys.stderr)
+            return 2
+        print(render_report(scores))
+        if report is not None:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(json.dumps(scores_to_json(scores), indent=1))
+            print(f"\nreport -> {report}")
     # Exit status mirrors the scorecard so CI can gate on it: 2 for an
     # incomplete run (tool errors), 1 for a regression (failed rungs).
+    # Triple mode is a MEASUREMENT, not a gate: a task outside one
+    # prover's fragment is expected data there (the Dafny single-run
+    # stays the CI gate), so only tool errors fail it.
     if any(r.status == ERROR for s in scores for r in s.rungs):
         return 2
-    if any(r.status == FAIL for s in scores for r in s.rungs):
+    if backend != "all" \
+            and any(r.status == FAIL for s in scores for r in s.rungs):
         return 1
     return 0
 
@@ -837,6 +871,13 @@ def main(argv: list[str] | None = None) -> int:
     p_benchmark.add_argument("-o", "--outdir", type=Path, default=Path("build/benchmark"))
     p_benchmark.add_argument("--report", type=Path, default=None)
     p_benchmark.add_argument("--mutant-cap", type=int, default=12)
+    p_benchmark.add_argument(
+        "--backend", dest="proof_backend", default="dafny",
+        choices=_backend_choices() + ["all"],
+        help="prover backend for the ladder's encode/prove rungs and "
+             "the exams (R0-R2 and fidelity are prover-independent). "
+             "The proof-repair roster follows the backend: only tasks "
+             "with THAT prover's sidecar sit its exam")
     p_benchmark.add_argument(
         "--exam", choices=["proof-repair", "spec-writing"], default=None,
         help="run an exam instead of the ladder: 'proof-repair' strips the "
@@ -1048,7 +1089,12 @@ def main(argv: list[str] | None = None) -> int:
                             min_functions=args.min_functions)
     if args.command == "benchmark":
         if args.screen:
-            return cmd_screen(args.tasks, time_limit=args.time_limit)
+            if args.proof_backend == "all":
+                print("--screen screens ONE backend's sidecars; name it",
+                      file=sys.stderr)
+                return 2
+            return cmd_screen(args.tasks, time_limit=args.time_limit,
+                              backend=args.proof_backend)
         if args.exam == "proof-repair":
             from .benchmark.exam import render_exam_report, run_repair_exam
             from .repair import make_engine
@@ -1062,7 +1108,8 @@ def main(argv: list[str] | None = None) -> int:
                 scores = run_repair_exam(args.tasks, args.outdir / "exam",
                                          lambda: make_engine(args.engine, _wall(args), effort=_effort(args)),
                                          max_iterations=args.max_iterations,
-                                         time_limit=args.time_limit)
+                                         time_limit=args.time_limit,
+                                         backend=args.proof_backend)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
@@ -1083,7 +1130,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             ladder = dict(mutant_cap=args.mutant_cap, hunt_timeout=5,
                           dafny_time_limit=args.time_limit,
-                          difftest_examples=60)
+                          difftest_examples=60,
+                          backend=args.proof_backend)
             if args.quick:
                 ladder.update(mutant_cap=min(args.mutant_cap, 3),
                               difftest_examples=20)
@@ -1103,7 +1151,9 @@ def main(argv: list[str] | None = None) -> int:
             # Exit status reports EXAM VALIDITY, never spec quality: a weak
             # spec is a measurement, not a failure.
             return 0 if scores and all(s.valid for s in scores) else 1
-        return cmd_benchmark(args.tasks, args.outdir, args.report, args.mutant_cap, args.quick)
+        return cmd_benchmark(args.tasks, args.outdir, args.report,
+                             args.mutant_cap, args.quick,
+                             backend=args.proof_backend)
     if args.command == "experiment":
         from .benchmark.experiment import (
             exam_roster,

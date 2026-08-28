@@ -31,8 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..agentio import atomic_write_text
-from ..backends.dafny.driver import find_dafny, verify_dafny_file
-from ..backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
+from ..backends.base import get_backend
+from ..backends.dafny.encoder import EncodeError
 from ..backends.runtime.emit import emit_checked
 from ..frontend.extract import parse_source
 from ..frontend.typegate import run_type_gate
@@ -156,6 +156,7 @@ def run_task(
     hunt_timeout: int = 5,
     dafny_time_limit: int = 60,
     difftest_examples: int = 60,
+    backend: str = "dafny",
 ) -> TaskScore:
     task_id = task_dir.name
     score = TaskScore(task_id=task_id)
@@ -338,25 +339,30 @@ def run_task(
             f"{score.mutants_killed}/{score.mutants_total} refuted"
             + ("; " + "; ".join(extra) if extra else "")))
 
-    # R3: encode
+    # R3: encode — through the backend registry, so `--backend lean`
+    # climbs the SAME ladder with the same rungs (R0-R2 and R5 are
+    # prover-independent; only encode and prove dispatch).
+    be = get_backend(backend)
     try:
-        sidecar = load_proof_sidecar(source_path)
-        encoded = encode_module(source, specs, module_name=source_path.name,
-                                proof_lemmas=sidecar.lemmas)
+        sidecar = be.load_sidecar(source_path)
+        encoded = be.encode(source, specs, module_name=source_path.name,
+                            proof_lemmas=sidecar.lemmas)
     except EncodeError as exc:
         score.rungs.append(Rung("encode", FAIL, f"line {exc.line}: {exc.message}"))
         return score
     score.rungs.append(Rung("encode", PASS))
 
-    # R4: prove
-    if find_dafny() is None:
-        score.rungs.append(Rung("prove", ERROR, "dafny not installed"))
+    # R4: prove. `dafny_time_limit` keeps its name (a published kwarg)
+    # but bounds WHICHEVER prover the backend runs.
+    if be.prover_version() is None:
+        score.rungs.append(Rung("prove", ERROR,
+                                f"{backend} prover not installed"))
         return score
-    stub = workdir / f"{task_id}.dfy"
-    stub.write_text(encoded.dafny_source + sidecar.text)
-    result = verify_dafny_file(stub, encoded.line_map,
-                               time_limit=dafny_time_limit,
-                               stub_extent=encoded.dafny_source.count("\n") + 1)
+    stub = workdir / be.artifact_name(task_id)
+    stub.write_text(be.compose_artifact(encoded, sidecar))
+    result = be.verify_artifact(
+        stub, encoded.line_map, time_limit=dafny_time_limit,
+        extent=be.encoded_text(encoded).count("\n") + 1)
     if result.error is not None:
         score.rungs.append(Rung("prove", ERROR, result.error))
         return score
@@ -397,6 +403,92 @@ def run_benchmark(tasks_root: Path, workdir: Path, **kwargs) -> list[TaskScore]:
             )
             scores.append(score)
     return scores
+
+
+def render_cross_report(scores_by_backend: dict[str, list["TaskScore"]]) -> str:
+    """TRIPLE ADJUDICATION: the same source, three readings side by
+    side — the runtime rungs (hunt against its own specs, fidelity
+    against CPython), and one prove column per backend. The runtime
+    columns come from the FIRST backend's run (R0-R2 and R5 are
+    prover-independent, so whichever run supplied them is a
+    representative; a disagreement between runs' runtime rungs would
+    mean nondeterminism worth its own investigation, not a rendering
+    choice).
+
+    A prove column reads `proved`, `failed`, `outside` (the encode
+    rung refused: a NAMED fragment gap, not a proof failure),
+    `blocked` (an earlier rung stopped the ladder), or `error`."""
+    backends = list(scores_by_backend)
+    first = scores_by_backend[backends[0]]
+    by_task: dict[str, dict[str, "TaskScore"]] = {}
+    for b in backends:
+        for sc in scores_by_backend[b]:
+            by_task.setdefault(sc.task_id, {})[b] = sc
+
+    def rung(sc: "TaskScore | None", name: str) -> str:
+        if sc is None:
+            return "-"
+        for r in sc.rungs:
+            if r.name == name:
+                return r.status
+        return "-"
+
+    def prove_cell(sc: "TaskScore | None") -> str:
+        if sc is None:
+            return "-"
+        statuses = {r.name: r.status for r in sc.rungs}
+        if statuses.get("prove") == PASS:
+            return "proved"
+        if statuses.get("prove") == FAIL:
+            return "failed"
+        if statuses.get("prove") == ERROR:
+            return "error"
+        if statuses.get("encode") == FAIL:
+            return "outside"
+        return "blocked"
+
+    header = ["task", "hunt", "mutants"] + [f"{b}" for b in backends] \
+        + ["fidelity"]
+    rows = [header]
+    agree = outside = disagree = errored = 0
+    for task_id in sorted(by_task):
+        cells = by_task[task_id]
+        rep = cells.get(backends[0]) or next(iter(cells.values()))
+        proves = [prove_cell(cells.get(b)) for b in backends]
+        rows.append([task_id, rung(rep, "hunt"), rung(rep, "mutants"),
+                     *proves, rung(rep, "fidelity")])
+        concl = [p for p in proves if p in ("proved", "failed")]
+        if len(set(proves)) == 1 and proves[0] == "proved":
+            agree += 1
+        elif "error" in proves or "-" in proves:
+            # An errored or absent cell observed NOTHING: the task
+            # must not vanish from the totals as if adjudicated
+            # (review-caught) — it gets its own count and a rerun is
+            # the only cure.
+            errored += 1
+        elif "outside" in proves or "blocked" in proves:
+            outside += 1
+        elif len(set(concl)) > 1:
+            disagree += 1
+    widths = [max(len(r[i]) for r in rows) for i in range(len(header))]
+    lines = ["  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip()
+             for r in rows]
+    lines.append("")
+    lines.append(
+        f"{agree} task(s) proved under EVERY backend; "
+        f"{outside} with a named fragment gap or blocked ladder; "
+        f"{disagree} conclusive split(s); "
+        f"{errored} unadjudicated (prover error or missing run — "
+        f"rerun before quoting)")
+    if disagree:
+        lines.append(
+            "a conclusive split (proved under one prover, failed under "
+            "another, neither outside its fragment) is a COMPLETENESS "
+            "gap in the failing prover's fixed automation — catalog "
+            "which VC fails before quoting either number. (A soundness "
+            "alarm would need contradictory PROOFS; a proof beside a "
+            "failure is not that.)")
+    return "\n".join(lines)
 
 
 # Below this, a per-task refutation RATE carries too little information to

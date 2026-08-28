@@ -220,6 +220,8 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 | prelude | `lean-0.13` (`SortedUnique` pack: insertion sort that drops duplicates, strict adjacency + both membership directions — the sorted-unique class; `Count_filter_of_pos`, `IntBexDec` before it) |
 | slices landed | P2 1–20, P3 (sidecar channel) |
 | `.proofs.lean` packs in existence | **4** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr`; `he_31`: `ModPredOne` (with a Dafny twin, the first task packed under BOTH provers) — all kernel-checked, clean axiom footprints) |
+| triple adjudication (benchmark corpus, 16 tasks) | **8 proved under BOTH provers**, 7 named Lean fragment gaps (`#@ proof` clauses whose packs are Dafny sidecars, plus the `rolling_max` Optional body), **1 conclusive split**: `isqrt` — Dafny/Z3 closes the squaring-monotonicity maximality post natively, the fixed Lean ladder has no move for it (the square-maximality endgame is the named follow-up). Re-run: `veripy benchmark --backend all` |
+| exams under `--backend lean` | roster follows the backend's sidecars; all 4 Lean packs screen **load-bearing**; the he_31 exam restores end to end with the scripted golden |
 
 `he_60` is the first while-loop task with a nonlinear postcondition
 proved end to end, and it took the full chain: the pack, the

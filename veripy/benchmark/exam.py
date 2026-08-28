@@ -41,11 +41,15 @@ class ExamScore:
     usage: list[dict[str, Any] | None] = field(default_factory=list)
 
 
-def exam_tasks(tasks_root: Path) -> list[Path]:
-    """Golden tasks that carry proof additions to strip."""
-    return sorted(
-        p.parent for p in tasks_root.glob("*/task.proofs.dfy")
-    )
+def exam_tasks(tasks_root: Path,
+               backend: str = "dafny") -> list[Path]:
+    """Golden tasks that carry proof additions to strip — for the
+    NAMED backend: a task sits an exam only under a prover whose
+    sidecar it actually has, so the Lean exam roster is the tasks
+    with a `.proofs.lean` pack, not Dafny's roster re-run."""
+    from ..backends.base import get_backend
+    suffix = get_backend(backend).sidecar_path(Path("task.py")).name
+    return sorted(p.parent for p in tasks_root.glob(f"*/{suffix}"))
 
 
 # In PROVER_KINDS, but NOT evidence that an obligation went undischarged.
@@ -102,8 +106,10 @@ def strip_proof_clauses(source: str) -> str:
     return "".join(kept)
 
 
-def screen_sidecar(task_dir: Path, time_limit: int = 60) -> ScreenResult:
-    """Is this task's `.proofs.dfy` doing any work?
+def screen_sidecar(task_dir: Path, time_limit: int = 60,
+                   backend: str = "dafny") -> ScreenResult:
+    """Is this task's proof sidecar doing any work — under the NAMED
+    backend, screening ITS sidecar?
 
     A task Z3 proves from its invariants alone makes an exam row that
     measures nothing, so every roster task must fail WITHOUT its pack. The
@@ -122,21 +128,25 @@ def screen_sidecar(task_dir: Path, time_limit: int = 60) -> ScreenResult:
     it is what the old screen was silently reporting as a pass.
     """
     from ..agentio import verify_structured
+    from ..backends.base import get_backend
     from ..failures import PROVER_KINDS
 
+    be = get_backend(backend)
     task_id = task_dir.name
     source = (task_dir / "task.py").read_text()
-    sidecar = task_dir / "task.proofs.dfy"
+    sidecar = be.sidecar_path(task_dir / "task.py")
+    sidecar_name = sidecar.name
     if not sidecar.is_file():
-        return ScreenResult(task_id, "broken", "no task.proofs.dfy to screen")
+        return ScreenResult(task_id, "broken",
+                            f"no {sidecar_name} to screen")
 
     with tempfile.TemporaryDirectory() as tmp:
         golden_dir = Path(tmp) / "golden"
         golden_dir.mkdir()
         (golden_dir / "task.py").write_text(source)
-        (golden_dir / "task.proofs.dfy").write_text(sidecar.read_text())
+        (golden_dir / sidecar_name).write_text(sidecar.read_text())
         golden = verify_structured(golden_dir / "task.py", golden_dir / "out",
-                                   time_limit=time_limit)
+                                   time_limit=time_limit, backend=backend)
         if golden["status"] != "ok":
             return ScreenResult(
                 task_id, "broken",
@@ -147,7 +157,7 @@ def screen_sidecar(task_dir: Path, time_limit: int = 60) -> ScreenResult:
         bare_dir.mkdir()
         (bare_dir / "task.py").write_text(strip_proof_clauses(source))
         bare = verify_structured(bare_dir / "task.py", bare_dir / "out",
-                                 time_limit=time_limit)
+                                 time_limit=time_limit, backend=backend)
 
     status = bare["status"]
     if status == "ok":
@@ -227,12 +237,14 @@ def prepare_exam_workspace(tasks_root: Path, workdir: Path,
 def run_repair_exam(tasks_root: Path, workdir: Path,
                     engine_factory: Callable[[], Engine],
                     max_iterations: int = 4, time_limit: int = 60,
-                    only: set[str] | None = None) -> list[ExamScore]:
-    from ..backends.dafny.encoder import load_proof_sidecar
+                    only: set[str] | None = None,
+                    backend: str = "dafny") -> list[ExamScore]:
+    from ..backends.base import get_backend
+    be = get_backend(backend)
 
     check_workdir_disjoint(tasks_root, workdir)
     scores: list[ExamScore] = []
-    for task_dir in exam_tasks(tasks_root):
+    for task_dir in exam_tasks(tasks_root, backend):
         task_id = task_dir.name
         if only is not None and task_id not in only:
             continue
@@ -243,12 +255,12 @@ def run_repair_exam(tasks_root: Path, workdir: Path,
         # engine so a stateful engine (file:<dir>) replays its own attempt
         # sequence per task instead of continuing a previous task's counter
         # (and so per-call usage attributes cleanly to one task).
-        golden = load_proof_sidecar(task_dir / "task.py")
+        golden = be.load_sidecar(task_dir / "task.py")
         engine = engine_factory()
         t0 = time.monotonic()
         outcome = repair_file(stripped, exam_dir / "repair", engine,
                               max_iterations=max_iterations,
-                              time_limit=time_limit)
+                              time_limit=time_limit, backend=backend)
         scores.append(ExamScore(
             task_id=task_id,
             restored=outcome.verified,
