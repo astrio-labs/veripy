@@ -4096,3 +4096,41 @@ def test_computed_reads_carry_wellformedness_obligations(tmp_path):
     shutil.copy(Path("examples/contact/he_humaneval_5.py"), good)
     assert verify_structured(good, tmp_path / "o2",
                              backend="lean")["status"] == "ok"
+
+
+def test_flattener_declines_shadowed_enumerate_and_inner_else():
+    # Review-caught pair on the nested-search path. (1) A parameter
+    # or local named `enumerate` shadows the builtin -- Python calls
+    # the binding, so normalizing to range(len(l)) would certify
+    # builtin iteration for code that raises TypeError at runtime.
+    shadowed = (
+        "#@ verified\n"
+        "#@ ensures result == (exists i in range(len(l)) :: l[i] == 0)\n"
+        "def f(l: list[int], enumerate: int) -> bool:\n"
+        "    for i, x in enumerate(l):\n"
+        "        #@ invariant True\n"
+        "        if x == 0:\n"
+        "            return True\n"
+        "    return False\n")
+    with pytest.raises(EncodeError):
+        _encode(shadowed)
+    # (2) An inner `for ... else` runs its else suite on a HITLESS
+    # search; flattening to `if any(...)` dropped it, certifying the
+    # opposite Boolean on the no-hit path. Both flatten paths now
+    # decline, and the still-nested shape is refused.
+    inner_else = (
+        "#@ verified\n"
+        "#@ ensures result == (exists i in range(len(l)) :: "
+        "exists j in range(len(l)) :: l[i] + l[j] == 0)\n"
+        "def g(l: list[int]) -> bool:\n"
+        "    for i in range(len(l)):\n"
+        "        #@ invariant True\n"
+        "        for j in range(len(l)):\n"
+        "            #@ invariant True\n"
+        "            if l[i] + l[j] == 0:\n"
+        "                return True\n"
+        "        else:\n"
+        "            pass\n"
+        "    return False\n")
+    with pytest.raises(EncodeError):
+        _encode(inner_else)

@@ -1946,12 +1946,27 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
     # `for i, x in enumerate(l)` normalizes to `for i in
     # range(len(l))` with x's free occurrences substituted by l[i]
     # (the substitution is LEXICAL, so binders shadowing x survive).
+    # Only the BUILTINS get this reading: the rewrite claims
+    # `enumerate`'s semantics and fabricates `range`/`len` calls, so a
+    # parameter or local shadowing any of the three declines it here
+    # and falls to the ordinary shadow rejection (review-caught:
+    # Python would call the shadowing value, and the normalized model
+    # would certify builtin iteration for code that raises at
+    # runtime).
+    _shadowers = {fn.name} | {a.arg for a in fn.args.args}
+    for _n in ast.walk(fn):
+        if isinstance(_n, ast.Name) and isinstance(_n.ctx, ast.Store):
+            _shadowers.add(_n.id)
+        elif isinstance(_n, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and _n is not fn:
+            _shadowers.add(_n.name)
     if isinstance(loop.target, ast.Tuple) \
             and len(loop.target.elts) == 2 \
             and all(isinstance(t, ast.Name) for t in loop.target.elts) \
             and isinstance(loop.iter, ast.Call) \
             and isinstance(loop.iter.func, ast.Name) \
             and loop.iter.func.id == "enumerate" \
+            and _shadowers.isdisjoint({"enumerate", "range", "len"}) \
             and len(loop.iter.args) == 1 and not loop.iter.keywords \
             and isinstance(loop.iter.args[0], ast.Name):
         ivar, xvar = (t.id for t in loop.target.elts)
@@ -1982,6 +1997,7 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
         if _flatten_innermost(child):
             return True
         if not (isinstance(child.target, ast.Name)
+                and not child.orelse
                 and isinstance(child.iter, ast.Call)
                 and isinstance(child.iter.func, ast.Name)
                 and child.iter.func.id == "range"
@@ -2015,6 +2031,12 @@ def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
             pass
     while (len(loop.body) == 1 and isinstance(loop.body[0], ast.For)
            and isinstance(loop.body[0].target, ast.Name)
+           # A `for ... else` on the INNER loop would be dropped by
+           # this rewrite (review-caught): Python runs the else on a
+           # hitless search, so the flattened model would certify the
+           # opposite result. Decline, and the still-nested shape
+           # fails the search match and is refused.
+           and not loop.body[0].orelse
            and isinstance(loop.body[0].iter, ast.Call)
            and isinstance(loop.body[0].iter.func, ast.Name)
            and loop.body[0].iter.func.id == "range"
