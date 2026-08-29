@@ -216,7 +216,7 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 
 | | |
 |---|---|
-| contact corpus under Lean | **17/22** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`, `he_43`, `he_40`, `he_48`, `he_30`, `he_34`, `he_9`, `mbpp_97`) — `he_43` and now `mbpp_97` EXCEED Dafny (`enumerate`; `dict`, which the Dafny catalog still has unchecked) |
+| contact corpus under Lean | **18/22 — every non-cut task** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`, `he_43`, `he_40`, `he_48`, `he_30`, `he_34`, `he_9`, `mbpp_97`, `mbpp_885`). Only the four DP tasks (cut by decision) remain. `he_43`, `mbpp_97`, and `mbpp_885` EXCEED Dafny (`enumerate`; `dict`, which the Dafny catalog still has unchecked) |
 | prelude | `lean-0.14` (`ListMax` pack + `SqLeSq`: prefix-max extension for the OptionalMax class and squaring monotonicity for the square-maximality endgame; `SortedUnique`, `Count_filter_of_pos`, `IntBexDec` before them) |
 | slices landed | P2 1–20, P3 (sidecar channel) |
 | `.proofs.lean` packs in existence | **4** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr`; `he_31`: `ModPredOne` (with a Dafny twin, the first task packed under BOTH provers) — all kernel-checked, clean axiom footprints) |
@@ -240,7 +240,7 @@ work list and not a countdown):
 | blocker | tasks |
 |---|---|
 | DP / indexed assignment — **cut by decision** | `mbpp_402`, `mbpp_620`, `mbpp_247` (2-D table), `mbpp_149` (dp array) |
-| `dict` | `mbpp_885` only now — `mbpp_97` proved via the frequency-dict class (prelude lean-0.16: an assoc-list model whose order is carried but never observed, `FreqFold_inv` as the master invariant absorbing the source's three). What blocks `mbpp_885` is not `dict` mechanics but its CORRECTNESS THEOREM: sorted position-class lists equal ⇔ the ∀∀ equality-pattern post, BOTH directions — a canonicalization argument (lex order on lists, permutation, partition-as-function reasoning) several times the size of any pack so far |
+| `dict` | **RESOLVED, both tasks.** `mbpp_97` by the frequency-dict class (lean-0.16). `mbpp_885` by the isomorphism class (lean-0.17): the "canonicalization argument several times any pack" collapsed to ordinary size on two design facts — first-occurrence order is a property of the position PARTITION alone, so pattern-equality gives literally equal value lists (`IsoVals`), and the sort needs no properties beyond being a permutation (`SortL_perm`); the spec theorem itself proves the multiset test equivalent to the ∀∀ pattern, which is also what makes the opaque sort model faithful |
 
 `he_9` (slice 30) is the OptionalMax class: the `int | None`
 accumulator beside its list builder is MATCHED strictly rather than

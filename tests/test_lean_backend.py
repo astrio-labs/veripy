@@ -4454,3 +4454,57 @@ def test_end_to_end_frequency_lists_proves(tmp_path):
         st = verify_structured(bad, tmp_path / f"ob{k}",
                                backend="lean")["status"]
         assert st == "encode-error", (k, st)
+
+
+def test_isomorphism_class_matches_strictly():
+    # The isomorphism class (mbpp_885): two position-class dicts over
+    # code-point strings, compared by sorted values. The deepest pin
+    # so far — the spec theorem proves the algorithm's multiset test
+    # EQUIVALENT to the ∀∀ equality pattern, both directions, riding
+    # two design facts: first-occurrence order is a property of the
+    # position partition alone (so the ⇐ direction gets literally
+    # equal value lists), and the sort needs no properties beyond
+    # being a permutation.
+    src = Path("examples/contact/mbpp_885.py").read_text()
+    out = _encode(src).lean_source
+    assert "VeriPy.PosFold" in out
+    assert "VeriPy.SortL" in out
+    assert "VeriPy.IsoVals" in out
+    with pytest.raises(EncodeError, match="isomorphism"):
+        _encode(src.replace(
+            "dict_str1.get(value, []) + [i]",
+            "dict_str1.get(value, []) + [i, i]"))
+    with pytest.raises(EncodeError, match="isomorphism"):
+        _encode(src.replace(
+            "(str1[i] == str1[j]) == (str2[i] == str2[j])",
+            "(str1[i] == str1[j])"))
+    with pytest.raises(EncodeError, match="four invariants"):
+        _encode(src.replace(
+            "        #@ invariant forall k in range(j) :: "
+            "str2[k] in dict_str2 and k in dict_str2[str2[k]]\n", ""))
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_is_isomorphic_proves(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/mbpp_885.py")
+    good = tmp_path / "iso.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0", backend="lean",
+                             time_limit=90)["status"] == "ok"
+
+    # In-template lies are impossible by construction; mutations must
+    # never reach `ok`.
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            ("sorted(dict_str1.values()) == sorted(dict_str2.values())",
+             "sorted(dict_str1.values()) != sorted(dict_str2.values())"),
+            ("for i, value in enumerate(str1):",
+             "for i, value in enumerate(str2):"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        st = verify_structured(bad, tmp_path / f"ob{k}",
+                               backend="lean")["status"]
+        assert st == "encode-error", (k, st)
