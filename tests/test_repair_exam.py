@@ -474,7 +474,7 @@ def test_lean_pack_screens_load_bearing(tmp_path):
 
 
 LEAN_PACKED = ["below_zero", "gcd", "is_prime", "modp",
-               "rolling_max", "sum_squares"]
+               "rolling_max", "sum_squares", "sum_to_n"]
 
 
 @pytest.mark.skipif(find_lean() is None, reason="lean not installed")
@@ -557,3 +557,20 @@ def test_lean_is_prime_exam_restores_with_scripted_golden(tmp_path):
     s0 = scores[0]
     assert s0.restored, s0.reason
     assert s0.iterations == 1
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_sum_to_n_lean_pack_screens_load_bearing(tmp_path):
+    # The synthesized exit equality (the assert-free route) lets
+    # sum_to_n prove under Lean with ZERO source changes — so its
+    # GaussStep twin is load-bearing under Lean exactly as the Dafny
+    # pack is under Z3: the first benchmark task whose packs measure
+    # proof work under BOTH provers.
+    import shutil
+    src = REPO / "benchmark" / "tasks" / "sum_to_n"
+    task = tmp_path / "t"
+    task.mkdir()
+    shutil.copy(src / "task.py", task / "task.py")
+    shutil.copy(src / "task.proofs.lean", task / "task.proofs.lean")
+    r = screen_sidecar(task, backend="lean")
+    assert r.verdict == "load-bearing", (r.verdict, r.detail)
