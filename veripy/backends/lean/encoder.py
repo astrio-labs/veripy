@@ -2485,6 +2485,320 @@ def _emit_sqrt_search(ss: _SqrtSearchShape, fn: ast.FunctionDef,
     emit("          exact absurd hjmod (hall j hj2 hjn)", EL)
 
 
+
+@dataclass(frozen=True)
+class _FreqDictShape:
+    """The frequency-dict class (mbpp_97): a dict[int, int] counter
+    built over a flattened list[list[int]]."""
+    lst: str          # the list-of-lists parameter
+    flat: str         # the flattened local
+    dic: str          # the dict local
+    elem: str         # the for-target element name
+    fn_line: int
+    inv_line: int
+    ens_line: int
+
+
+_FREQDICT_INTERNALS = frozenset({
+    "q", "hq", "hk", "hs", "hx", "hinv", "hsat", "g1", "g2", "g3",
+    "k", "s", "x",
+})
+
+
+def _freq_dict_shape(fn: ast.FunctionDef,
+                     spec_fn: FunctionSpec) -> _FreqDictShape | None:
+    """Match the frequency-dict class STRICTLY, or decline. Matched,
+    not translated, like the OptionalMax and sqrt-search classes: the
+    emitted assoc-list model, master-invariant induction, and spec
+    proof are a template proved end to end before this matcher
+    existed (the prelude's Dict*/FreqFold pack), and the strictness
+    is what lets the template stand in for translation.
+
+    The dict is modeled as an association list over (Int × Int) whose
+    ORDER is carried but never observed — every admitted spec is
+    order-blind, per the iteration-order veto. The class mapping the
+    strict match pins down: `result[key]` is DictGet, `key in result`
+    is DictHas, `sum(result[k] for k in result)` is DictSum, and the
+    conditional-count genexp over the nested list is List.count of
+    the flatten. The source's three invariants are ABSORBED (the
+    master invariant is strictly stronger), the way the nested-search
+    flattener absorbs inner-loop invariants; they stay live for the
+    Dafny backend."""
+    body = fn.body
+    if len(body) != 4:
+        return None
+    s0, s1, s2, s3 = body
+    if not (isinstance(s0, ast.AnnAssign)
+            and isinstance(s0.target, ast.Name)
+            and isinstance(s0.value, ast.ListComp)
+            and len(s0.value.generators) == 2
+            and isinstance(s1, ast.AnnAssign)
+            and isinstance(s1.target, ast.Name)
+            and isinstance(s1.value, ast.Dict) and not s1.value.keys
+            and isinstance(s2, ast.For) and not s2.orelse
+            and isinstance(s2.target, ast.Name)
+            and isinstance(s3, ast.Return)
+            and isinstance(s3.value, ast.Name)
+            and s3.value.id == s1.target.id):
+        return None
+    if len(fn.args.args) != 1:
+        return None
+    lst = fn.args.args[0].arg
+    flat, dic, elem = s0.target.id, s1.target.id, s2.target.id
+
+    def expect(actual: ast.expr, source: str, what: str,
+               line: int) -> None:
+        try:
+            want = ast.parse(source, mode="eval").body
+        except SyntaxError:
+            raise _reject(
+                f"the frequency-dict class could not reconstruct the "
+                f"expected {what} — a binder it relies on is missing",
+                line)
+        if ast.dump(actual) != ast.dump(want):
+            raise _reject(
+                f"the frequency-dict class (a dict[int, int] counter "
+                f"over a flattened list[list[int]]) admits exactly "
+                f"the mbpp_97 pattern; its {what} must be `{source}`",
+                line)
+
+    ann = fn.args.args[0].annotation
+    if ann is None or ast.dump(ann) != ast.dump(
+            ast.parse("list[list[int]]", mode="eval").body):
+        return None
+    ret = fn.returns
+    if ret is None or ast.dump(ret) != ast.dump(
+            ast.parse("dict[int, int]", mode="eval").body):
+        return None
+    g0 = s0.value.generators[0]
+    g1v = s0.value.generators[1]
+    if not (isinstance(g0.target, ast.Name)
+            and isinstance(g1v.target, ast.Name)):
+        return None
+    sub, item = g0.target.id, g1v.target.id
+    expect(s0.value,
+           f"[{item} for {sub} in {lst} for {item} in {sub}]",
+           "flatten comprehension", s0.lineno)
+    expect(s0.annotation, "list[int]", "flatten annotation", s0.lineno)
+    expect(s1.annotation, "dict[int, int]", "dict annotation",
+           s1.lineno)
+    if not (isinstance(s2.iter, ast.Name) and s2.iter.id == flat):
+        raise _reject("the frequency-dict class iterates the "
+                      "flattened list", s2.lineno)
+    lb = s2.body
+    if not (len(lb) == 1 and isinstance(lb[0], ast.If)
+            and len(lb[0].body) == 1 and len(lb[0].orelse) == 3):
+        raise _reject(
+            "the frequency-dict class loop body is exactly the "
+            "bump-or-insert `if num in D.keys(): D[num] += 1 else: "
+            "key = num; value = 1; D[key] = value`", s2.lineno)
+    br = lb[0]
+    expect(br.test, f"{elem} in {dic}.keys()", "membership test",
+           br.lineno)
+    thn = br.body[0]
+    if not (isinstance(thn, ast.AugAssign)
+            and isinstance(thn.op, ast.Add)
+            and isinstance(thn.value, ast.Constant)
+            and thn.value.value == 1
+            and ast.unparse(thn.target) == f"{dic}[{elem}]"):
+        raise _reject(
+            "the frequency-dict class bumps with `D[num] += 1`",
+            thn.lineno)
+    e0, e1, e2 = br.orelse
+    if not (isinstance(e0, ast.Assign) and isinstance(e1, ast.Assign)
+            and isinstance(e2, ast.Assign)
+            and len(e0.targets) == 1 and len(e1.targets) == 1
+            and len(e2.targets) == 1
+            and isinstance(e0.targets[0], ast.Name)
+            and isinstance(e1.targets[0], ast.Name)):
+        raise _reject("the frequency-dict class inserts through "
+                      "`key = num; value = 1; D[key] = value`",
+                      e0.lineno)
+    kn, vn = e0.targets[0].id, e1.targets[0].id
+    expect(e0.value, f"{elem}", "insert key", e0.lineno)
+    expect(e1.value, "1", "insert value", e1.lineno)
+    if ast.unparse(e2.targets[0]) != f"{dic}[{kn}]":
+        raise _reject("the frequency-dict class inserts at the bound "
+                      "key", e2.lineno)
+    expect(e2.value, f"{vn}", "insert source", e2.lineno)
+
+    invs = spec_fn.by_kind("invariant")
+    if len(invs) != 3:
+        raise _reject("the frequency-dict class needs exactly its "
+                      "three invariants (values ≥ 1, keys ∈ flat, "
+                      "value-sum ≤ len)", s2.lineno)
+    itexts = [c.desugared if c.desugared is not None else c.raw
+              for c in invs]
+    ipars = []
+    for c, text in zip(invs, itexts):
+        try:
+            ipars.append(ast.parse(text, mode="eval").body)
+        except SyntaxError as exc:
+            raise _reject(f"cannot parse invariant: {exc.msg}", c.line)
+
+    def binder_of(node, default):
+        if isinstance(node, ast.Call) and node.args \
+                and isinstance(node.args[0], ast.GeneratorExp) \
+                and isinstance(node.args[0].generators[0].target,
+                               ast.Name):
+            return node.args[0].generators[0].target.id
+        return default
+
+    kb0 = binder_of(ipars[0], "key")
+    kb1 = binder_of(ipars[1], "key")
+    kb2 = binder_of(ipars[2].left
+                    if isinstance(ipars[2], ast.Compare) else ipars[2],
+                    "key")
+    expect(ipars[0], f"all(({dic}[{kb0}] >= 1) for {kb0} in {dic})",
+           "first invariant", invs[0].line)
+    expect(ipars[1], f"all(({kb1} in {flat}) for {kb1} in {dic})",
+           "second invariant", invs[1].line)
+    expect(ipars[2],
+           f"sum({dic}[{kb2}] for {kb2} in {dic}) <= len({flat})",
+           "third invariant", invs[2].line)
+
+    posts = spec_fn.by_kind("ensures")
+    if len(posts) != 4:
+        raise _reject("the frequency-dict class states exactly four "
+                      "ensures (count, coverage both ways, and the "
+                      "value-sum)", spec_fn.lineno)
+    ptexts = [c.desugared if c.desugared is not None else c.raw
+              for c in posts]
+    ppars = []
+    for c, text in zip(posts, ptexts):
+        try:
+            ppars.append(ast.parse(text, mode="eval").body)
+        except SyntaxError as exc:
+            raise _reject(f"cannot parse ensures: {exc.msg}", c.line)
+    k0 = binder_of(ppars[0], "key")
+    sb0 = ib0 = None
+    if isinstance(ppars[0], ast.Call) and ppars[0].args \
+            and isinstance(ppars[0].args[0], ast.GeneratorExp):
+        eq = ppars[0].args[0].elt
+        if isinstance(eq, ast.Compare) \
+                and isinstance(eq.comparators[0], ast.Call) \
+                and eq.comparators[0].args \
+                and isinstance(eq.comparators[0].args[0],
+                               ast.GeneratorExp):
+            gg = eq.comparators[0].args[0].generators
+            if len(gg) == 2 and isinstance(gg[0].target, ast.Name) \
+                    and isinstance(gg[1].target, ast.Name):
+                sb0, ib0 = gg[0].target.id, gg[1].target.id
+    if sb0 is None or ib0 is None:
+        raise _reject("the frequency-dict class's first ensures is "
+                      "the conditional count over the nested list",
+                      posts[0].line)
+    expect(ppars[0],
+           f"all((result[{k0}] == sum(1 for {sb0} in {lst} "
+           f"for {ib0} in {sb0} if {ib0} == {k0})) "
+           f"for {k0} in result)",
+           "first ensures", posts[0].line)
+    sb1 = binder_of(ppars[1], "sublist")
+    ib1 = None
+    if isinstance(ppars[1], ast.Call) and ppars[1].args \
+            and isinstance(ppars[1].args[0], ast.GeneratorExp) \
+            and len(ppars[1].args[0].generators) == 2 \
+            and isinstance(ppars[1].args[0].generators[1].target,
+                           ast.Name):
+        ib1 = ppars[1].args[0].generators[1].target.id
+    if ib1 is None:
+        raise _reject("the frequency-dict class's second ensures "
+                      "covers every item of every sublist",
+                      posts[1].line)
+    expect(ppars[1],
+           f"all(({ib1} in result) for {sb1} in {lst} "
+           f"for {ib1} in {sb1})",
+           "second ensures", posts[1].line)
+    k2 = binder_of(ppars[2], "key")
+    sb2 = "sublist"
+    if isinstance(ppars[2], ast.Call) and ppars[2].args \
+            and isinstance(ppars[2].args[0], ast.GeneratorExp):
+        inner = ppars[2].args[0].elt
+        sb2 = binder_of(inner, "sublist")
+    expect(ppars[2],
+           f"all((any(({k2} in {sb2}) for {sb2} in {lst})) "
+           f"for {k2} in result)",
+           "third ensures", posts[2].line)
+    k3 = "key"
+    sb3 = "sublist"
+    if isinstance(ppars[3], ast.Compare):
+        k3 = binder_of(ppars[3].left, "key")
+        sb3 = binder_of(ppars[3].comparators[0], "sublist")
+    expect(ppars[3],
+           f"sum(result[{k3}] for {k3} in result) == "
+           f"sum(len({sb3}) for {sb3} in {lst})",
+           "fourth ensures", posts[3].line)
+
+    if spec_fn.by_kind("requires") or spec_fn.by_kind("proof") \
+            or spec_fn.by_kind("decreases"):
+        raise _reject("the frequency-dict class carries no requires, "
+                      "proof, or decreases clauses", spec_fn.lineno)
+    names_used = {node.id for node in ast.walk(fn)
+                  if isinstance(node, ast.Name)} | {fn.name}
+    if names_used & _FREQDICT_INTERNALS:
+        raise _reject(
+            "a name in this function collides with the "
+            "frequency-dict template's internal binders — rename it",
+            fn.lineno)
+    return _FreqDictShape(lst=lst, flat=flat, dic=dic, elem=elem,
+                          fn_line=fn.lineno, inv_line=invs[0].line,
+                          ens_line=posts[0].line)
+
+
+def _emit_freq_dict(fd: _FreqDictShape, fn: ast.FunctionDef,
+                    spec_fn: FunctionSpec, emit, theorems) -> None:
+    """Emit the frequency-dict class whole, from the pinned template:
+    the def over the prelude's FreqFold, and the spec theorem proved
+    by the master invariant (FreqFold_inv) at the saturated take."""
+    f = _ident(spec_fn.name)
+    P = _ident(fd.lst)
+    fsp = f"{spec_fn.name}_spec"
+    FL, IL, EL = fd.fn_line, fd.inv_line, fd.ens_line
+
+    emit("", None)
+    emit(f"def {f} ({P} : List (List Int)) : List (Int × Int) :=", FL)
+    emit(f"  VeriPy.FreqFold {P}.flatten {P}.flatten.length 0 []", FL)
+    emit("", None)
+    theorems.append(fsp)
+    emit(f"theorem {_ident(fsp)} ({P} : List (List Int)) :", EL)
+    emit(f"    (∀ k : Int, VeriPy.DictHas ({f} {P}) k = true →", EL)
+    emit(f"       VeriPy.DictGet ({f} {P}) k", EL)
+    emit(f"         = (({P}.flatten.count k : Nat) : Int))", EL)
+    emit(f"    ∧ (∀ s : List Int, s ∈ {P} → ∀ x : Int, x ∈ s →", EL)
+    emit(f"         VeriPy.DictHas ({f} {P}) x = true)", EL)
+    emit(f"    ∧ (∀ k : Int, VeriPy.DictHas ({f} {P}) k = true →", EL)
+    emit(f"         ∃ s : List Int, s ∈ {P} ∧ k ∈ s)", EL)
+    emit(f"    ∧ (VeriPy.DictSum ({f} {P})", EL)
+    emit(f"         = VeriPy.PySum ({P}.map (fun s => ((s.length : "
+         f"Int))))) := by", EL)
+    emit(f"  unfold {f}", EL)
+    emit(f"  have hinv := VeriPy.FreqFold_inv {P}.flatten "
+         f"{P}.flatten.length 0 []", IL)
+    emit("    ⟨by intro q; simp [VeriPy.DictGet],", IL)
+    emit("     by intro q; simp [VeriPy.DictHas],", IL)
+    emit("     by simp [VeriPy.DictSum],", IL)
+    emit("     by constructor <;> push_cast <;> omega⟩", IL)
+    emit("    (by push_cast; omega)", IL)
+    emit("  obtain ⟨g1, g2, g3, _⟩ := hinv", EL)
+    emit(f"  have hsat : {P}.flatten.take", EL)
+    emit(f"      ((({P}.flatten.length : Nat) : Int)).toNat = "
+         f"{P}.flatten := by", EL)
+    emit(f"    rw [show (((({P}.flatten.length : Nat) : "
+         f"Int))).toNat", EL)
+    emit(f"          = {P}.flatten.length from by omega]", EL)
+    emit("    exact List.take_length", EL)
+    emit("  rw [hsat] at g1 g2", EL)
+    emit("  refine ⟨?_, ?_, ?_, ?_⟩", EL)
+    emit("  · intro k hk", EL)
+    emit("    exact g1 k", EL)
+    emit("  · intro s hs x hx", EL)
+    emit("    exact (g2 x).mpr (List.mem_flatten.mpr ⟨s, hs, hx⟩)",
+         EL)
+    emit("  · intro k hk", EL)
+    emit("    exact List.mem_flatten.mp ((g2 k).mp hk)", EL)
+    emit("  · rw [g3, VeriPy.PySum_map_length_flatten]", EL)
+
+
 def _requires_min_len(spec_fn: FunctionSpec,
                       lists: frozenset[str]) -> dict[str, int]:
     """Scan TOP-LEVEL requires conjuncts for `len(L) > c` / `len(L) >=
@@ -4074,6 +4388,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             raise _reject("only plain positional parameters (no defaults, "
                           "no *args/**kwargs, no positional-only or "
                           "keyword-only markers) are in slice 1", fn.lineno)
+        fd = _freq_dict_shape(fn, spec_fn)
+        if fd is not None:
+            # The class's two emitted names (f, f_spec) are both in
+            # the up-front reservation already; nothing extra to
+            # reserve. The dispatch sits BEFORE the parameter type
+            # gate: list[list[int]] and dict[int, int] are admitted
+            # ONLY through this class.
+            _emit_freq_dict(fd, fn, spec_fn, emit, theorems)
+            continue
         ptypes: dict[str, str] = {}
         str_params: set[str] = set()
         for arg in a.args:

@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.15"
+PRELUDE_VERSION = "lean-0.16"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -481,6 +481,198 @@ theorem GetD_le_ListMax_take (l : List Int) (j i : Int)
     l.getD (j).toNat 0 ≤ ListMax (l.take ((i + 1)).toNat) :=
   Mem_le_ListMax _ _ (GetD_mem_take l ((i + 1)).toNat (j).toNat
     (by omega) (by omega))
+
+-- The dict model for the frequency class (mbpp_97): an
+-- association list over (Int × Int), all operations structural
+-- so every lemma is a clean if-split induction. Order is carried
+-- but never observed — the admitted specs are order-blind, per
+-- the iteration-order veto. FreqFold_inv is the MASTER invariant
+-- (lookup = prefix count, membership both ways, value-sum =
+-- prefix index): strictly stronger than the source's three
+-- invariant lines, which the class ABSORBS the way the
+-- nested-search flattener absorbs inner-loop invariants — their
+-- meaning is carried, and they stay live for the Dafny backend.
+def DictGet : List (Int × Int) → Int → Int
+  | [], _ => 0
+  | (a, v) :: rest, k => if a = k then v else DictGet rest k
+
+def DictHas : List (Int × Int) → Int → Bool
+  | [], _ => false
+  | (a, _) :: rest, k => if a = k then true else DictHas rest k
+
+def DictSum : List (Int × Int) → Int
+  | [] => 0
+  | (_, v) :: rest => v + DictSum rest
+
+def DictBump : List (Int × Int) → Int → List (Int × Int)
+  | [], k => [(k, 1)]
+  | (a, v) :: rest, k =>
+      if a = k then (a, v + 1) :: rest
+      else (a, v) :: DictBump rest k
+
+theorem DictGet_bump_self (d : List (Int × Int)) (k : Int) :
+    DictGet (DictBump d k) k = DictGet d k + 1 := by
+  induction d with
+  | nil => simp [DictBump, DictGet]
+  | cons p rest ih =>
+    obtain ⟨a, v⟩ := p
+    by_cases h : a = k
+    · subst h
+      simp [DictBump, DictGet]
+    · simp [DictBump, DictGet, if_neg h, ih]
+
+theorem DictGet_bump_other (d : List (Int × Int)) (k q : Int)
+    (h : q ≠ k) : DictGet (DictBump d k) q = DictGet d q := by
+  induction d with
+  | nil =>
+    simp [DictBump, DictGet]
+    intro he
+    exact absurd he.symm h
+  | cons p rest ih =>
+    obtain ⟨a, v⟩ := p
+    by_cases ha : a = k
+    · subst ha
+      have haq : ¬(a = q) := fun he => h he.symm
+      simp [DictBump, DictGet, if_neg haq]
+    · simp only [DictBump, if_neg ha]
+      by_cases haq : a = q
+      · simp [DictGet, if_pos haq]
+      · simp [DictGet, if_neg haq, ih]
+
+theorem DictHas_bump (d : List (Int × Int)) (k q : Int) :
+    DictHas (DictBump d k) q = (DictHas d q || decide (q = k)) := by
+  induction d with
+  | nil =>
+    by_cases h : k = q
+    · subst h
+      simp [DictBump, DictHas]
+    · simp [DictBump, DictHas, if_neg h]
+      intro he
+      exact absurd he.symm h
+  | cons p rest ih =>
+    obtain ⟨a, v⟩ := p
+    by_cases ha : a = k
+    · subst ha
+      by_cases haq : a = q
+      · subst haq
+        simp [DictBump, DictHas]
+      · simp [DictBump, DictHas, if_neg haq]
+        intro he
+        exact absurd he.symm haq
+    · simp only [DictBump, if_neg ha]
+      by_cases haq : a = q
+      · simp [DictHas, if_pos haq]
+      · simp [DictHas, if_neg haq, ih]
+
+theorem DictSum_bump (d : List (Int × Int)) (k : Int) :
+    DictSum (DictBump d k) = DictSum d + 1 := by
+  induction d with
+  | nil => simp [DictBump, DictSum]
+  | cons p rest ih =>
+    obtain ⟨a, v⟩ := p
+    by_cases h : a = k
+    · subst h
+      simp [DictBump, DictSum]
+      omega
+    · simp only [DictBump, if_neg h]
+      simp only [DictSum]
+      omega
+
+
+-- Layer 2 of the frequency-class pin: the fuel fold over the
+-- flattened list and the MASTER invariant (lookup = prefix count,
+-- membership both ways, value-sum = prefix index, index in window).
+
+def FreqFold (flat : List Int) : Nat → Int → List (Int × Int) → List (Int × Int)
+  | 0, _, d => d
+  | (m_ + 1), i_, d =>
+      if i_ < (flat.length : Int) then
+        FreqFold flat m_ (i_ + 1) (DictBump d (flat.getD (i_).toNat 0))
+      else d
+
+def FreqInv (flat : List Int) (i_ : Int) (d : List (Int × Int)) : Prop :=
+  (∀ q : Int, DictGet d q = ((flat.take (i_).toNat).count q : Int))
+  ∧ (∀ q : Int, DictHas d q = true ↔ q ∈ flat.take (i_).toNat)
+  ∧ (DictSum d = i_)
+  ∧ (0 ≤ i_ ∧ i_ ≤ (flat.length : Int))
+
+theorem FreqFold_inv (flat : List Int) : ∀ (m_ : Nat) (i_ : Int) (d : List (Int × Int)),
+    FreqInv flat i_ d → (flat.length : Int) ≤ i_ + (m_ : Int) →
+    FreqInv flat ((flat.length : Int)) (FreqFold flat m_ i_ d) := by
+  intro m_
+  induction m_ with
+  | zero =>
+      intro i_ d h hb
+      obtain ⟨h1, h2, h3, h4⟩ := h
+      have hie : i_ = (flat.length : Int) := by omega
+      subst hie
+      simpa only [FreqFold] using ⟨h1, h2, h3, h4⟩
+  | succ m2 ih =>
+      intro i_ d h hb
+      obtain ⟨h1, h2, h3, h4⟩ := h
+      by_cases hc : i_ < (flat.length : Int)
+      · simp only [FreqFold, if_pos hc]
+        apply ih
+        · have hlt : (i_).toNat < flat.length := by omega
+          have hx := Take_succ_getD flat (i_).toNat hlt
+          have hstep : flat.take ((i_ + 1)).toNat
+              = flat.take (i_).toNat ++ [flat.getD (i_).toNat 0] := by
+            rw [show ((i_ + 1)).toNat = (i_).toNat + 1 from by omega]
+            exact hx
+          refine ⟨?_, ?_, ?_, by omega⟩
+          · intro q
+            rw [hstep]
+            rw [List.count_append]
+            by_cases hq : q = flat.getD (i_).toNat 0
+            · rw [hq, DictGet_bump_self,
+                  h1 (flat.getD (i_).toNat 0)]
+              simp [List.count_cons]
+              try push_cast
+              try omega
+            · rw [DictGet_bump_other d _ q hq, h1 q]
+              have : ([flat.getD (i_).toNat 0].count q) = 0 := by
+                simp [List.count_cons]
+                intro he
+                exact absurd he.symm hq
+              rw [this]
+              push_cast
+              omega
+          · intro q
+            rw [hstep, DictHas_bump]
+            constructor
+            · intro hq
+              rcases Bool.or_eq_true_iff.mp hq with hq1 | hq1
+              · exact List.mem_append_left _ ((h2 q).mp hq1)
+              · have := of_decide_eq_true hq1
+                subst this
+                exact List.mem_append_right _ (by simp)
+            · intro hq
+              rcases List.mem_append.mp hq with hq1 | hq1
+              · exact Bool.or_eq_true_iff.mpr
+                  (Or.inl ((h2 q).mpr hq1))
+              · have : q = flat.getD (i_).toNat 0 := by simpa using hq1
+                exact Bool.or_eq_true_iff.mpr
+                  (Or.inr (decide_eq_true this))
+          · rw [DictSum_bump]
+            omega
+        · push_cast
+          omega
+      · have hie : i_ = (flat.length : Int) := by omega
+        subst hie
+        simp only [FreqFold, if_neg hc]
+        exact ⟨h1, h2, h3, h4⟩
+
+
+theorem PySum_map_length_flatten (l : List (List Int)) :
+    PySum (l.map (fun s => ((s.length : Int))))
+      = ((l.flatten.length : Int)) := by
+  induction l with
+  | nil => simp [PySum]
+  | cons s rest ih =>
+    simp only [List.map_cons, PySum, List.flatten_cons,
+               List.length_append, ih]
+    push_cast
+    omega
 
 end VeriPy
 """.format(version=PRELUDE_VERSION)
