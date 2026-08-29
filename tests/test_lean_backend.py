@@ -4368,3 +4368,32 @@ def test_sqrt_search_class_matches_strictly():
     with pytest.raises(EncodeError, match="proof"):
         enc(src.replace(
             "    #@ proof CompositeHasSmallFactor(n, k)\n", ""))
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_while_exit_value_is_synthesized_without_the_assert(tmp_path):
+    # The exit-value endgame: a while condition `VAR <= E` with a
+    # params-only bound offers omega the candidate `VAR = E + 1` as a
+    # GUARDED have at the spec endgame — the assert-free route to
+    # what `assert i == n + 1` supplies as a source hint. Measured on
+    # sum_to_n, whose exit assert could not be adopted because it
+    # flips the DAFNY pack vacuous. A weak invariant skips silently:
+    # the same task with the upper bound dropped must fail as a
+    # postcondition, not crash the ladder.
+    import shutil
+    from veripy.agentio import verify_structured
+    src = Path("benchmark/tasks/sum_to_n")
+    shutil.copy(src / "task.py", tmp_path / "task.py")
+    shutil.copy(src / "task.proofs.lean", tmp_path / "task.proofs.lean")
+    r = verify_structured(tmp_path / "task.py", tmp_path / "o",
+                          backend="lean", time_limit=60)
+    assert r["status"] == "ok", r["failures"][:1]
+
+    weak = (src / "task.py").read_text().replace(
+        "#@ invariant 1 <= i <= n + 1", "#@ invariant 1 <= i")
+    (tmp_path / "weak.py").write_text(weak)
+    (tmp_path / "weak.proofs.lean").write_text(
+        (src / "task.proofs.lean").read_text())
+    r2 = verify_structured(tmp_path / "weak.py", tmp_path / "o2",
+                           backend="lean", time_limit=60)
+    assert r2["status"] == "failed", r2["status"]

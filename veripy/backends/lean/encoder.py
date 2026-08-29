@@ -6211,6 +6211,44 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
             if wbr_n:
                 emit(f"  all_goals (try simp only "
                      f"[{', '.join(wbr_n)}] at *)", first_ensures_line)
+            # The SYNTHESIZED exit equality: for a condition of the
+            # shape `VAR <= E` (or `VAR < E`) over an accumulator with
+            # a params-only bound, the exit value is the candidate
+            # E + 1 (resp. E) — offered to omega as a GUARDED have, so
+            # an invariant too weak to pin it (no matching upper
+            # bound) skips silently. This is the assert-free route to
+            # what `assert i == n + 1` supplies as a source hint: the
+            # equation rewrites the projection atoms so the spec's own
+            # products line up — measured on sum_to_n, whose exit
+            # assert could not be adopted because it flips the DAFNY
+            # pack vacuous and would cost a proof-repair exam row.
+            wexit = None
+            wc = wloop.cond
+            if isinstance(wc, ast.Compare) and len(wc.ops) == 1 \
+                    and isinstance(wc.left, ast.Name) \
+                    and wc.left.id in wloop.accs \
+                    and type(wc.ops[0]) in (ast.LtE, ast.Lt):
+                try:
+                    e_t = _int_expr(wc.comparators[0], names, fn.lineno,
+                                    rename=rename, lc=lc0)
+                except EncodeError:
+                    e_t = None
+                if e_t is not None:
+                    w_app2 = (f"({_ident(f'{spec_fn.name}_loop')} "
+                              f"{targsp}(({_ident(gm)} {targsp}"
+                              f"{w_inits}).toNat + 1) {w_inits})")
+                    vproj = w_app2 + _proj(
+                        wloop.accs.index(wc.left.id), len(wloop.accs))
+                    plus = " + 1" if isinstance(wc.ops[0], ast.LtE) \
+                        else ""
+                    wexit = (vproj, f"(({e_t}){plus})")
+            if wexit is not None:
+                emit(f"  all_goals (try (have hexit_ : {wexit[0]} = "
+                     f"{wexit[1]} := by omega))", first_ensures_line)
+                emit("  all_goals (try simp only [hexit_] at *)",
+                     first_ensures_line)
+                emit("  all_goals (try simp only "
+                     "[Int.add_sub_cancel] at *)", first_ensures_line)
             # The proved exit equalities REWRITE the projection terms.
             # This is the payoff: `hpa : i_final = n + 1` turns the
             # nonlinear atom `(i_final - 1) * i_final` into
