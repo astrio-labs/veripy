@@ -12,7 +12,7 @@ rung, extended to Lean in this track). Versioned like the Dafny preamble:
 provenance rides every payload, and two "ok" verdicts must be comparable.
 """
 
-PRELUDE_VERSION = "lean-0.15"
+PRELUDE_VERSION = "lean-0.17"
 
 # The prelude lives in its own namespace and every call site references
 # it QUALIFIED (VeriPy.PyAbs). Escaping user identifiers handles
@@ -481,6 +481,855 @@ theorem GetD_le_ListMax_take (l : List Int) (j i : Int)
     l.getD (j).toNat 0 ≤ ListMax (l.take ((i + 1)).toNat) :=
   Mem_le_ListMax _ _ (GetD_mem_take l ((i + 1)).toNat (j).toNat
     (by omega) (by omega))
+
+-- The dict model for the frequency class (mbpp_97): an
+-- association list over (Int × Int), all operations structural
+-- so every lemma is a clean if-split induction. Order is carried
+-- but never observed — the admitted specs are order-blind, per
+-- the iteration-order veto. FreqFold_inv is the MASTER invariant
+-- (lookup = prefix count, membership both ways, value-sum =
+-- prefix index): strictly stronger than the source's three
+-- invariant lines, which the class ABSORBS the way the
+-- nested-search flattener absorbs inner-loop invariants — their
+-- meaning is carried, and they stay live for the Dafny backend.
+def DictGet : List (Int × Int) → Int → Int
+  | [], _ => 0
+  | (a, v) :: rest, k => if a = k then v else DictGet rest k
+
+def DictHas : List (Int × Int) → Int → Bool
+  | [], _ => false
+  | (a, _) :: rest, k => if a = k then true else DictHas rest k
+
+def DictSum : List (Int × Int) → Int
+  | [] => 0
+  | (_, v) :: rest => v + DictSum rest
+
+def DictBump : List (Int × Int) → Int → List (Int × Int)
+  | [], k => [(k, 1)]
+  | (a, v) :: rest, k =>
+      if a = k then (a, v + 1) :: rest
+      else (a, v) :: DictBump rest k
+
+theorem DictGet_bump_self (d : List (Int × Int)) (k : Int) :
+    DictGet (DictBump d k) k = DictGet d k + 1 := by
+  induction d with
+  | nil => simp [DictBump, DictGet]
+  | cons p rest ih =>
+    obtain ⟨a, v⟩ := p
+    by_cases h : a = k
+    · subst h
+      simp [DictBump, DictGet]
+    · simp [DictBump, DictGet, if_neg h, ih]
+
+theorem DictGet_bump_other (d : List (Int × Int)) (k q : Int)
+    (h : q ≠ k) : DictGet (DictBump d k) q = DictGet d q := by
+  induction d with
+  | nil =>
+    simp [DictBump, DictGet]
+    intro he
+    exact absurd he.symm h
+  | cons p rest ih =>
+    obtain ⟨a, v⟩ := p
+    by_cases ha : a = k
+    · subst ha
+      have haq : ¬(a = q) := fun he => h he.symm
+      simp [DictBump, DictGet, if_neg haq]
+    · simp only [DictBump, if_neg ha]
+      by_cases haq : a = q
+      · simp [DictGet, if_pos haq]
+      · simp [DictGet, if_neg haq, ih]
+
+theorem DictHas_bump (d : List (Int × Int)) (k q : Int) :
+    DictHas (DictBump d k) q = (DictHas d q || decide (q = k)) := by
+  induction d with
+  | nil =>
+    by_cases h : k = q
+    · subst h
+      simp [DictBump, DictHas]
+    · simp [DictBump, DictHas, if_neg h]
+      intro he
+      exact absurd he.symm h
+  | cons p rest ih =>
+    obtain ⟨a, v⟩ := p
+    by_cases ha : a = k
+    · subst ha
+      by_cases haq : a = q
+      · subst haq
+        simp [DictBump, DictHas]
+      · simp [DictBump, DictHas, if_neg haq]
+        intro he
+        exact absurd he.symm haq
+    · simp only [DictBump, if_neg ha]
+      by_cases haq : a = q
+      · simp [DictHas, if_pos haq]
+      · simp [DictHas, if_neg haq, ih]
+
+theorem DictSum_bump (d : List (Int × Int)) (k : Int) :
+    DictSum (DictBump d k) = DictSum d + 1 := by
+  induction d with
+  | nil => simp [DictBump, DictSum]
+  | cons p rest ih =>
+    obtain ⟨a, v⟩ := p
+    by_cases h : a = k
+    · subst h
+      simp [DictBump, DictSum]
+      omega
+    · simp only [DictBump, if_neg h]
+      simp only [DictSum]
+      omega
+
+
+-- Layer 2 of the frequency-class pin: the fuel fold over the
+-- flattened list and the MASTER invariant (lookup = prefix count,
+-- membership both ways, value-sum = prefix index, index in window).
+
+def FreqFold (flat : List Int) : Nat → Int → List (Int × Int) → List (Int × Int)
+  | 0, _, d => d
+  | (m_ + 1), i_, d =>
+      if i_ < (flat.length : Int) then
+        FreqFold flat m_ (i_ + 1) (DictBump d (flat.getD (i_).toNat 0))
+      else d
+
+def FreqInv (flat : List Int) (i_ : Int) (d : List (Int × Int)) : Prop :=
+  (∀ q : Int, DictGet d q = ((flat.take (i_).toNat).count q : Int))
+  ∧ (∀ q : Int, DictHas d q = true ↔ q ∈ flat.take (i_).toNat)
+  ∧ (DictSum d = i_)
+  ∧ (0 ≤ i_ ∧ i_ ≤ (flat.length : Int))
+
+theorem FreqFold_inv (flat : List Int) : ∀ (m_ : Nat) (i_ : Int) (d : List (Int × Int)),
+    FreqInv flat i_ d → (flat.length : Int) ≤ i_ + (m_ : Int) →
+    FreqInv flat ((flat.length : Int)) (FreqFold flat m_ i_ d) := by
+  intro m_
+  induction m_ with
+  | zero =>
+      intro i_ d h hb
+      obtain ⟨h1, h2, h3, h4⟩ := h
+      have hie : i_ = (flat.length : Int) := by omega
+      subst hie
+      simpa only [FreqFold] using ⟨h1, h2, h3, h4⟩
+  | succ m2 ih =>
+      intro i_ d h hb
+      obtain ⟨h1, h2, h3, h4⟩ := h
+      by_cases hc : i_ < (flat.length : Int)
+      · simp only [FreqFold, if_pos hc]
+        apply ih
+        · have hlt : (i_).toNat < flat.length := by omega
+          have hx := Take_succ_getD flat (i_).toNat hlt
+          have hstep : flat.take ((i_ + 1)).toNat
+              = flat.take (i_).toNat ++ [flat.getD (i_).toNat 0] := by
+            rw [show ((i_ + 1)).toNat = (i_).toNat + 1 from by omega]
+            exact hx
+          refine ⟨?_, ?_, ?_, by omega⟩
+          · intro q
+            rw [hstep]
+            rw [List.count_append]
+            by_cases hq : q = flat.getD (i_).toNat 0
+            · rw [hq, DictGet_bump_self,
+                  h1 (flat.getD (i_).toNat 0)]
+              simp [List.count_cons]
+              try push_cast
+              try omega
+            · rw [DictGet_bump_other d _ q hq, h1 q]
+              have : ([flat.getD (i_).toNat 0].count q) = 0 := by
+                simp [List.count_cons]
+                intro he
+                exact absurd he.symm hq
+              rw [this]
+              push_cast
+              omega
+          · intro q
+            rw [hstep, DictHas_bump]
+            constructor
+            · intro hq
+              rcases Bool.or_eq_true_iff.mp hq with hq1 | hq1
+              · exact List.mem_append_left _ ((h2 q).mp hq1)
+              · have := of_decide_eq_true hq1
+                subst this
+                exact List.mem_append_right _ (by simp)
+            · intro hq
+              rcases List.mem_append.mp hq with hq1 | hq1
+              · exact Bool.or_eq_true_iff.mpr
+                  (Or.inl ((h2 q).mpr hq1))
+              · have : q = flat.getD (i_).toNat 0 := by simpa using hq1
+                exact Bool.or_eq_true_iff.mpr
+                  (Or.inr (decide_eq_true this))
+          · rw [DictSum_bump]
+            omega
+        · push_cast
+          omega
+      · have hie : i_ = (flat.length : Int) := by omega
+        subst hie
+        simp only [FreqFold, if_neg hc]
+        exact ⟨h1, h2, h3, h4⟩
+
+
+theorem PySum_map_length_flatten (l : List (List Int)) :
+    PySum (l.map (fun s => ((s.length : Int))))
+      = ((l.flatten.length : Int)) := by
+  induction l with
+  | nil => simp [PySum]
+  | cons s rest ih =>
+    simp only [List.map_cons, PySum, List.flatten_cons,
+               List.length_append, ih]
+    push_cast
+    omega
+
+-- The isomorphism-class pack (mbpp_885): position-class dicts
+-- over code-point strings. AppendPos inserts fresh keys at the
+-- END, so the value order is FIRST-OCCURRENCE order — a property
+-- of the position partition alone, which is why the ⇐ direction
+-- gets literally equal value lists (IsoVals) and the sort needs
+-- no properties beyond being a permutation (SortL_perm): both
+-- sides of the algorithm's test reduce to multiset equality of
+-- the partition blocks, which the spec theorem proves equivalent
+-- to the ∀∀ equality pattern. The masters (PosFold_inv, the
+-- pointwise/fresh Vals lemmas) absorb the source's four
+-- invariant lines, the nested-search flattener's precedent.
+-- Stage A of the isomorphism-class pin (mbpp_885): the position-
+-- class dict. Keys are code points, values are the (increasing)
+-- lists of positions where the key occurs. AppendPos inserts at the
+-- END on a fresh key, so the value order is first-occurrence order —
+-- which is determined by the position PARTITION alone, not by the
+-- characters (the keystone of the ⇐ direction).
+
+def DictGetL : List (Int × List Int) → Int → List Int
+  | [], _ => []
+  | (a, l) :: rest, c => if a = c then l else DictGetL rest c
+
+def DictHasL : List (Int × List Int) → Int → Bool
+  | [], _ => false
+  | (a, _) :: rest, c => if a = c then true else DictHasL rest c
+
+def AppendPos : List (Int × List Int) → Int → Int → List (Int × List Int)
+  | [], c, i => [(c, [i])]
+  | (a, l) :: rest, c, i =>
+      if a = c then (a, l ++ [i]) :: rest
+      else (a, l) :: AppendPos rest c i
+
+def Vals (d : List (Int × List Int)) : List (List Int) :=
+  d.map (fun p => p.2)
+
+theorem GetL_appendPos_self (d : List (Int × List Int)) (c i : Int) :
+    DictGetL (AppendPos d c i) c = DictGetL d c ++ [i] := by
+  induction d with
+  | nil => simp [AppendPos, DictGetL]
+  | cons p rest ih =>
+    obtain ⟨a, l⟩ := p
+    by_cases h : a = c
+    · subst h
+      simp [AppendPos, DictGetL]
+    · simp [AppendPos, DictGetL, if_neg h, ih]
+
+theorem GetL_appendPos_other (d : List (Int × List Int)) (c q i : Int)
+    (h : q ≠ c) : DictGetL (AppendPos d c i) q = DictGetL d q := by
+  induction d with
+  | nil =>
+    simp [AppendPos, DictGetL]
+    intro he
+    exact absurd he.symm h
+  | cons p rest ih =>
+    obtain ⟨a, l⟩ := p
+    by_cases ha : a = c
+    · subst ha
+      have haq : ¬(a = q) := fun he => h he.symm
+      simp [AppendPos, DictGetL, if_neg haq]
+    · simp only [AppendPos, if_neg ha]
+      by_cases haq : a = q
+      · simp [DictGetL, if_pos haq]
+      · simp [DictGetL, if_neg haq, ih]
+
+theorem HasL_appendPos (d : List (Int × List Int)) (c q i : Int) :
+    DictHasL (AppendPos d c i) q = (DictHasL d q || decide (q = c)) := by
+  induction d with
+  | nil =>
+    by_cases h : c = q
+    · subst h
+      simp [AppendPos, DictHasL]
+    · simp [AppendPos, DictHasL, if_neg h]
+      intro he
+      exact absurd he.symm h
+  | cons p rest ih =>
+    obtain ⟨a, l⟩ := p
+    by_cases ha : a = c
+    · subst ha
+      by_cases haq : a = q
+      · subst haq
+        simp [AppendPos, DictHasL]
+      · simp [AppendPos, DictHasL, if_neg haq]
+        intro he
+        exact absurd he.symm haq
+    · simp only [AppendPos, if_neg ha]
+      by_cases haq : a = q
+      · simp [DictHasL, if_pos haq]
+      · simp [DictHasL, if_neg haq, ih]
+
+-- Fresh keys append their block at the END; known keys touch only
+-- their own slot. The Vals facts the ⇐ joint induction rides.
+theorem Vals_appendPos_fresh (d : List (Int × List Int)) (c i : Int)
+    (h : DictHasL d c = false) :
+    Vals (AppendPos d c i) = Vals d ++ [[i]] := by
+  induction d with
+  | nil => simp [AppendPos, Vals]
+  | cons p rest ih =>
+    obtain ⟨a, l⟩ := p
+    by_cases ha : a = c
+    · subst ha
+      simp [DictHasL] at h
+    · simp only [DictHasL, if_neg ha] at h
+      have hi := ih h
+      simp only [Vals, List.map_cons] at hi ⊢
+      simp [AppendPos, if_neg ha, hi]
+
+def KeysNodup : List (Int × List Int) → Prop
+  | [] => True
+  | (a, _) :: rest => DictHasL rest a = false ∧ KeysNodup rest
+
+theorem HasL_false_of_appendPos (d : List (Int × List Int))
+    (a c i : Int) (hne : a ≠ c) (h : DictHasL d a = false) :
+    DictHasL (AppendPos d c i) a = false := by
+  rw [HasL_appendPos]
+  simp [h]
+  intro he
+  exact absurd he hne
+
+theorem KeysNodup_appendPos (d : List (Int × List Int)) (c i : Int)
+    (h : KeysNodup d) : KeysNodup (AppendPos d c i) := by
+  induction d with
+  | nil => simp [AppendPos, KeysNodup, DictHasL]
+  | cons p rest ih =>
+    obtain ⟨a, l⟩ := p
+    obtain ⟨h1, h2⟩ := h
+    by_cases ha : a = c
+    · subst ha
+      simp only [AppendPos, if_pos rfl]
+      exact ⟨h1, h2⟩
+    · simp only [AppendPos, if_neg ha]
+      exact ⟨HasL_false_of_appendPos rest a c i ha h1, ih h2⟩
+
+-- Known keys: AppendPos rewrites exactly one slot, and Vals changes
+-- pointwise at that slot. Stated as the Forall₂ the joint induction
+-- carries: two dicts with pointwise-equal values stay pointwise
+-- equal when each appends to the slot of a SHARED block.
+theorem Vals_appendPos_known_pointwise
+    (d1 d2 : List (Int × List Int)) (c1 c2 i : Int)
+    (hlen : Vals d1 = Vals d2)
+    (hsame : DictGetL d1 c1 = DictGetL d2 c2)
+    (hh1 : DictHasL d1 c1 = true) (hh2 : DictHasL d2 c2 = true)
+    (hn1 : KeysNodup d1) (hn2 : KeysNodup d2)
+    (hkey1 : ∀ k q, DictHasL d1 k = true → DictHasL d1 q = true →
+       k ≠ q → DictGetL d1 k ≠ DictGetL d1 q)
+    (hkey2 : ∀ k q, DictHasL d2 k = true → DictHasL d2 q = true →
+       k ≠ q → DictGetL d2 k ≠ DictGetL d2 q) :
+    Vals (AppendPos d1 c1 i) = Vals (AppendPos d2 c2 i) := by
+  induction d1 generalizing d2 with
+  | nil => simp [DictHasL] at hh1
+  | cons p rest ih =>
+    obtain ⟨a, l⟩ := p
+    cases d2 with
+    | nil => simp [DictHasL] at hh2
+    | cons pq rest2 =>
+      obtain ⟨b, m⟩ := pq
+      have hval : l = m := by
+        simpa [Vals] using congrArg (fun x => x.headD []) hlen
+      have hrest : Vals rest = Vals rest2 := by
+        simpa [Vals] using congrArg List.tail hlen
+      by_cases ha : a = c1
+      · subst ha
+        have hb : b = c2 := by
+          by_cases hb2 : b = c2
+          · exact hb2
+          · exfalso
+            have hs1 : DictGetL ((a, l) :: rest) a = l := by
+              simp [DictGetL]
+            have hs2 : DictGetL ((b, m) :: rest2) c2
+                = DictGetL rest2 c2 := by
+              simp [DictGetL, if_neg hb2]
+            have hgb : DictGetL ((b, m) :: rest2) b = m := by
+              simp [DictGetL]
+            have hd : DictGetL ((b, m) :: rest2) b
+                = DictGetL ((b, m) :: rest2) c2 := by
+              rw [hgb, hs2, ← hval]
+              rw [hs1] at hsame
+              rw [hs2] at hsame
+              exact hsame
+            exact hkey2 b c2 (by simp [DictHasL]) hh2
+              (fun he => hb2 he) hd
+        subst hb
+        simp only [AppendPos, if_true]
+        simp only [Vals, List.map_cons]
+        have hrest' := hrest
+        simp only [Vals] at hrest'
+        rw [hval, hrest']
+      · have hb : b ≠ c2 := by
+          intro hb2
+          subst hb2
+          have hs1 : DictGetL ((a, l) :: rest) c1
+              = DictGetL rest c1 := by
+            simp [DictGetL, if_neg ha]
+          have hga : DictGetL ((a, l) :: rest) a = l := by
+            simp [DictGetL]
+          have hgb : DictGetL ((b, m) :: rest2) b = m := by
+            simp [DictGetL]
+          have hd : DictGetL ((a, l) :: rest) a
+              = DictGetL ((a, l) :: rest) c1 := by
+            rw [hga, hs1]
+            rw [hs1] at hsame
+            rw [hgb] at hsame
+            rw [hsame, hval]
+          exact hkey1 a c1 (by simp [DictHasL]) hh1 ha hd
+        simp only [AppendPos, if_neg ha, if_neg hb]
+        simp only [Vals, List.map_cons]
+        have htail : Vals (AppendPos rest c1 i)
+            = Vals (AppendPos rest2 c2 i) := by
+          have hh1r : DictHasL rest c1 = true := by
+            simpa [DictHasL, if_neg ha] using hh1
+          have hh2r : DictHasL rest2 c2 = true := by
+            simpa [DictHasL, if_neg hb] using hh2
+          have hsr : DictGetL rest c1 = DictGetL rest2 c2 := by
+            have e1 : DictGetL ((a, l) :: rest) c1
+                = DictGetL rest c1 := by simp [DictGetL, if_neg ha]
+            have e2 : DictGetL ((b, m) :: rest2) c2
+                = DictGetL rest2 c2 := by simp [DictGetL, if_neg hb]
+            rw [e1, e2] at hsame
+            exact hsame
+          have hk1r : ∀ k q, DictHasL rest k = true →
+              DictHasL rest q = true → k ≠ q →
+              DictGetL rest k ≠ DictGetL rest q := by
+            intro k q hk hq hne
+            have hka : k ≠ a := by
+              intro he; subst he
+              rw [hn1.1] at hk; exact absurd hk (by simp)
+            have hqa : q ≠ a := by
+              intro he; subst he
+              rw [hn1.1] at hq; exact absurd hq (by simp)
+            have hak : ¬(a = k) := fun he => hka he.symm
+            have haq2 : ¬(a = q) := fun he => hqa he.symm
+            have := hkey1 k q
+              (by simp [DictHasL, if_neg hak, hk])
+              (by simp [DictHasL, if_neg haq2, hq])
+              hne
+            simpa [DictGetL, if_neg hak, if_neg haq2] using this
+          have hk2r : ∀ k q, DictHasL rest2 k = true →
+              DictHasL rest2 q = true → k ≠ q →
+              DictGetL rest2 k ≠ DictGetL rest2 q := by
+            intro k q hk hq hne
+            have hkb : k ≠ b := by
+              intro he; subst he
+              rw [hn2.1] at hk; exact absurd hk (by simp)
+            have hqb : q ≠ b := by
+              intro he; subst he
+              rw [hn2.1] at hq; exact absurd hq (by simp)
+            have hbk : ¬(b = k) := fun he => hkb he.symm
+            have hbq : ¬(b = q) := fun he => hqb he.symm
+            have := hkey2 k q
+              (by simp [DictHasL, if_neg hbk, hk])
+              (by simp [DictHasL, if_neg hbq, hq])
+              hne
+            simpa [DictGetL, if_neg hbk, if_neg hbq] using this
+          exact ih rest2 hrest hsr hh1r hh2r hn1.2 hn2.2 hk1r hk2r
+        have htail' := htail
+        simp only [Vals] at htail'
+        rw [hval, htail']
+
+
+
+-- Stage A2: the per-string fold and its EXACT-LIST master invariant.
+-- DictGetL of the fold at c is literally the filtered index range —
+-- stronger than a membership characterization, and exactly what lets
+-- the ⇐ direction close by filter_congr under the pattern.
+
+def IntRange (i : Int) : List Int :=
+  (List.range (i).toNat).map (fun n => ((n : Nat) : Int))
+
+def PosList (s : List Int) (i c : Int) : List Int :=
+  (IntRange i).filter (fun j => decide (s.getD (j).toNat 0 = c))
+
+def PosFold (s : List Int) : Nat → Int → List (Int × List Int) → List (Int × List Int)
+  | 0, _, d => d
+  | (m_ + 1), i_, d =>
+      if i_ < (s.length : Int) then
+        PosFold s m_ (i_ + 1) (AppendPos d (s.getD (i_).toNat 0) i_)
+      else d
+
+def PosInv (s : List Int) (i_ : Int) (d : List (Int × List Int)) : Prop :=
+  (∀ c : Int, DictGetL d c = PosList s i_ c)
+  ∧ (∀ c : Int, DictHasL d c = true ↔ DictGetL d c ≠ [])
+  ∧ KeysNodup d
+  ∧ (0 ≤ i_ ∧ i_ ≤ (s.length : Int))
+
+theorem IntRange_succ (i : Int) (h : 0 ≤ i) :
+    IntRange (i + 1) = IntRange i ++ [i] := by
+  unfold IntRange
+  rw [show ((i + 1)).toNat = (i).toNat + 1 from by omega]
+  rw [List.range_succ, List.map_append]
+  simp only [List.map_cons, List.map_nil]
+  congr 2
+  omega
+
+theorem PosList_succ (s : List Int) (i c : Int) (h : 0 ≤ i) :
+    PosList s (i + 1) c
+      = PosList s i c
+        ++ (if s.getD (i).toNat 0 = c then [i] else []) := by
+  unfold PosList
+  rw [IntRange_succ i h, List.filter_append]
+  congr 1
+  simp only [List.filter_cons, List.filter_nil]
+  by_cases hc : s.getD (i).toNat 0 = c
+  · rw [decide_eq_true hc, if_pos hc]
+    rfl
+  · rw [decide_eq_false hc, if_neg hc]
+    rfl
+
+-- has ↔ nonempty survives an AppendPos.
+theorem HasL_iff_ne_nil_appendPos (d : List (Int × List Int))
+    (c i : Int)
+    (h : ∀ q : Int, DictHasL d q = true ↔ DictGetL d q ≠ []) :
+    ∀ q : Int, DictHasL (AppendPos d c i) q = true
+      ↔ DictGetL (AppendPos d c i) q ≠ [] := by
+  intro q
+  by_cases hq : q = c
+  · subst hq
+    rw [GetL_appendPos_self]
+    rw [HasL_appendPos]
+    simp
+  · rw [GetL_appendPos_other d c q i hq,
+        HasL_appendPos]
+    constructor
+    · intro hh
+      rcases Bool.or_eq_true_iff.mp hh with h1 | h1
+      · exact (h q).mp h1
+      · exact absurd (of_decide_eq_true h1) hq
+    · intro hne
+      exact Bool.or_eq_true_iff.mpr (Or.inl ((h q).mpr hne))
+
+-- The single step, extracted: both PosFold_inv and the ⇐ joint
+-- induction ride it.
+theorem PosInv_step (s : List Int) (i_ : Int)
+    (d : List (Int × List Int)) (h : PosInv s i_ d)
+    (hc : i_ < (s.length : Int)) :
+    PosInv s (i_ + 1) (AppendPos d (s.getD (i_).toNat 0) i_) := by
+  obtain ⟨h1, h2, h3, h4⟩ := h
+  refine ⟨?_, HasL_iff_ne_nil_appendPos d _ i_ h2,
+          KeysNodup_appendPos d _ i_ h3, by omega⟩
+  intro c
+  rw [PosList_succ s i_ c (by omega)]
+  by_cases hq : c = s.getD (i_).toNat 0
+  · rw [hq, GetL_appendPos_self, h1 (s.getD (i_).toNat 0)]
+    simp
+  · rw [GetL_appendPos_other d _ c i_ hq, h1 c]
+    have hnc : ¬(s.getD (i_).toNat 0 = c) :=
+      fun he => hq he.symm
+    rw [if_neg hnc, List.append_nil]
+
+theorem PosFold_inv (s : List Int) : ∀ (m_ : Nat) (i_ : Int) (d : List (Int × List Int)),
+    PosInv s i_ d → (s.length : Int) ≤ i_ + (m_ : Int) →
+    PosInv s ((s.length : Int)) (PosFold s m_ i_ d) := by
+  intro m_
+  induction m_ with
+  | zero =>
+      intro i_ d h hb
+      obtain ⟨h1, h2, h3, h4⟩ := h
+      have hie : i_ = (s.length : Int) := by omega
+      subst hie
+      simpa only [PosFold] using ⟨h1, h2, h3, h4⟩
+  | succ m2 ih =>
+      intro i_ d h hb
+      by_cases hc : i_ < (s.length : Int)
+      · simp only [PosFold, if_pos hc]
+        apply ih
+        · exact PosInv_step s i_ d h hc
+        · push_cast
+          omega
+      · obtain ⟨h1, h2, h3, h4⟩ := h
+        have hie : i_ = (s.length : Int) := by omega
+        subst hie
+        simp only [PosFold, if_neg hc]
+        exact ⟨h1, h2, h3, h4⟩
+
+
+
+-- Stage B: the ⇐ joint induction. Under the equality pattern (and
+-- equal lengths) the two folds build LITERALLY equal value lists —
+-- first-occurrence order is a property of the position partition,
+-- not of the characters.
+
+theorem mem_IntRange (i j : Int) (h : 0 ≤ i) :
+    j ∈ IntRange i ↔ (0 ≤ j ∧ j < i) := by
+  unfold IntRange
+  simp only [List.mem_map, List.mem_range]
+  constructor
+  · rintro ⟨n, hn, rfl⟩
+    omega
+  · intro ⟨h0, h1⟩
+    exact ⟨(j).toNat, by omega, by omega⟩
+
+theorem mem_PosList (s : List Int) (i c j : Int)
+    (hm : j ∈ PosList s i c) : s.getD (j).toNat 0 = c := by
+  unfold PosList at hm
+  exact of_decide_eq_true (List.mem_filter.mp hm).2
+
+theorem PosInv_key_distinct (s : List Int) (i_ : Int)
+    (d : List (Int × List Int)) (h : PosInv s i_ d) :
+    ∀ k q, DictHasL d k = true → DictHasL d q = true → k ≠ q →
+      DictGetL d k ≠ DictGetL d q := by
+  obtain ⟨h1, h2, h3, h4⟩ := h
+  intro k q hk hq hne he
+  have hkne : DictGetL d k ≠ [] := (h2 k).mp hk
+  rcases List.exists_mem_of_ne_nil _ hkne with ⟨j, hj⟩
+  have hsk : s.getD (j).toNat 0 = k := by
+    rw [h1 k] at hj
+    exact mem_PosList s i_ k j hj
+  have hsq : s.getD (j).toNat 0 = q := by
+    rw [he, h1 q] at hj
+    exact mem_PosList s i_ q j hj
+  exact hne (hsk ▸ hsq)
+
+theorem IsoVals (s1 s2 : List Int)
+    (hlen : s1.length = s2.length)
+    (hpat : ∀ i j : Int, 0 ≤ i → i < (s1.length : Int) →
+       0 ≤ j → j < (s1.length : Int) →
+       ((s1.getD (i).toNat 0 = s1.getD (j).toNat 0)
+         ↔ (s2.getD (i).toNat 0 = s2.getD (j).toNat 0))) :
+    ∀ (m_ : Nat) (i_ : Int) (d1 d2 : List (Int × List Int)),
+    PosInv s1 i_ d1 → PosInv s2 i_ d2 → Vals d1 = Vals d2 →
+    (s1.length : Int) ≤ i_ + (m_ : Int) →
+    Vals (PosFold s1 m_ i_ d1) = Vals (PosFold s2 m_ i_ d2) := by
+  intro m_
+  induction m_ with
+  | zero =>
+      intro i_ d1 d2 hI1 hI2 hV hb
+      simpa only [PosFold] using hV
+  | succ m2 ih =>
+      intro i_ d1 d2 hI1 hI2 hV hb
+      by_cases hc : i_ < (s1.length : Int)
+      · have hc2 : i_ < (s2.length : Int) := by
+          rw [← hlen]
+          exact hc
+        simp only [PosFold, if_pos hc, if_pos hc2]
+        have h0 : 0 ≤ i_ := hI1.2.2.2.1
+        -- the shared block: the two position classes of index i_
+        have hsame : DictGetL d1 (s1.getD (i_).toNat 0)
+            = DictGetL d2 (s2.getD (i_).toNat 0) := by
+          rw [hI1.1 _, hI2.1 _]
+          unfold PosList
+          apply List.filter_congr
+          intro j hj
+          have hjb := (mem_IntRange i_ j h0).mp hj
+          have hp := hpat j i_ hjb.1 (by omega) h0 hc
+          by_cases h1j : s1.getD (j).toNat 0 = s1.getD (i_).toNat 0
+          · rw [decide_eq_true h1j,
+                decide_eq_true (hp.mp h1j)]
+          · rw [decide_eq_false h1j,
+                decide_eq_false (fun hx => h1j (hp.mpr hx))]
+        have hst1 := PosInv_step s1 i_ d1 hI1 hc
+        have hst2 := PosInv_step s2 i_ d2 hI2 hc2
+        by_cases hf : DictHasL d1 (s1.getD (i_).toNat 0) = true
+        · -- KNOWN on both sides (via hsame + has ↔ nonempty)
+          have hf2 : DictHasL d2 (s2.getD (i_).toNat 0) = true := by
+            rw [hI2.2.1 _, ← hsame]
+            exact (hI1.2.1 _).mp hf
+          have hstep := Vals_appendPos_known_pointwise d1 d2
+            (s1.getD (i_).toNat 0) (s2.getD (i_).toNat 0) i_
+            hV hsame hf hf2 hI1.2.2.1 hI2.2.2.1
+            (PosInv_key_distinct s1 i_ d1 hI1)
+            (PosInv_key_distinct s2 i_ d2 hI2)
+          exact ih (i_ + 1) _ _ hst1 hst2 hstep
+            (by push_cast; omega)
+        · -- FRESH on both sides
+          have hff : DictHasL d1 (s1.getD (i_).toNat 0) = false :=
+            Bool.eq_false_iff.mpr hf
+          have hf2 : DictHasL d2 (s2.getD (i_).toNat 0) = false := by
+            rw [Bool.eq_false_iff]
+            intro h2t
+            have := (hI2.2.1 _).mp h2t
+            rw [← hsame] at this
+            exact hf ((hI1.2.1 _).mpr this)
+          have hV1 := Vals_appendPos_fresh d1
+            (s1.getD (i_).toNat 0) i_ hff
+          have hV2 := Vals_appendPos_fresh d2
+            (s2.getD (i_).toNat 0) i_ hf2
+          exact ih (i_ + 1) _ _ hst1 hst2
+            (by rw [hV1, hV2, hV]) (by push_cast; omega)
+      · have hc2 : ¬(i_ < (s2.length : Int)) := by
+          rw [← hlen]
+          exact hc
+        simp only [PosFold, if_neg hc, if_neg hc2]
+        exact hV
+
+
+
+-- Stage C: sorting as an OPAQUE permutation. The theorem needs
+-- nothing about the order: ⇐ gets literal equality of the inputs,
+-- and ⇒ needs only that sorting permutes. (Whether this models
+-- Python's sorted faithfully is settled by the spec theorem itself:
+-- both conditions are equivalent to multiset equality, which is
+-- what Python's canonical sort compares.)
+
+def ListLEb : List Int → List Int → Bool
+  | [], _ => true
+  | _ :: _, [] => false
+  | x :: xs, y :: ys =>
+      if x < y then true
+      else if y < x then false
+      else ListLEb xs ys
+
+def InsertLL (x : List Int) : List (List Int) → List (List Int)
+  | [] => [x]
+  | y :: ys => if ListLEb x y then x :: y :: ys
+               else y :: InsertLL x ys
+
+def SortL : List (List Int) → List (List Int)
+  | [] => []
+  | x :: xs => InsertLL x (SortL xs)
+
+theorem InsertLL_perm (x : List Int) (l : List (List Int)) :
+    List.Perm (InsertLL x l) (x :: l) := by
+  induction l with
+  | nil => exact List.Perm.refl _
+  | cons y ys ih =>
+    by_cases h : ListLEb x y = true
+    · simp only [InsertLL, if_pos h]
+      exact List.Perm.refl _
+    · simp only [InsertLL, if_neg h]
+      exact (List.Perm.cons y ih).trans (List.Perm.swap x y ys)
+
+theorem SortL_perm (l : List (List Int)) :
+    List.Perm (SortL l) l := by
+  induction l with
+  | nil => exact List.Perm.refl _
+  | cons x xs ih =>
+    exact (InsertLL_perm x (SortL xs)).trans
+      (List.Perm.cons x ih)
+
+-- Stage D helpers: PosList membership both ways, and Vals ↔ GetL.
+theorem mem_PosList_intro (s : List Int) (i c j : Int)
+    (h0 : 0 ≤ j) (h1 : j < i) (hs : s.getD (j).toNat 0 = c) :
+    j ∈ PosList s i c := by
+  unfold PosList
+  rw [List.mem_filter]
+  exact ⟨(mem_IntRange i j (by omega)).mpr ⟨h0, h1⟩,
+         decide_eq_true hs⟩
+
+theorem mem_PosList_bounds (s : List Int) (i c j : Int)
+    (h : 0 ≤ i) (hm : j ∈ PosList s i c) : 0 ≤ j ∧ j < i := by
+  unfold PosList at hm
+  exact (mem_IntRange i j h).mp (List.mem_filter.mp hm).1
+
+theorem Vals_mem_getL (d : List (Int × List Int))
+    (hn : KeysNodup d) (l : List Int) (hm : l ∈ Vals d) :
+    ∃ c : Int, DictHasL d c = true ∧ DictGetL d c = l := by
+  induction d with
+  | nil => simp [Vals] at hm
+  | cons p rest ih =>
+    obtain ⟨a, v⟩ := p
+    simp only [Vals, List.map_cons, List.mem_cons] at hm
+    rcases hm with hm | hm
+    · exact ⟨a, by simp [DictHasL], by simp [DictGetL, hm.symm]⟩
+    · obtain ⟨c, hc1, hc2⟩ := ih hn.2 hm
+      have hca : c ≠ a := by
+        intro he
+        subst he
+        rw [hn.1] at hc1
+        exact absurd hc1 (by simp)
+      have hac : ¬(a = c) := fun he => hca he.symm
+      exact ⟨c, by simp [DictHasL, if_neg hac, hc1],
+             by simp [DictGetL, if_neg hac, hc2]⟩
+
+theorem getL_mem_Vals (d : List (Int × List Int)) (c : Int)
+    (h : DictHasL d c = true) : DictGetL d c ∈ Vals d := by
+  induction d with
+  | nil => simp [DictHasL] at h
+  | cons p rest ih =>
+    obtain ⟨a, v⟩ := p
+    by_cases ha : a = c
+    · simp [DictGetL, if_pos ha, Vals]
+    · simp only [DictHasL, if_neg ha] at h
+      simp only [DictGetL, if_neg ha, Vals, List.map_cons]
+      exact List.mem_cons_of_mem _ (ih h)
+
+
+
+-- Stage D: the assembly. One direction is literal Vals equality
+-- (IsoVals); the other rides the permutation through the block
+-- structure of the exit invariants.
+
+theorem PosList_zero (s : List Int) (c : Int) :
+    PosList s 0 c = [] := rfl
+
+theorem PosInv_entry (s : List Int) : PosInv s 0 [] := by
+  refine ⟨fun c => (PosList_zero s c).symm, fun c => by
+    simp [DictHasL, DictGetL], trivial, by
+    constructor
+    · omega
+    · push_cast
+      omega⟩
+
+theorem pattern_of_valsPerm (s1 s2 : List Int)
+    (F1 F2 : List (Int × List Int))
+    (hI1 : PosInv s1 ((s1.length : Int)) F1)
+    (hI2 : PosInv s2 ((s2.length : Int)) F2)
+    (hperm : List.Perm (Vals F1) (Vals F2)) :
+    ∀ i j : Int, 0 ≤ i → i < (s1.length : Int) →
+      0 ≤ j → j < (s1.length : Int) →
+      s1.getD (i).toNat 0 = s1.getD (j).toNat 0 →
+      s2.getD (i).toNat 0 = s2.getD (j).toNat 0 := by
+  intro i j hi0 hi1 hj0 hj1 hij
+  have hBg : DictGetL F1 (s1.getD (i).toNat 0)
+      = PosList s1 ((s1.length : Int)) (s1.getD (i).toNat 0) :=
+    hI1.1 _
+  have hiB : i ∈ DictGetL F1 (s1.getD (i).toNat 0) := by
+    rw [hBg]
+    exact mem_PosList_intro s1 _ _ i hi0 hi1 rfl
+  have hjB : j ∈ DictGetL F1 (s1.getD (i).toNat 0) := by
+    rw [hBg]
+    exact mem_PosList_intro s1 _ _ j hj0 hj1 hij.symm
+  have hhas : DictHasL F1 (s1.getD (i).toNat 0) = true :=
+    (hI1.2.1 _).mpr (by
+      intro he
+      rw [he] at hiB
+      simp at hiB)
+  have hBV : DictGetL F1 (s1.getD (i).toNat 0) ∈ Vals F2 :=
+    (hperm.mem_iff).mp (getL_mem_Vals F1 _ hhas)
+  obtain ⟨c2, hc2has, hc2get⟩ :=
+    Vals_mem_getL F2 hI2.2.2.1 _ hBV
+  have hB2 : DictGetL F1 (s1.getD (i).toNat 0)
+      = PosList s2 ((s2.length : Int)) c2 := by
+    rw [← hc2get]
+    exact (hI2.1 c2).symm ▸ rfl
+  have hsi : s2.getD (i).toNat 0 = c2 :=
+    mem_PosList s2 _ _ i (hB2 ▸ hiB)
+  have hsj : s2.getD (j).toNat 0 = c2 :=
+    mem_PosList s2 _ _ j (hB2 ▸ hjB)
+  rw [hsi, hsj]
+
+theorem bound_of_valsPerm (s1 s2 : List Int)
+    (F1 F2 : List (Int × List Int))
+    (hI1 : PosInv s1 ((s1.length : Int)) F1)
+    (hI2 : PosInv s2 ((s2.length : Int)) F2)
+    (hperm : List.Perm (Vals F1) (Vals F2)) :
+    ∀ i : Int, 0 ≤ i → i < (s1.length : Int) →
+      i < (s2.length : Int) := by
+  intro i hi0 hi1
+  have hBg := hI1.1 (s1.getD (i).toNat 0)
+  have hiB : i ∈ DictGetL F1 (s1.getD (i).toNat 0) := by
+    rw [hBg]
+    exact mem_PosList_intro s1 _ _ i hi0 hi1 rfl
+  have hhas : DictHasL F1 (s1.getD (i).toNat 0) = true :=
+    (hI1.2.1 _).mpr (by
+      intro he
+      rw [he] at hiB
+      simp at hiB)
+  have hBV : DictGetL F1 (s1.getD (i).toNat 0) ∈ Vals F2 :=
+    (hperm.mem_iff).mp (getL_mem_Vals F1 _ hhas)
+  obtain ⟨c2, hc2has, hc2get⟩ :=
+    Vals_mem_getL F2 hI2.2.2.1 _ hBV
+  have hB2 : DictGetL F1 (s1.getD (i).toNat 0)
+      = PosList s2 ((s2.length : Int)) c2 := by
+    rw [← hc2get]
+    exact (hI2.1 c2).symm ▸ rfl
+  exact (mem_PosList_bounds s2 _ c2 i (by push_cast; omega)
+    (hB2 ▸ hiB)).2
+
 
 end VeriPy
 """.format(version=PRELUDE_VERSION)

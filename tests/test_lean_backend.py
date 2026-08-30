@@ -4397,3 +4397,114 @@ def test_while_exit_value_is_synthesized_without_the_assert(tmp_path):
     r2 = verify_structured(tmp_path / "weak.py", tmp_path / "o2",
                            backend="lean", time_limit=60)
     assert r2["status"] == "failed", r2["status"]
+
+
+def test_frequency_dict_class_matches_strictly():
+    # The frequency-dict class (mbpp_97): the FIRST dict task — a
+    # dict[int, int] counter over a flattened list[list[int]],
+    # modeled as an association list whose order is carried but never
+    # observed (the admitted specs are order-blind, per the
+    # iteration-order veto). Matched strictly against the pinned
+    # template; the prelude's FreqFold_inv master invariant absorbs
+    # the source's three invariant lines the way the nested-search
+    # flattener absorbs inner-loop invariants.
+    src = Path("examples/contact/mbpp_97.py").read_text()
+    out = _encode(src).lean_source
+    assert "VeriPy.FreqFold" in out
+    assert "VeriPy.DictHas" in out
+    assert "List.mem_flatten" in out
+    # Body deviations are refused with the pattern named.
+    with pytest.raises(EncodeError, match="frequency-dict"):
+        _encode(src.replace("dic_data[num] += 1",
+                            "dic_data[num] += 2"))
+    # Spec deviations too: a weakened count post is refused, not
+    # proved.
+    with pytest.raises(EncodeError, match="frequency-dict"):
+        _encode(src.replace(
+            "result[key] == sum(1 for sublist in list1 for item in "
+            "sublist if item == key)",
+            "result[key] >= 1"))
+    # A dropped invariant is named, never silently absorbed into
+    # nothing.
+    with pytest.raises(EncodeError, match="three invariants"):
+        _encode(src.replace(
+            "        #@ invariant forall key in dic_data :: "
+            "key in flat\n", ""))
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_frequency_lists_proves(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/mbpp_97.py")
+    good = tmp_path / "freq.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0", backend="lean",
+                             time_limit=60)["status"] == "ok"
+
+    # In-template lies are impossible by construction; the teeth are
+    # the refusals — mutations must never reach `ok`.
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            ("dic_data[num] += 1", "dic_data[num] += 2"),
+            ("value = 1", "value = 2"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        st = verify_structured(bad, tmp_path / f"ob{k}",
+                               backend="lean")["status"]
+        assert st == "encode-error", (k, st)
+
+
+def test_isomorphism_class_matches_strictly():
+    # The isomorphism class (mbpp_885): two position-class dicts over
+    # code-point strings, compared by sorted values. The deepest pin
+    # so far — the spec theorem proves the algorithm's multiset test
+    # EQUIVALENT to the ∀∀ equality pattern, both directions, riding
+    # two design facts: first-occurrence order is a property of the
+    # position partition alone (so the ⇐ direction gets literally
+    # equal value lists), and the sort needs no properties beyond
+    # being a permutation.
+    src = Path("examples/contact/mbpp_885.py").read_text()
+    out = _encode(src).lean_source
+    assert "VeriPy.PosFold" in out
+    assert "VeriPy.SortL" in out
+    assert "VeriPy.IsoVals" in out
+    with pytest.raises(EncodeError, match="isomorphism"):
+        _encode(src.replace(
+            "dict_str1.get(value, []) + [i]",
+            "dict_str1.get(value, []) + [i, i]"))
+    with pytest.raises(EncodeError, match="isomorphism"):
+        _encode(src.replace(
+            "(str1[i] == str1[j]) == (str2[i] == str2[j])",
+            "(str1[i] == str1[j])"))
+    with pytest.raises(EncodeError, match="four invariants"):
+        _encode(src.replace(
+            "        #@ invariant forall k in range(j) :: "
+            "str2[k] in dict_str2 and k in dict_str2[str2[k]]\n", ""))
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_is_isomorphic_proves(tmp_path):
+    from veripy.agentio import verify_structured
+    import shutil
+
+    src = Path("examples/contact/mbpp_885.py")
+    good = tmp_path / "iso.py"
+    shutil.copy(src, good)
+    assert verify_structured(good, tmp_path / "o0", backend="lean",
+                             time_limit=90)["status"] == "ok"
+
+    # In-template lies are impossible by construction; mutations must
+    # never reach `ok`.
+    base = src.read_text()
+    for k, (frm, to) in enumerate((
+            ("sorted(dict_str1.values()) == sorted(dict_str2.values())",
+             "sorted(dict_str1.values()) != sorted(dict_str2.values())"),
+            ("for i, value in enumerate(str1):",
+             "for i, value in enumerate(str2):"))):
+        bad = tmp_path / f"bad{k}.py"
+        bad.write_text(base.replace(frm, to))
+        st = verify_structured(bad, tmp_path / f"ob{k}",
+                               backend="lean")["status"]
+        assert st == "encode-error", (k, st)
