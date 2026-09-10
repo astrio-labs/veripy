@@ -1,0 +1,858 @@
+\documentclass{article}
+
+\PassOptionsToPackage{numbers, compress}{natbib}
+% Submission mode (anonymous). For camera-ready: \usepackage[main, final]{neurips_2026_vericode}
+\usepackage{neurips_2026_vericode}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{multirow}
+
+% ---------------------------------------------------------------------------
+% Author decisions (2026-08-16): FULL SYSTEM PAPER introducing VeriPy.
+% Renamed LemmaPy -> VeriPy on 2026-08-18 with the repo move to astrio-labs.
+% Real names throughout. House style: no em-dashes, no semicolons, no prose
+% colons, no section symbol. Short declarative sentences.
+% PENDING NUMBERS marked (running): the raw-Dafny baseline arm only
+% (Claude 5 columns landed 2026-08-17). Freeze before submission.
+\newcommand{\toolname}{VeriPy}
+\newcommand{\benchname}{VeriPy-Bench}
+\newcommand{\ehaiku}{Haiku~4.5}
+\newcommand{\esonnet}{Sonnet~4.6}
+\newcommand{\eopus}{Opus~4.8}
+\newcommand{\efable}{Fable~5}
+\newcommand{\egrok}{Grok~4.6}
+\newcommand{\pending}{\textit{(running)}}
+% ---------------------------------------------------------------------------
+
+\title{\toolname{}: Verified Python with LLM-Written\\Specifications and Proofs}
+\workshoptitle{AI for Verifiable Coding (VeriCodeGen)}
+
+\author{Anonymous}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We present \toolname{}, a verification toolchain built for coding agents.
+The agent writes ordinary Python with \verb|#@| specification comments
+that CPython ignores, and the toolchain generates verifiable code from
+it, today in Dafny, with a Lean~4 backend planned behind the same thin
+intermediate representation. The same specs also compile to runtime
+contracts hunted by a symbolic executor, so one surface earns concrete
+counterexamples before any proof exists and machine-checked proofs
+after. Proof material
+lives in an additions-only sidecar behind a whitelist validator, so an
+agent can help prove but never assume, and verification failures arrive as
+a versioned machine-readable taxonomy. On \benchname{}, a curated 14-task
+corpus with a deterministic 63-mutant panel, Claude tiers spanning two
+model generations place at 11--94\,\% on proof repair and at 63--77\,\%
+against a 78\,\% curated ceiling on spec strength, and the two exams
+disagree about which tier is strongest. Opus~5 posts the best repair
+column measured (17/18, including the task no earlier tier restored) yet
+writes weaker specs than Sonnet~4.6. A raw-Dafny baseline arm is designed
+to measure what the scaffolding contributes over handing the model the
+prover's input directly. Scoring these exams honestly was the hard part. Mutation-scored
+specifications are established, but the refuter changes what the score
+means. Adjudicating the same panel by witness-carrying execution and by
+the prover, we find strictly one-directional disagreement and show that a
+bare prover ``Killed'' verdict conflates proof-apparatus breakage and
+safety failures with genuine spec refutation. From eleven silent scoring
+defects, including one that floored a vacuous spec at 38\,\% rather than
+0\,\% and an answer-key retrieval that recurred across vendors, we distill
+three rules, led by publishing a trivial-spec floor beside every reported
+rate.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Agents are fluent in Python and not in proof languages, and \toolname{}
+takes the position that they should not have to be. The agent writes
+ordinary Python with \verb|#@| specification comments, and the toolchain
+owns the translation to a proof language, generating verifiable Dafny
+today with a Lean~4 backend planned behind the same thin intermediate
+representation. Everything downstream is built for a model in the loop. Feedback is machine-readable rather than prose, proof
+edits are confined to a sidecar the toolchain can police, and the
+evaluation is designed to survive the model gaming it.
+
+We make three contributions.
+\begin{itemize}
+  \item \textbf{The system} (Section~\ref{sec:apparatus}). \toolname{}
+  verifies a fragment of typed Python with specs as \verb|#@| comment
+  contracts, compiled both to runtime contracts and to Dafny. Proof
+  material is confined to an additions-only sidecar validated by a
+  whitelist (ghost declarations with bodies only), so agent edits can
+  help prove but never assume. Failures are a versioned machine-readable
+  taxonomy. The fragment is a generation target rather than a filter on
+  found code. By an optimistic upper-bound survey, 65\,\% of HumanEval and
+  67\,\% of MBPP canonical solutions fall inside it, against 3--23\,\% of
+  functions in nine typed OSS libraries.
+  \item \textbf{\benchname{} and its exams} (Section~\ref{sec:exams}). A
+  curated 14-task corpus, verified to full assurance height, drives two
+  exams. Proof repair restores a deleted, provably load-bearing lemma
+  pack. Spec writing annotates spec-stripped code, scored on the same
+  63-mutant panel as the curated reference. Six Claude tiers across two
+  model generations are placed, with intervals at trial and task level.
+  Repair columns span 11\,\% to Opus~5's 94\,\% (17/18, including 3/3 on
+  the task no earlier tier restored), while on spec strength five tiers
+  place at 63--77\,\% against a 78\,\% curated ceiling and the
+  generations invert, with Opus~5 at 66\,\% under Sonnet~4.6's 75\,\%. A
+  raw-Dafny baseline arm hands the model the prover's input directly,
+  with no whitelist and raw verifier errors, to isolate what the
+  scaffolding contributes (Table~\ref{tab:baseline}).
+  \item \textbf{Honest scoring} (Section~\ref{sec:refuters}).
+  Mutation-scoring specs is established for contracts under
+  KeY~\cite{knuppel2021} and Dafny~\cite{mutdafny}, but the refuter
+  changes what the score means. Adjudicating our panel by a witnessed
+  refuter and by the prover, agreement is perfect on the cleanly
+  refutable class (49/49), disagreement is strictly one-directional (12
+  prover-only kills, 0 witnessed-only), and mechanical classification
+  shows none of the 12 is a pure spec refutation. We distill three rules
+  from eleven measured scoring defects, ten from our own instrument's
+  construction, the newest a cross-vendor answer-key retrieval in which
+  Grok~4.6 behind the Cursor agent CLI defeated its read-only mode, its
+  sandbox flag, and a wildcard tool-deny list.
+\end{itemize}
+
+\section{\toolname{}}
+\label{sec:apparatus}
+
+\begin{figure}[t]
+\begin{scriptsize}
+\begin{verbatim}
+#@ verified
+#@ ensures result == (exists n in range(len(operations) + 1) :: sum(operations[:n]) < 0)
+def below_zero(operations: list[int]) -> bool:
+    balance = 0
+    for i in range(len(operations)):
+        #@ invariant balance == sum(operations[:i])
+        #@ invariant forall n in range(i + 1) :: sum(operations[:n]) >= 0
+        #@ proof SliceSnoc(operations, i)
+        balance += operations[i]
+        if balance < 0:
+            return True
+    return False
+\end{verbatim}
+\hrule
+\begin{verbatim}
+// task.proofs.dfy (the additions-only sidecar)
+lemma SliceSnoc(s: seq<int>, i: int)
+  requires 0 <= i < |s|
+  ensures PySlice(s, 0, i + 1) == PySlice(s, 0, i) + [s[i]]
+{
+}
+\end{verbatim}
+\end{scriptsize}
+\caption{\benchname{} task \texttt{below\_zero} (HumanEval/3). The
+postcondition quantifies over prefix sums. Z3 does not connect the
+preamble's clamped slice semantics to the one-element extension unaided,
+so the \texttt{\#@ proof} clause invokes \texttt{SliceSnoc} from the
+sidecar. The lemma body is empty because Dafny proves the statement once
+it is stated. The whitelist validator accepts the sidecar because it
+contains only a bodied ghost declaration.}
+\label{fig:example}
+\end{figure}
+
+\paragraph{Design positions.} \toolname{} is a shallow embedding. The
+prover never hosts a deep model of Python. A typed fragment is lowered
+directly to the target language under a semantics-pinning preamble, and
+the lowering is validated against CPython (below) rather than trusted.
+Four positions follow.
+\begin{itemize}
+  \item \textbf{Single source of truth.} The annotated Python file is the
+  only human-maintained artifact. Specs live in the source as comments,
+  the generated Dafny model is regenerated on every run and never
+  hand-edited, and the one durable proof artifact is the additions-only
+  sidecar. There is no second codebase to keep in sync.
+  \item \textbf{The source is the deployed artifact.} Translation-based
+  verification leaves the verified model in the prover's language, where
+  an application cannot import it. Here the verified function is the
+  ordinary Python source itself, imported directly with no adapter layer,
+  and the annotations cost nothing at runtime because CPython ignores
+  comments (runtime contract checking is an opt-in mode).
+  \item \textbf{The ecosystem survives, and adoption is brownfield.}
+  Annotated modules remain ordinary Python, so test runners, type
+  checkers, linters, and virtual environments work unchanged, with no
+  parallel prover build infrastructure entering the project. Verification
+  is opted into per function, so critical invariants earn proofs while
+  surrounding glue code stays unannotated.
+  \item \textbf{The backend is a target, not an identity.} Python
+  semantics are pinned once in the lowering catalog rather than
+  re-derived per prover. The encoder sits behind a thin backend-neutral
+  intermediate representation. Dafny is the shipped backend, a Lean~4
+  emitter is planned over the same representation, and identical tasks
+  would then carry a second prove and fidelity column.
+\end{itemize}
+
+\paragraph{Spec surface.} Specifications are comments beginning
+\verb|#@|, so annotated modules remain ordinary Python that CPython runs
+unchanged (Figure~\ref{fig:example}). The clause grammar covers an opt-in
+\texttt{verified} marker, \texttt{requires}, \texttt{ensures}, loop
+\texttt{invariant} and \texttt{decreases}, and a ghost \texttt{proof}
+clause that invokes a named sidecar lemma at a program point. Spec
+expressions are Python expressions extended with \verb|==>|, \verb|<==>|,
+and bounded \texttt{forall}/\texttt{exists} over finite domains, plus
+\texttt{result} and \texttt{old()} in postconditions, a deliberate choice
+that keeps every spec executable. A \texttt{requires} or \texttt{ensures}
+clause therefore has two compiled meanings, a runtime check and a Dafny
+obligation, while \texttt{invariant}, \texttt{decreases}, and
+\texttt{proof} feed only the prover.
+
+\paragraph{Pipeline.} A front end enforces fragment conformance (an AST
+conformance pass plus strict static typing, backed by an encoder that
+hard-fails on any construct without a lowering rule), and the encoder emits
+Dafny against a versioned preamble that pins Python semantics the SMT
+solver would otherwise get wrong, such as floor division, the floor-style
+\texttt{\%} (Dafny's is Euclidean), clamped slices, and truthiness. The
+pipeline separates concerns into four gate stages, namely conformance,
+types, encoding, and proof. The
+encoder is the largest trusted component, so it is validated rather than
+argued about. A translation-validation harness compiles the Dafny model
+back to executable form and differentially tests it against CPython on
+property-based inputs. The runtime rail compiles the same specs to
+contracts hunted by a symbolic executor, so a spec earns concrete
+counterexamples before any proof exists. That pre-proof regime is exactly
+where LLM-written specs live, and it is why the scoring question of
+Section~\ref{sec:refuters} matters.
+
+\paragraph{Agent interface.} Everything an agent touches is constrained
+and machine-readable. Proof material lives in an additions-only sidecar
+file beside the source. A whitelist validator admits only bodied ghost
+declarations and rejects axioms, bodiless lemmas, \texttt{assume},
+attributes, and non-declaration content, so a sidecar can help prove but
+cannot introduce assumptions. Verification outcomes are structured
+payloads under a versioned failure taxonomy that names the failure kind
+(prover obligations such as postcondition, invariant, bounds, and
+termination, sidecar resolution errors, and front-end conformance
+rejections) with source positions mapped back to Python lines. The embedding API never prints, never exits, and returns expected
+failures as values, properties pinned by tests. The repair loop feeds the
+taxonomy back to the engine, which may edit only the sidecar.
+
+\paragraph{The fragment is a generation target.} An AST-level survey with
+optimistic method matching (an upper bound) accepts 3--23\,\% of
+functions across nine typed OSS libraries, but 107 of 164 HumanEval
+(65.2\,\%) and 650 of 974 MBPP (66.7\,\%) canonical solutions. Library
+plumbing was never the v1 audience. The kind of function LLMs are asked
+to write, and that specs naturally describe, is overwhelmingly
+fragment-shaped, and code outside the fragment is refused at conformance
+rather than scored.
+
+\section{\benchname{} and the exams}
+\label{sec:exams}
+
+\begin{table}[t]
+\centering
+\caption{Corpus provenance. Benchmarks translated from existing suites are
+standard practice (Verus-Bench translates Diffy, MBPP, and
+CloverBench~\cite{autoverus}). The graded artifacts (specs, sidecars,
+panels, whitelist) are project-original. HumanEval is MIT-licensed, and
+per-task license metadata rides in the artifact.}
+\label{tab:corpus}
+\small
+\begin{tabular}{lccl}
+\toprule
+Source & Tasks & Sidecar-bearing & Notes \\
+\midrule
+HumanEval (ported) & 11 & 5 & implementations maximally memorized \\
+Project-original & 3 & 1 & incl.\ one MBPP-style task \\
+\midrule
+Total & 14 & 6 & 63-mutant deterministic panel \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Each task climbs an assurance ladder made of parse and conformance, the
+runtime contract hunt, deterministic mutant-panel
+scoring~\cite{papadakis}, encoding, proof, and fidelity checks. The rungs
+catch different defect classes (Table~\ref{tab:rungs}). The fidelity
+rung's unique-catch cell is empty on this corpus, admitted rather than
+filled. The 14 tasks (Table~\ref{tab:corpus}) carry curated
+specifications and, where the proof needs lemmas, curated sidecars, all
+verified to full ladder height. On the 63-mutant panel the curated specs
+refute 49 (78\,\%), a figure two independent code paths (the ladder's own
+panel stage and the exam scorer) compute separately and agree on. The remainder is \emph{not} spec weakness.
+Thirteen mutants crash concrete execution before any contract can be
+witnessed and one diverges, and under refutation-only crediting
+(Section~\ref{sec:honesty}) those never count. The per-task refutation
+spread (0--100\,\%) is driven entirely by crash share, with zero clean
+survivors. The instrument separates a floor (vacuous specs score 0\,\%)
+from a ceiling (curated specs score 78\,\%), and engine-written specs
+populate the range between.
+
+\begin{table}[t]
+\centering
+\caption{The ladder's rungs and the measured catch unique to each on this
+corpus.}
+\label{tab:rungs}
+\small
+\begin{tabular}{lp{9.6cm}}
+\toprule
+Rung & Measured catch the other rungs missed \\
+\midrule
+gate (parse, conformance) & 2 of 42 weakest-tier spec-writing trials named
+a symbol outside the spec grammar (\texttt{pow}) and were rejected before
+scoring, counted $0/N$ \\
+hunt & every clean kill carries a concrete counterexample input, which
+prover kills of the same mutants never do (Section~\ref{sec:refuters}) \\
+panel & the vacuous spec clears every other rung at full height and kills
+0/63, and only this rung scores it \\
+encode & 2 of 63 panel mutants leave the encodable fragment, so the prover
+cannot judge them at all \\
+prove & 12 spec-writing trials matched or exceeded curated kill rates yet
+failed to prove, strength the panel certifies and provability it cannot \\
+fidelity & (none measured yet) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Proof-repair exam.} Delete the sidecar. The engine must restore
+verification within four iterations of structured feedback. Admission
+requires the pack to be \emph{provably load-bearing}, meaning deleting it
+breaks the proof. This is the same criterion AutoVerus applied in
+excluding the 26.9\,\% of DafnyBench tasks needing no proof
+annotations~\cite{autoverus}. Eight of our fourteen tasks prove from
+invariants alone and are excluded, and six qualify. The screen itself must
+be able to fail. An early version asserted breakage the encoder already
+guaranteed (deleted lemmas still referenced), so it could not fail for any
+task. It now strips the proof clauses too and requires a genuine prover
+failure, with an explicit inconclusive verdict.
+
+\paragraph{Spec-writing exam.} Strip every specification. The engine
+annotates bare code with no verification feedback (grammar-rejected
+proposals are retried, at most three per trial), under a freeze validator
+enforcing AST-equality of the comment-stripped source. AutoVerus reports
+disciplining models into not modifying the implementation as an open
+prompting problem~\cite{autoverus}, and we mechanize the control. The
+result is scored on the \emph{same} panel as the curated specs.
+Anti-gaming is built in, since a vacuous spec reaches full ladder height
+and kills 0/63.
+
+\paragraph{Raw-Dafny baseline.} To isolate what the scaffolding
+contributes, a baseline arm hands the model exactly what the prover sees,
+the encoder's Dafny module with implementation and specifications frozen
+by construction, and asks for the proof file free-form. No whitelist, no
+taxonomy, and feedback is raw Dafny output. The same verifier judges both
+sides, which is what makes the comparison honest (a baseline that
+hand-translates the Python could verify a mistranslation). Accepted
+baseline answers are audited for assumption smuggling (\texttt{assume},
+axiom attributes, bodiless lemmas), and audited-unsound successes are
+reported separately rather than credited.
+
+\paragraph{Protocol.} Engines run headless with all tools denied, in an
+empty working directory, under a wall clock, with pinned task ordering,
+bounded prompts, and the probe discipline of Section~\ref{sec:honesty}.
+This is \emph{retrieval}-hardening, not contamination-hardening. With
+tools enabled, an agent once located the curated sidecar, which is public,
+and returned it verbatim, a retrieval result wearing a proof-completion
+costume. The same class recurred, across vendors, against a stack of
+nominal tool denials (Section~\ref{sec:honesty}). Memorization of the
+\emph{implementations} is assumed and stated. Five of six repair-roster
+functions are HumanEval ports, yet scores span 11--94\,\% on identical
+tasks, and the roster's hardest task (\texttt{rolling\_max}, HumanEval/9)
+is itself maximally memorized yet resisted every tier of the original
+grid (0/6 against \efable{}) before falling to Opus~5's loop.
+Pack overlap is quantified rather than assumed away. Two pilot runs
+independently derived 8- and 5-lemma \texttt{gcd} packs against the
+curated 8-lemma pack, sharing only the entry-point lemma the frozen proof
+clauses name (earlier-instrument runs, reported as narrative). Recall of
+implementations demonstrably does not purchase proof success. Unlike the
+never-public Verus proofs behind AutoVerus's leakage
+argument~\cite{autoverus}, our curated sidecars \emph{are} public. We
+disclose that and deny retrieval mechanically instead. AutoVerus's
+authors-familiar-with-the-tasks disclosure is the kin of our
+curated-authorship disclosure (Section~\ref{sec:limits}).
+
+\begin{table}[t]
+\centering
+\caption{Proof repair over 6 tasks $\times$ 3 trials per arm. The full arm
+allows up to 4 iterations with structured verifier feedback, and the
+one-shot arm a single attempt. Brackets give 95\,\% Wilson intervals.
+The task-level column uses the clustering-honest unit (majority of 3
+trials restored, $n{=}6$). The first four tiers carry per-row resolved
+model ids in their ledgers (\texttt{claude-haiku-4-5-20251001},
+\texttt{claude-sonnet-4-6}, \texttt{claude-opus-4-8[1m]},
+\texttt{claude-fable-5}), and the Claude~5 tiers are pinned by invocation
+(\texttt{--model} recorded verbatim per call). All columns ran at a
+600\,s engine wall except Sonnet~5, whose 600\,s attempt lost 4 of 36
+cells to the wall (unmeasured, not failed) and whose column was therefore
+re-measured in full at a disclosed 1800\,s wall. One Sonnet~5 cell died
+to a transient CLI failure and is counted in the denominator (10/17
+measured, 59\,\%). Loop deltas are descriptive, and no delta interval
+excludes zero.}
+\label{tab:repair}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccc}
+\toprule
+Engine & Full loop & One-shot & Loop $\Delta$ & Task-level \\
+\midrule
+\ehaiku & 2/18 = 11\% [3,33] & 2/18 = 11\% [3,33] & $+0$ & 1/6 [3,56] \\
+\esonnet & 4/18 = 22\% [9,45] & 4/18 = 22\% [9,45] & $+0$ & 1/6 [3,56] \\
+\eopus & 9/18 = 50\% [29,71] & 6/18 = 33\% [16,56] & $+3$ & 3/6 [19,81] \\
+\efable & 14/18 = 78\% [55,91] & 12/18 = 67\% [44,84] & $+2$ & 5/6 [44,97] \\
+Sonnet~5 & 10/18 = 56\% [34,75] & 5/18 = 28\% [12,51] & $+5$ & 4/6 [30,90] \\
+Opus~5 & 17/18 = 94\% [74,99] & 12/18 = 67\% [44,84] & $+5$ & 6/6 [61,100] \\
+\midrule
+\egrok{} (out-of-family) & 15/18 = 83\% [61,94] & 15/18 = 83\% [61,94] & $+0$ & 6/6 [61,100] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Baseline decomposition on proof repair (headline engines). The
+raw-Dafny arm removes the whitelist and the taxonomy and feeds raw Dafny
+output. Cells marked \pending{} are being measured under the pinned
+protocol and freeze before submission. Unsound baseline ``successes''
+(assumption smuggling) are reported in the audit row, never credited.}
+\label{tab:baseline}
+\small
+\begin{tabular}{lcc}
+\toprule
+ & \eopus & \efable \\
+\midrule
+Raw Dafny, one-shot & \pending & \pending \\
+Raw Dafny, loop (raw errors) & \pending & \pending \\
+\toolname{} one-shot & 6/18 = 33\% [16,56] & 12/18 = 67\% [44,84] \\
+\toolname{} full loop & 9/18 = 50\% [29,71] & 14/18 = 78\% [55,91] \\
+\midrule
+Audited-unsound raw successes & \pending & \pending \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Repair results.} Table~\ref{tab:repair} places the tiers
+across the range. The 4-iteration budget bought \ehaiku{} and \esonnet{}
+nothing ($+0$ each), \eopus{} $+3$ of 18, \efable{} $+2$, and Opus~5
+$+5$, consistent with feedback helping only models strong enough to act
+on it, stated descriptively (no delta interval excludes zero). Where the
+loop pays, the mechanism is visible in \efable{}'s two failing tasks.
+\texttt{below\_zero} fails at \emph{postconditions}, well-formed packs
+the prover can criticize, so feedback is informative and the loop
+converts 0/3 one-shot into 2/3, recovering at iterations 3--4.
+\texttt{rolling\_max} dies \emph{before} the prover for \efable{}
+(conformance and resolution errors, nothing semantic to iterate on) and
+went 0/6 across its arms. Feedback pays only where failures reach the
+prover, and Opus~5 is the demonstration in the other direction. Its
+packs reach the prover, so the loop converts \texttt{rolling\_max} from
+0/3 one-shot to 3/3 and \texttt{below\_zero} from 0/3 to 2/3, the
+largest loop delta measured. Trials are
+$k{=}3$ because a single run is not a rate. Between two earlier single
+runs of this roster, one task flipped from restored-in-two-iterations to
+an attempt the prover times out on, in a direction no configuration change
+explains, so run-to-run variance is on the order of the effects measured.
+At task level the intervals are wide by construction and only the extremes
+separate, and we state this rather than pooling it away.
+
+\begin{table}[t]
+\centering
+\caption{Spec writing over all 14 tasks with $k{=}3$ trials, scored on the
+same 63-mutant panel as the curated reference (189 mutant-trials, with
+\eopus{} not run on this exam). Kills are refutation-only. The floor row
+is a single deterministic run (63 mutants), and engine and curated rows
+aggregate 3 trials. Task-level means use equal task weights and a
+$t$-interval with $n{=}14$. The 75/77/78 top cluster is statistically
+indistinguishable, placed rather than ranked.}
+\label{tab:spec}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Spec author & Killed & Rate & Validity & Task-level mean [95\% CI] \\
+\midrule
+floor (vacuous) & 0/63 & 0\% & 14/14 & 0\% \\
+\ehaiku & 119/189 & 63\% & 40/42 & 63\% [39, 86] \\
+Opus~5 & 124/189 & 66\% & 39/42 & 63\% [42, 84] \\
+Sonnet~5 & 133/189 & 70\% & 40/42 & 69\% [47, 91] \\
+\esonnet & 141/189 & 75\% & 42/42 & 71\% [50, 93] \\
+\efable & 145/189 & 77\% & 42/42 & 72\% [51, 93] \\
+curated reference & 147/189 & 78\% & 14/14 & 73\% [52, 95] \\
+\midrule
+\egrok{} (out-of-family) & 139/189 & 74\% & 42/42 & 71\% [50, 92] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Spec-writing results.} Table~\ref{tab:spec} shows the
+instrument separates the floor from everything and, weakly and at trial
+level only, the weakest tier from the top cluster. Within-cluster ranking
+is not licensed and not claimed. Dynamic range is real at task grain.
+Intermediate rates exist (\ehaiku{} \texttt{gcd} 42\,\%), and
+\texttt{modp} separates weak from strong (\ehaiku{} 0\,\%, \esonnet{}
+62\,\%, \efable{} 88\,\%, matching curated at 88\,\%). The strongest
+engine is near-deterministic, with identical per-task kill counts across
+all three trials on 13 of 14 tasks. The strength$\neq$provability
+divergence is measured, not asserted. Across $n{=}12$ trials,
+engine-written specs matched or exceeded curated kill rates at
+\emph{lower} ladder height. These are strong specs that do not prove,
+precisely the regime where witnessed scoring is the only scoring
+available. The Claude~5 mid-tiers sharpen the point by inverting across
+the exams. Opus~5 posts the strongest repair column measured (17/18) yet
+places at 66\,\% on spec strength, under \esonnet{}'s 75\,\%, and
+Sonnet~5 places at 70\,\%. Both sit below the 75--78 top cluster at
+trial level and overlap it at task level, so this is placement rather
+than ranking, but the direction is the instrument's thesis in miniature.
+Within the Sonnet pair the pattern repeats. Sonnet~5 repairs at 56\,\%
+over \esonnet{}'s 22\,\% yet writes specs at 70\,\% under its 75\,\%.
+Proof strength and spec strength move independently, here across model
+generations.
+
+\paragraph{Guard telemetry.} In the original four-tier grid the sidecar
+whitelist rejected 6 of 236 proposals, all six from \efable{} (five
+non-declaration, one forbidden token), and the rejected-\texttt{gcd}
+trial still restored after rejection feedback. The Claude~5 columns drew
+19 rejections across 198 proposals (14 from Sonnet~5, 5 from Opus~5), so
+rejection pressure rises with model generation. The guard is
+load-bearing, not decorative. All columns ran on a single workstation,
+and engine API cost was between \$3 and \$33 per column. Full telemetry
+and token/cost accounting ride in the artifact.
+
+\section{Scoring spec strength honestly}
+\label{sec:refuters}
+
+\subsection{Two refuters, one panel}
+
+Prover-adjudicated mutation scoring of contracts is prior
+art~\cite{knuppel2021,mutdafny}. What is not established is what each
+available refuter actually measures. Our leading observation is
+structural. \textbf{Prover-judged scoring requires a baseline that
+verifies}, because mutation is detected as ``the proof stopped going
+through,'' so the unmutated program must prove (all fourteen of ours do).
+LLM-written specifications in the pre-proof regime cannot supply that
+precondition. \textbf{Witnessed scoring does not need it}, because a kill
+is a concrete counterexample against the mutated program's contracts,
+whether or not anything proves. Beneath the structural point, the two
+verdicts mean different things. A witnessed kill carries an input. It is
+sound but incomplete, since it under-credits strength where execution
+crashes first. A prover kill carries no witness, and proof brittleness
+(the mutant broke the lemma structure, not the spec) inflates it. We
+measured the difference by adjudicating the identical panel both ways
+(Table~\ref{tab:dual}).
+
+\begin{table}[t]
+\centering
+\caption{Dual adjudication of the 63-mutant panel, paired per mutant. The
+witnessed refuter is symbolic execution over compiled contracts with a
+counterexample required. The prover refuter is Dafny on the mutated
+program with curated specs and sidecar. Two out-of-fragment mutants the
+prover could not judge are excluded (61 shown).}
+\label{tab:dual}
+\small
+\begin{tabular}{lcc}
+\toprule
+ & \textbf{Prover kill} & \textbf{No prover kill} \\
+\midrule
+\textbf{Witnessed kill} & 49 & 0 \\
+\textbf{No witnessed kill} & 12 & 0 \\
+\bottomrule
+\end{tabular}
+\quad
+\begin{tabular}{lc}
+\toprule
+\textbf{Prover-only kills, by obligation kind} & $n$ \\
+\midrule
+proof-apparatus (hint asserts, fn.\ preconditions) & 7 \\
+safety VC (bounds) & 1 \\
+termination & 1 \\
+multi-obligation (postcondition $+$ others) & 3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three findings, in order of importance.
+\begin{enumerate}
+  \item \textbf{Perfect agreement on the cleanly refutable class.} All 49
+  witnessed kills are also prover kills, and no mutant survives both
+  refuters. The scored panel has no clean survivors and no spec blind
+  spots (equivalent mutants are adjudicated out of the denominator before
+  scoring, following IronSpec's relevance filtering~\cite{ironspec}). Two
+  further mutants fell outside the encodable fragment and the prover could
+  not judge them at all.
+  \item \textbf{Disagreement is strictly one-directional and concentrated
+  where concrete execution fails first.} We predicted witnessed kills the
+  prover would miss. That cell is \emph{empty}. The 12 prover-only kills
+  sit exactly on the crash/timeout class, which is close to a corollary of
+  refutation-only crediting, and we say so. The empirical content is the
+  empty cell and the kind decomposition.
+  \item \textbf{A bare pass/fail prover verdict conflates kill classes.}
+  We reclassified the 12 prover-only kills \emph{mechanically}. Apply the
+  mutant, run the standard pipeline, and take the per-failure obligation
+  kinds from the toolchain's versioned failure taxonomy. A mutant with
+  kinds in more than one category counts once, as multi-obligation. The
+  result is 7 proof-apparatus,\footnote{One of the seven surfaced as an
+  unmapped kind. Dafny's ``function precondition could not be proved''
+  phrasing fell through the taxonomy and was resolved from the attached
+  raw message. The gap is itself an instrument finding, fixed in a
+  taxonomy-versioned update.} 1 safety-VC, 1 termination, and 3
+  multi-obligation, and \textbf{none is a pure specification refutation}.
+  Our own earlier hand-count had labeled four of them ``genuine spec
+  refutations''. The mechanical method dissolved that cell, an instance of
+  precisely the conflation this section measures. Binary ``Killed''
+  verdicts (the scoring in~\cite{mutdafny}) cannot see this structure. The
+  witnessed refuter separates crash from refutation natively.
+\end{enumerate}
+
+Stated fairly, the refuters are complementary, not ranked. The prover
+reached verdicts concrete execution could not (crash-first paths, symbolic
+timeout), but its unique reach here is almost entirely apparatus- and
+safety-shaped.
+
+\subsection{The honesty protocol}
+\label{sec:honesty}
+
+Protocol first, confession second. Each rule is a failure class, the
+invariant that excludes it, and the probe that detects its violation.
+
+\textbf{Rule 1 (Floor).} Vacuous specs pass every stage (vacuity has a
+long ancestry~\cite{beer,kupferman}), and a crash credited as a kill is
+the implicit-oracle class in disguise~\cite{barr}. \emph{Invariant.}
+Publish the trivial-spec floor beside every rate. \emph{Probe.} The floor
+arm itself, which must score 0.
+
+\textbf{Rule 2 (Denominators).} If a failing answer leaves the
+denominator, failing becomes profitable. A spec refuted at the runtime
+hunt once contributed $0/0$, vanishing from its own aggregate.
+\emph{Invariant.} Subject-independent denominators. Every attempted task
+is scored over the \emph{curated} panel, so a failed answer is $0/N$,
+never excluded. \emph{Probe.} An intentionally failing arm must lower,
+never raise, the aggregate.
+
+\textbf{Rule 3 (Probes).} A harness bug is indistinguishable from a hard
+benchmark. \emph{Invariant.} Run false-perfect \emph{and} false-zero
+probes before trusting any score. \emph{Probe.} A known-good arm must
+score high, and a known-broken one must score 0 for the right reason.
+
+The rules are backed by eleven defect instances measured on this
+instrument (Table~\ref{tab:defects}), each caught by the probe class its
+row names, and every one produced a plausible number until it was probed.
+This is not a private bug diary. The one published instrument whose
+scoring we could inspect, MutDafny~\cite{mutdafny}, reports a binary
+``Killed'' with no why-classification, the exact conflation the previous
+subsection measures. The conflation class caught us as well, when our own
+hand-classification of prover-only kills briefly manufactured a ``genuine
+spec-refutation'' cell that the mechanical method dissolved.
+
+\begin{table}[t]
+\centering
+\caption{Eleven silent scoring defects, by the direction the score lied
+and the rule whose probe class caught it. Each survived until probed, and
+none announced itself.}
+\label{tab:defects}
+\small
+\begin{tabular}{p{8.6cm}cc}
+\toprule
+Defect instance & Direction & Rule \\
+\midrule
+Interpreter crashes credited as kills, flooring a vacuous spec at 38\,\% & too good & 1 \\
+Divergence credited as a kill (same hole, timeout bucket) & too good & 1 \\
+Runtime-refuted spec vanished from its own denominator ($0/0$), so failing beat a weak spec & too good & 2 \\
+Working-directory race let concurrent verifications certify each other's code & both & 3 \\
+Equivalent-mutant exclusions silently missed the panel after a coordinate change & too bad & 3 \\
+Prompt renderer scored every spec-writing cell as engine error & too bad & 3 \\
+Answer-key retrieval, where a tool-bearing agent returned the curated sidecar verbatim & too good & 3 \\
+Resume logic hid failed cells from the aggregate & too good & 3 \\
+Matrix status scoped to stale ledger rows, not the current roster & too bad & 3 \\
+Report printed a rounded median (4.5 rendered as 4), not the computed one & too bad & 3 \\
+Cross-vendor false zero, an extraction bug masking answer-key retrieval (below) & both & 3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{The eleventh instance, told in full.} It shows these are
+field-wide failure classes, not artifacts of one harness. The
+out-of-family engine column, Grok~4.6 behind the Cursor agent CLI
+(resolved id \texttt{cursor-grok-4.6-high-fast}), scored 0/36 on proof
+repair, with all 126 attempts dead before the prover at the encode
+stage. Interrogating the zero (Rule 3) found two colliding causes. First, the CLI interleaves tool-narration prose
+with its answer, and our reply extraction, pinned to Claude's fencing,
+passed the prose straight into the pipeline (``top-level `I'll' is not a
+ghost declaration''). Second, beneath it, the disqualifier. The CLI's
+machine-wide code-search tool escaped its read-only ask mode, its sandbox
+flag, and every tool-deny variant we tried, including the wildcard. The
+raw transcript narrates the escape (``Grep can see the files even when
+Read cannot'') and then returns the curated \texttt{gcd} sidecar
+verbatim. The extraction bug masked the retrieval bug. Fix extraction
+first and the column ships retrieval-inflated. Ship it as measured and it
+is a false zero. Neither is a measurement. The holding control is an
+OS-level read-deny jail around the agent process, probe-verified in both
+directions, with the agent remaining functional and its own search
+returning denied on the curated trees. Three lessons generalize.
+Answer-key retrieval is not one vendor's behavior, ``read-only agent
+mode'' is not retrieval-safe, and tool-name deny lists leak.
+
+\paragraph{The remediated column, and why it matters.} Under the jail,
+with extraction fixed for both the sidecar and the annotated-source
+answer shapes, the same engine produced a valid out-of-family column
+(Tables~\ref{tab:repair} and~\ref{tab:spec}). \egrok{} restored 15 of 18
+repair trials in each arm (83\,\%) and reached the same 74--77\,\% spec
+cluster as the strongest in-family tiers, with all 97 calls carrying
+consistent engine-claimed provenance and zero whitelist rejections. The
+pre-flight gate re-verified retrieval-blindness before every run. Two
+facts make this the answer to the natural ``a Claude-built instrument
+measuring Claude'' objection. The out-of-family engine places inside the
+same range as the family, not off it, so the instrument is not calibrated
+to one vendor. And it restored \emph{every} repair task by majority,
+including \texttt{rolling\_max}, the prefix-maximum monotonicity proof no
+Claude tier below Opus~5 could reliably construct (Fable~5 0/6). We
+confirmed the \texttt{rolling\_max} pack was constructed, not retrieved.
+It is not byte-identical to the curated sidecar (different checksum,
+shorter proof bodies for the same source-mandated lemma names) and it
+verifies independently. Roster difficulty therefore reflects the proof,
+not the prover's family.
+
+\section{Limitations}
+\label{sec:limits}
+
+\toolname{} verifies a fragment, and several planned components (boundary
+guard generation among them) are design, not shipped code. The claims
+here are about the built pipeline the exams exercise. The corpus is
+small, at fourteen tasks with four thin panels. $k{=}3$ is small and
+task-clustered, so trial-level intervals are anti-conservative. We report
+task-level numbers beside them, and the 11$\to$94 gradient is instrument
+validation, never an engine ranking (adjacent intervals overlap at both
+levels). The in-family engines are Claude capability tiers, run at
+default reasoning effort (recorded as a condition), with resolved model
+identities pinned per row for the original grid and by recorded
+invocation for the Claude~5 columns. The curated
+references were authored with same-family LLM assistance under human
+direction and adversarial review, so distance-to-curated is a
+within-family measure and roster feasibility was implicitly defined by
+what that family can prove. One out-of-family column (\egrok{}) tests
+that concern directly and places inside the family's range while
+restoring every repair task, so the roster is not calibrated to one
+vendor. One out-of-family engine is not a cross-vendor study, and its
+provenance is engine-claimed rather than per-call verified (the CLI does
+not report a served model), a disclosed weakness relative to the Claude
+columns. The measurements themselves are author-blind (fixed mechanical
+panel, prover adjudication). Memorization of implementations is assumed, not
+ruled out (Section~\ref{sec:exams} controls). Saturation risk is owned.
+Opus~5 reaches 17/18 on repair, so this roster's repair tier is close to
+solved, but the corpus is an instrument, not a challenge. An all-hard
+roster would have no resolution across today's range and could not
+distinguish ``cannot'' from ``harness broken'' (Rule 3). Spec strength
+still shows range (63--77 against the 78 ceiling, with no engine
+matching the curated panel), and the growth path is a two-tier roster,
+this
+resolution tier plus a frontier tier (prefix-aggregate lemmas, dynamic
+programming pending encoder support, nonlinear arithmetic, packs
+requiring new helper functions), plus the planned Lean~4 backend's second
+prove and fidelity column over identical tasks. The fragment ceiling is a routing
+decision, not a coverage claim. Programs outside the encodable fragment
+are refused at conformance rather than scored. The venue is non-archival,
+and ledgers and pinned invocations ship in the artifact.
+
+\section{Related work}
+\label{sec:related}
+
+\textbf{Verified Python.} Nagini~\cite{nagini} verifies statically typed
+Python by translation to Viper, and its strict-typing front-end discipline
+is precedent for our type gate. Strata-Python~\cite{strata}, the Python
+front end of AWS's Strata verification platform, translates Python through
+the Laurel intermediate verification language to SMT backends, and
+\toolname{}'s thin backend-neutral IR keeps such a second emitter
+possible. \toolname{} differs from both in compiling one comment-contract
+surface to runtime contracts and Dafny alike, in the additions-only
+whitelist-validated proof sidecar, and in treating the agent interface and
+its scoring as first-class. The runtime rail builds on
+CrossHair~\cite{crosshair}, whose symbolic execution over contracts is our
+witnessed refuter.
+
+\textbf{Mutation-scored specifications.} Knüppel et
+al.~\cite{knuppel2021} score JML contract completeness by mutation under
+KeY. MutDafny~\cite{mutdafny} does the same against the Dafny verifier
+(40 operators, 118{,}458 mutants, 82\,\% average score) with a binary
+Killed verdict, excluding Invalid and TimedOut mutants from the score as
+we do. IronSpec~\cite{ironspec} mutates the \emph{specification} and
+pioneers automated mutation-relevance filtering, precedent for our
+adjudication. Groce et al.~\cite{groce} use mutants to probe what
+verification establishes, and mCoq~\cite{mcoq} brings mutation to Coq
+proofs. The oracle-quality line (Jahangirova et al.~\cite{jahangirova})
+is the test-oracle-shaped ancestor, and Barr et al.~\cite{barr} name the
+implicit-oracle (crash-crediting) class our Rule 1 instance exhibits.
+
+\textbf{LLM-written specifications.} The nl2postcond
+line~\cite{nl2postcond} scores generated postconditions by bug-catching
+power, proof-free. FMCAD'24~\cite{fmcad24} applies symbolic-test metrics
+to generated specs for verification-aware languages. Our addition is the
+per-mutant \emph{pairing} of witnessed and prover verdicts on one
+surface, and the measured strength$\neq$provability divergence.
+
+\textbf{Proof synthesis and benchmarks.} AutoVerus~\cite{autoverus}
+generates Verus proofs (137/150 on Verus-Bench, itself translated from
+Diffy/MBPP/CloverBench) and grounds three of our protocol positions,
+namely benchmark translation as standard practice, the
+never-public-proofs leakage argument, and the no-proof-needed exclusion
+our load-bearing screen mechanizes. DafnyBench~\cite{dafnybench}
+evaluates proof synthesis at scale with whole-error-message feedback.
+Clover~\cite{clover} checks consistency among code, specs, and docs, and
+dafny-annotator~\cite{dafnyannotator} learns to insert Dafny annotations.
+
+\begin{thebibliography}{20}
+\small
+\bibitem{knuppel2021} A.~Knüppel, L.~Schaer, I.~Schaefer.
+How much specification is enough? Mutation analysis for software contracts.
+\emph{FormaliSE@ICSE}, 2021.
+\bibitem{mutdafny} I.~Amaral, A.~Mendes, J.~Campos. MutDafny: A
+mutation-based approach to assess Dafny specifications. \emph{ICSE}, 2026.
+arXiv:2511.15403.
+\bibitem{ironspec} E.~Goldweber, W.~Yu, S.~A.~Vakil-Ghahani,
+M.~Kapritsos. IronSpec: Increasing the reliability of formal
+specifications. \emph{OSDI}, 2024.
+\bibitem{groce} A.~Groce, I.~Ahmed, C.~Jensen, P.~E.~McKenney, J.~Holmes.
+How verified (or tested) is my code? Falsification-driven verification and
+testing. \emph{Autom.\ Softw.\ Eng.} 25(4), 2018.
+\bibitem{mcoq} A.~Celik, K.~Palmskog, M.~Parovic, E.~J.~Gallego~Arias,
+M.~Gligoric. Mutation analysis for Coq. \emph{ASE}, 2019.
+\bibitem{jahangirova} G.~Jahangirova, D.~Clark, M.~Harman, P.~Tonella.
+Test oracle assessment and improvement. \emph{ISSTA}, 2016.
+\bibitem{barr} E.~T.~Barr, M.~Harman, P.~McMinn, M.~Shahbaz, S.~Yoo. The
+oracle problem in software testing: a survey. \emph{IEEE TSE} 41(5), 2015.
+\bibitem{papadakis} M.~Papadakis, M.~Kintis, J.~Zhang, Y.~Jia,
+Y.~Le~Traon, M.~Harman. Mutation testing advances: an analysis and survey.
+\emph{Advances in Computers} 112, 2019.
+\bibitem{beer} I.~Beer, S.~Ben-David, C.~Eisner, Y.~Rodeh. Efficient
+detection of vacuity in temporal model checking. \emph{FMSD} 18(2), 2001.
+\bibitem{kupferman} O.~Kupferman, M.~Vardi. Vacuity detection in temporal
+model checking. \emph{STTT} 4(2), 2003.
+\bibitem{nagini} M.~Eilers, P.~Müller. Nagini: A static verifier for
+Python. \emph{CAV}, 2018.
+\bibitem{crosshair} P.~Schanely. CrossHair: An analysis tool for Python
+that blurs the line between testing and type systems. Software,
+\url{https://github.com/pschanely/CrossHair}, accessed August 2026.
+\bibitem{strata} Strata-Python: Python language support for the Strata
+verification platform. Software,
+\url{https://github.com/strata-org/Strata-Python}, accessed August 2026.
+\bibitem{nl2postcond} M.~Endres, S.~Fakhoury, S.~Chakraborty,
+S.~K.~Lahiri. Can large language models transform natural language intent
+into formal method postconditions? \emph{PACMSE/FSE}, 2024.
+\bibitem{fmcad24} S.~K.~Lahiri. Evaluating LLM-driven user-intent
+formalization for verification-aware languages. \emph{FMCAD}, 2024.
+arXiv:2406.09757.
+\bibitem{autoverus} C.~Yang, X.~Li, M.~R.~H.~Misu, J.~Yao, W.~Cui,
+Y.~Gong, C.~Hawblitzel, S.~K.~Lahiri, J.~R.~Lorch, Shuai~Lu, F.~Yang,
+Z.~Zhou, Shan~Lu. AutoVerus: Automated proof generation for Rust code.
+\emph{PACMPL 9 (OOPSLA2)}, 2025. arXiv:2409.13082.
+\bibitem{dafnybench} C.~Loughridge, Q.~Sun, S.~Ahrenbach, F.~Cassano,
+C.~Sun, Y.~Sheng, A.~Mudide, M.~R.~H.~Misu, N.~Amin, M.~Tegmark.
+DafnyBench: A benchmark for formal software verification.
+arXiv:2406.08467, 2024.
+\bibitem{clover} C.~Sun, Y.~Sheng, O.~Padon, C.~W.~Barrett. Clover:
+Closed-loop verifiable code generation. \emph{SAIV}, 2024.
+arXiv:2310.17807.
+\bibitem{dafnyannotator} G.~Poesia, C.~Loughridge, N.~Amin.
+dafny-annotator: AI-assisted verification of Dafny programs.
+arXiv:2411.15143, 2024.
+\end{thebibliography}
+
+\newpage
+\input{checklist-filled}
+
+\end{document}
