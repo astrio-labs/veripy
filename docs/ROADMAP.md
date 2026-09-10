@@ -217,7 +217,7 @@ Measured on the contact corpus, not estimated — re-run before quoting:
 | | |
 |---|---|
 | contact corpus under Lean | **18/22 — every non-cut task** (`he_35`, `he_42`, `he_52`, `he_60`, `he_49`, `he_13`, `he_31`, `mbpp_sum_squares`, `he_3`, `he_5`, `he_43`, `he_40`, `he_48`, `he_30`, `he_34`, `he_9`, `mbpp_97`, `mbpp_885`). Only the four DP tasks (cut by decision) remain. `he_43`, `mbpp_97`, and `mbpp_885` EXCEED Dafny (`enumerate`; `dict`, which the Dafny catalog still has unchecked) |
-| prelude | `lean-0.14` (`ListMax` pack + `SqLeSq`: prefix-max extension for the OptionalMax class and squaring monotonicity for the square-maximality endgame; `SortedUnique`, `Count_filter_of_pos`, `IntBexDec` before them) |
+| prelude | `lean-0.17` (the isomorphism pack: position-class dicts, the exact-list master invariant, and the partition chain for `mbpp_885`; `lean-0.16` the frequency-dict model for `mbpp_97`; `ListMax` + `SqLeSq`, `SortedUnique`, `Count_filter_of_pos`, `IntBexDec` before them) |
 | slices landed | P2 1–20, P3 (sidecar channel) |
 | `.proofs.lean` packs in existence | **4** (`he_60`: `GaussStep`; `he_49`: `ModMulLeft` + `PowStepTwo`; `he_13`: `EuclidStepAll` + `FmodCongr`; `he_31`: `ModPredOne` (with a Dafny twin, the first task packed under BOTH provers) — all kernel-checked, clean axiom footprints) |
 | triple adjudication (benchmark corpus, 16 tasks) | **16/16 proved under EVERY backend — 0 gaps, 0 splits, 0 unadjudicated.** The arc: 8 with 1 split at first measurement → the square-maximality endgame (isqrt), the pack slice (five gaps), the sqrt-search class (is_prime), and the exit-value endgame (sum_to_n, closing the assert-vs-pack coupling with zero source changes). Re-run: `veripy benchmark --backend all` |
