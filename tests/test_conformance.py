@@ -801,9 +801,9 @@ def test_admitted_str_methods_do_not_fire():
     assert "U-METHOD" not in _fires(src)
 
 
-def test_str_noarg_strip_still_fires():
+def test_str_noarg_strip_admitted():
     src = "def f(s: str) -> str:\n    return s.strip()\n"
-    assert "U-METHOD" in _fires(src)
+    assert "U-METHOD" not in _fires(src)
 
 
 def test_str_noarg_split_still_fires():
@@ -811,14 +811,14 @@ def test_str_noarg_split_still_fires():
     assert "U-METHOD" in _fires(src)
 
 
-def test_str_lower_still_fires():
+def test_str_lower_admitted():
     src = "def f(s: str) -> str:\n    return s.lower()\n"
-    assert "U-METHOD" in _fires(src)
+    assert "U-METHOD" not in _fires(src)
 
 
-def test_str_startswith_tuple_still_fires():
+def test_str_startswith_tuple_admitted():
     src = "def f(s: str) -> bool:\n    return s.startswith((\"a\", \"b\"))\n"
-    assert "U-METHOD" in _fires(src)
+    assert "U-METHOD" not in _fires(src)
 
 
 def test_str_replace_count_still_fires():

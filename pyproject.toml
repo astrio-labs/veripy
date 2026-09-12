@@ -50,3 +50,6 @@ veripy = "veripy.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["veripy*"]
+
+[tool.setuptools.package-data]
+"veripy.backends.lean" = ["library/*.lean"]

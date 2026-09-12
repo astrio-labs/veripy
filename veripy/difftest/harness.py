@@ -21,6 +21,7 @@ import ast
 import builtins as _builtins
 import copy
 import importlib
+import importlib.util
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ from ..backends.dafny.driver import find_dafny
 from ..backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 from ..frontend.extract import parse_source
 from ..frontend.parse import SAFE_BUILTINS
+from ..frontend.records import record_schemas, record_type, record_constructor, record_field
 
 SAFE_ENV = {
     name: getattr(_builtins, name)
@@ -40,29 +42,33 @@ SAFE_ENV = {
 # -- type descriptors ('int' | 'bool' | 'str' | ('list', inner) | ('tuple', ...) | ('opt', inner)) --------------
 
 
-def type_descriptor(ann: ast.expr | None):
+def type_descriptor(ann: ast.expr | None, records=None):
     match ann:
+        case ast.Name(id=name) if records and name in records:
+            return ("record", name, tuple((f, type_descriptor(t, records)) for f, t in records[name]))
         case ast.Name(id=("int" | "bool" | "str") as n):
             return n
         case ast.Subscript(value=ast.Name(id="list"), slice=inner):
-            return ("list", type_descriptor(inner))
+            return ("list", type_descriptor(inner, records))
         case ast.Subscript(value=ast.Name(id=("tuple" | "Tuple")), slice=sl):
             elts = sl.elts if isinstance(sl, ast.Tuple) else [sl]
-            return ("tuple", *(type_descriptor(e) for e in elts))
+            return ("tuple", *(type_descriptor(e, records) for e in elts))
         case ast.Subscript(value=ast.Name(id="Optional"), slice=inner):
-            return ("opt", type_descriptor(inner))
+            return ("opt", type_descriptor(inner, records))
         case ast.BinOp(left=left, op=ast.BitOr(), right=ast.Constant(value=None)):
-            return ("opt", type_descriptor(left))
+            return ("opt", type_descriptor(left, records))
         case ast.BinOp(left=ast.Constant(value=None), op=ast.BitOr(), right=right):
-            return ("opt", type_descriptor(right))
+            return ("opt", type_descriptor(right, records))
         case _:
             raise ValueError(f"unsupported annotation: {ast.unparse(ann) if ann else None}")
 
 
-def strategy_for(tdesc):
+def strategy_for(tdesc, records=None):
     from hypothesis import strategies as st
 
     match tdesc:
+        case ("record", name, fields):
+            return st.builds(records[name], **{f: strategy_for(t, records) for f, t in fields})
         case "int":
             return st.integers(min_value=-(10 ** 6), max_value=10 ** 6)
         case "bool":
@@ -70,38 +76,42 @@ def strategy_for(tdesc):
         case "str":
             return st.text(max_size=12)
         case ("list", inner):
-            return st.lists(strategy_for(inner), max_size=12)
+            return st.lists(strategy_for(inner, records), max_size=12)
         case ("tuple", *inners):
-            return st.tuples(*(strategy_for(t) for t in inners))
+            return st.tuples(*(strategy_for(t, records) for t in inners))
         case ("opt", inner):
-            return st.one_of(st.none(), strategy_for(inner))
+            return st.one_of(st.none(), strategy_for(inner, records))
     raise ValueError(f"no strategy for {tdesc!r}")
 
 
-def to_dafny(value, tdesc, *, opt=None):
+def to_dafny(value, tdesc, *, opt=None, records=None):
     import _dafny
 
     match tdesc:
+        case ("record", name, fields):
+            return records[name](*(to_dafny(getattr(value, f), t, opt=opt, records=records) for f, t in fields))
         case "int" | "bool":
             return value
         case "str":
             return _dafny.Seq(map(_dafny.CodePoint, value))
         case ("list", inner):
-            return _dafny.Seq(to_dafny(v, inner, opt=opt) for v in value)
+            return _dafny.Seq(to_dafny(v, inner, opt=opt, records=records) for v in value)
         case ("tuple", *inners):
-            return tuple(to_dafny(v, t, opt=opt) for v, t in zip(value, inners))
+            return tuple(to_dafny(v, t, opt=opt, records=records) for v, t in zip(value, inners))
         case ("opt", inner):
             if opt is None:
                 raise ValueError("Optional values need compiled PyOpt constructors")
             none, some = opt
             if value is None:
                 return none()
-            return some(to_dafny(value, inner, opt=opt))
+            return some(to_dafny(value, inner, opt=opt, records=records))
     raise ValueError(f"cannot adapt {tdesc!r}")
 
 
-def from_dafny(value, tdesc):
+def from_dafny(value, tdesc, records=None):
     match tdesc:
+        case ("record", name, fields):
+            return records[name](**{f: from_dafny(getattr(value, record_field(f).replace("_", "__")), t, records) for f, t in fields})
         case "int":
             return int(value)
         case "bool":
@@ -109,13 +119,13 @@ def from_dafny(value, tdesc):
         case "str":
             return "".join(str(cp) for cp in value)
         case ("list", inner):
-            return [from_dafny(v, inner) for v in value]
+            return [from_dafny(v, inner, records) for v in value]
         case ("tuple", *inners):
-            return tuple(from_dafny(v, t) for v, t in zip(value, inners))
+            return tuple(from_dafny(v, t, records) for v, t in zip(value, inners))
         case ("opt", inner):
             if getattr(value, "is_PyNone", False):
                 return None
-            return from_dafny(value.v, inner)
+            return from_dafny(value.v, inner, records)
     raise ValueError(f"cannot adapt {tdesc!r}")
 
 
@@ -164,6 +174,7 @@ def diff_functions(
     requires_sources: list[str],
     examples: int,
     kwonly_names: frozenset[str] = frozenset(),
+    records=None, compiled_records=None,
 ) -> FunctionDiff:
     from hypothesis import HealthCheck, assume, given, settings
     from hypothesis import strategies as st
@@ -177,7 +188,7 @@ def diff_functions(
         database=None,
         suppress_health_check=list(HealthCheck),
     )
-    @given(st.tuples(*(strategy_for(t) for t in param_tdescs)))
+    @given(st.tuples(*(strategy_for(t, records) for t in param_tdescs)))
     def check(args):
         env = dict(zip(param_names, args))
         for code in requires_codes:
@@ -196,8 +207,8 @@ def diff_functions(
         opt = (g["PyOpt_PyNone"], g["PyOpt_PySome"]) if (
             "PyOpt_PyNone" in g and "PyOpt_PySome" in g
         ) else None
-        dafny_args = [to_dafny(a, t, opt=opt) for a, t in zip(args, param_tdescs)]
-        got = from_dafny(compiled_fn(*dafny_args), ret_tdesc)
+        dafny_args = [to_dafny(a, t, opt=opt, records=compiled_records) for a, t in zip(args, param_tdescs)]
+        got = from_dafny(compiled_fn(*dafny_args), ret_tdesc, records)
         if expected != got:
             captured["m"] = Mismatch(args=args, python_result=expected, dafny_result=got)
             raise AssertionError("divergence")
@@ -279,7 +290,7 @@ def difftest_file(path: Path, outdir: Path, examples: int = 100) -> DiffResult:
     # R4 already established the verdict, and ghost code is erased anyway.
     proc = subprocess.run(
         [dafny, "translate", "py", str(stub), "--output", str(translate_base),
-         "--no-verify", "--allow-warnings"],
+         "--no-verify", "--allow-warnings", "--optimize-erasable-datatype-wrapper=false"],
         capture_output=True, text=True, timeout=600,
     )
     compiled_dir = Path(f"{translate_base}-py")
@@ -290,21 +301,24 @@ def difftest_file(path: Path, outdir: Path, examples: int = 100) -> DiffResult:
     original_module = _load_original_module(path)
     compiled_module = _load_compiled_module(compiled_dir)
     tree = ast.parse(source)
+    schemas = record_schemas(tree)
+    records = {name: getattr(original_module, name) for name in schemas}
+    compiled_records = {name: _compiled_member(compiled_module, record_type(name) + "_" + record_constructor(name)) for name in schemas}
     nodes = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
 
     for spec in specs.functions:
         node = nodes[spec.name]
         try:
             param_tdescs = [
-                type_descriptor(p.annotation)
+                type_descriptor(p.annotation, schemas)
                 for p in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
             ]
-            ret_tdesc = type_descriptor(node.returns)
+            ret_tdesc = type_descriptor(node.returns, schemas)
         except ValueError as exc:
             result.functions.append(FunctionDiff(spec.name, 0, error=str(exc)))
             continue
         original_fn = getattr(original_module, spec.name)
-        compiled_fn = _compiled_member(compiled_module.default__, spec.name)
+        compiled_fn = _compiled_member(compiled_module.default__, encoded.method_names[spec.name])
         if compiled_fn is None:
             result.functions.append(FunctionDiff(spec.name, 0, error="compiled member not found"))
             continue
@@ -313,6 +327,7 @@ def difftest_file(path: Path, outdir: Path, examples: int = 100) -> DiffResult:
             original_fn, compiled_fn,
             [p.arg for p in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)],
             param_tdescs, ret_tdesc, requires_sources, examples,
+            records=records, compiled_records=compiled_records,
             kwonly_names=frozenset(p.arg for p in node.args.kwonlyargs),
         )
         diff.name = spec.name

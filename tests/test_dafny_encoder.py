@@ -73,7 +73,7 @@ def test_iff_desugar_strips_bool():
         "    return x > 0\n"
     )
     dfy = _encode(src)
-    assert "ensures ((result) == ((x > 0)))" in dfy
+    assert "ensures (result == (x > 0))" in dfy
 
 
 def test_line_map_points_at_spec_lines():
@@ -100,12 +100,8 @@ def test_keyword_only_params_encode_as_ordinary_params():
     assert "method clamp_kw(x: int, lo: int, hi: int) returns (result: int)" in dfy
 
 
-def test_actual_defaults_still_rejected():
-    _expect_encode_error(
-        "#@ ensures result >= 0\n"
-        "def f(x: int, *, k: int = 3) -> int:\n    return x + k\n",
-        "defaults",
-    )
+def test_literal_defaults_admitted():
+    assert 'method f(' in _encode('#@ ensures True\ndef f(x: int, *, k: int = 3) -> int:\n    return x + k\n')
 
 
 def test_float_annotation_rejected():
@@ -115,11 +111,9 @@ def test_float_annotation_rejected():
     )
 
 
-def test_param_rebinding_rejected():
-    _expect_encode_error(
-        "#@ ensures result == x\ndef f(x: int) -> int:\n    x = x + 1\n    return x\n",
-        "parameters are immutable",
-    )
+def test_scalar_parameter_rebinding_localized():
+    dfy = _encode('#@ ensures result == x + 1\ndef f(x: int) -> int:\n    x = x + 1\n    return x\n')
+    assert "_local" in dfy
 
 
 def test_negative_index_normalized_via_pyindex():
@@ -340,7 +334,7 @@ def test_assert_nonliteral_message_rejected():
         "def f(n: int) -> int:\n"
         "    assert n >= 0, str(n)\n"
         "    return n\n",
-        "assert messages must be literals",
+        "assert messages require literals",
     )
 
 
@@ -535,7 +529,7 @@ def test_preamble_names_are_exactly_the_globally_visible_declarations():
     # added later is reserved without anyone remembering to. The cost is
     # that a preamble rewritten in a shape the scraper cannot parse would
     # leave the set empty and reopen the hole with every test still green,
-    # so v0.7's globally visible names are pinned here: growing the
+    # so v0.8's globally visible names are pinned here: growing the
     # preamble has to be a deliberate edit in this test too.
     assert PREAMBLE_NAMES == {
         "PyMod", "PyFloorDiv", "PyMin", "PyMax", "PyAbs", "PyIndex",
@@ -550,7 +544,14 @@ def test_preamble_names_are_exactly_the_globally_visible_declarations():
         "PyOutcome", "PyOk", "PyErr",
         "PyStrFind", "PyStrJoin", "PyStrSplit", "PyStrStartsWith",
         "PyStrEndsWith", "PyStrReplace", "PyStrLStrip", "PyStrRStrip",
-        "PyStrStrip",
+        "PyStrStrip", "PyStrCount",
+        "PyBisect2", "PyCount3", "PyInsert2", "PyInsert2Facts",
+        "PyInsert3", "PyInsert3Facts", "PyInsertIndex", "PyInsertIndexBounds",
+        "PyInsertIndexFacts", "PyLex2", "PyLex3", "PyLexSeq",
+        "PyPerm3", "PyPerm3Facts", "PyProd", "PySortIndexFacts",
+        "PySortIndexFrom", "PySortIndexPrimary", "PySorted2", "PySorted2Facts",
+        "PySorted3", "PySorted3Facts",
+        'VChecksumIndex', 'VChecksumReverse', 'VChecksumStep', 'VChecksumStride', 'VChecksumTuple', 'VChecksumTupleMake',
     }
     # Datatype members are reached only through a receiver, so they are not
     # in the top-level scope and a Python name equal to one cannot collide.
@@ -644,7 +645,7 @@ def test_sum_of_optional_genexp_projects_through_deopt():
     assert ").v" in _encode(src)
 
 
-def test_int_truthiness_condition_rejected_at_encode_time():
+def test_int_truthiness_condition_compares_against_zero():
     src = (
         "#@ ensures result >= 0\n"
         "def f(xs: list[int]) -> int:\n"
@@ -652,8 +653,7 @@ def test_int_truthiness_condition_rejected_at_encode_time():
         "        return 1\n"
         "    return 0\n"
     )
-    with pytest.raises(EncodeError, match="truthiness"):
-        _encode(src)
+    assert "PySum(xs) != 0" in _encode(src)
 
 
 # --- proof additions (#@ proof + sidecar) --------------------------------------
@@ -1000,11 +1000,10 @@ def test_hoisted_bound_temps_avoid_params():
     assert "var i_lo_, i_hi := 0, i_lo;" in dfy
 
 
-def test_bool_of_int_in_spec_rejected():
-    _expect_encode_error(
+def test_bool_of_int_in_spec_compares_against_zero():
+    assert "x != 0" in _encode(
         "#@ ensures result <==> x\n"
-        "def f(x: int) -> bool:\n    return x != 0\n",
-        "truthiness",
+        "def f(x: int) -> bool:\n    return x != 0\n"
     )
 
 
@@ -1024,15 +1023,9 @@ def test_quantifier_binder_shadowing_rejected():
     )
 
 
-def test_for_target_shadowing_param_rejected():
-    _expect_encode_error(
-        "#@ ensures result >= 0\n"
-        "def f(x: int, n: int) -> int:\n"
-        "    for x in range(n):\n"
-        "        pass\n"
-        "    return 0\n",
-        "shadow",
-    )
+def test_for_scalar_parameter_localized():
+    dfy = _encode('#@ ensures result == 0\ndef f(x: int, n: int) -> int:\n    for x in range(n):\n        pass\n    return 0\n')
+    assert "_local" in dfy
 
 
 def test_duplicate_def_rejected():
@@ -1078,29 +1071,12 @@ def test_carriage_return_in_literal_rejected():
     )
 
 
-def test_in_against_string_rejected():
-    # Python `in` on str is substring search; Dafny's is element membership.
-    _expect_encode_error(
-        "#@ ensures result == True or result == False\n"
-        "def f(a: str, b: str) -> bool:\n    return a in b\n",
-        "substring",
-    )
+def test_substring_membership_admitted():
+    source = '#@ ensures True\ndef f(s: str, needle: str) -> bool:\n    return needle in s\n'
+    assert 'PyStrFind(s, needle)' in _encode(source)
 
 
-# --- slice 3: list building ---------------------------------------------------
-
-
-APPEND_OK = (
-    "#@ requires n >= 0\n"
-    "#@ ensures len(result) == n\n"
-    "def zeros(n: int) -> list[int]:\n"
-    "    out: list[int] = []\n"
-    "    for i in range(n):\n"
-    "        #@ invariant len(out) == i\n"
-    "        out.append(0)\n"
-    "    return out\n"
-)
-
+APPEND_OK = "#@ ensures result == [0]\ndef f() -> list[int]:\n    out: list[int] = []\n    out.append(0)\n    return out\n"
 
 def test_append_lowers_to_seq_concat():
     dfy = _encode(APPEND_OK)
@@ -1837,13 +1813,9 @@ def test_walrus_in_spec_rejected():
     )
 
 
-def test_walrus_parameter_rebind_rejected():
-    _expect_encode_error(
-        "#@ ensures result == n or result == 0\n"
-        "def f(n: int) -> int:\n"
-        "    return (n := n + 1)\n",
-        "parameter rebinding",
-    )
+def test_walrus_scalar_parameter_localized():
+    dfy = _encode('#@ ensures result == n + 1\ndef f(n: int) -> int:\n    return (n := n + 1)\n')
+    assert "_local" in dfy
 
 
 def test_fstring_lowers_to_concatenation():
@@ -2275,22 +2247,12 @@ def test_str_noarg_split_rejected():
     )
 
 
-def test_str_noarg_strip_rejected():
-    _expect_encode_error(
-        "#@ ensures len(result) >= 0\n"
-        "def f(s: str) -> str:\n"
-        "    return s.strip()\n",
-        "pass an explicit chars",
-    )
+def test_unicode_strip_admitted():
+    assert 'VUnicodeStrip(s)' in _encode('#@ ensures True\ndef f(s: str) -> str:\n    return s.strip()\n')
 
 
-def test_str_lower_rejected_as_unicode_table():
-    _expect_encode_error(
-        "#@ ensures len(result) >= 0\n"
-        "def f(s: str) -> str:\n"
-        "    return s.lower()\n",
-        "silent ASCII approximation",
-    )
+def test_unicode_lower_admitted():
+    assert 'VUnicodeLower(s)' in _encode('#@ ensures True\ndef f(s: str) -> str:\n    return s.lower()\n')
 
 
 def test_str_upper_rejected_as_unicode_table():
@@ -2320,13 +2282,8 @@ def test_str_split_empty_sep_rejected():
     )
 
 
-def test_str_startswith_tuple_rejected():
-    _expect_encode_error(
-        "#@ ensures result == True or result == False\n"
-        "def f(s: str) -> bool:\n"
-        "    return s.startswith((\"a\", \"b\"))\n",
-        "tuple of prefixes",
-    )
+def test_literal_prefix_tuple_admitted():
+    assert 'PyStrStartsWith(s, "b")' in _encode('#@ ensures True\ndef f(s: str) -> bool:\n    return s.startswith(("a", "b"))\n')
 
 
 def test_str_replace_count_rejected():

@@ -7,7 +7,7 @@ The spec expression language is Python's expression grammar extended with:
     A <==> B                              ->  bool(A) == bool(B)  (loosest)
     A ==> B                               ->  (not (A)) or (B)   (right-assoc)
     result                                    (ensures only)
-    old(param)                                (ensures only)
+    old(param)                                (ensures, invariants, proof arguments)
 
 Desugared clauses must parse with ``ast.parse(mode="eval")``. The grammar and
 its decisions live in SPEC-GRAMMAR.md; changes land there first.
@@ -19,8 +19,8 @@ import ast
 import re
 from dataclasses import dataclass, field
 
-CLAUSE_KINDS = ("verified", "requires", "ensures", "invariant", "decreases", "proof")
-HEADER_KINDS = ("verified", "requires", "ensures", "decreases")
+CLAUSE_KINDS = ("verified", "requires", "ensures", "ghost_ensures", "invariant", "decreases", "proof")
+HEADER_KINDS = ("verified", "requires", "ensures", "ghost_ensures", "decreases")
 BODY_KINDS = ("invariant", "decreases", "proof")
 
 RESERVED = frozenset({"forall", "exists", "result", "old", "mutates", "extern"})
@@ -306,8 +306,8 @@ def parse_clause(
     old_names: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "old":
-            if kind != "ensures":
-                clause.error = "`old(...)` is only meaningful in `ensures`"
+            if kind not in {"ensures", "ghost_ensures", "invariant", "proof"}:
+                clause.error = "`old(...)` is only meaningful in ensures, ghost_ensures, invariants or proof arguments"
                 return clause
             if (
                 len(node.args) != 1
@@ -323,12 +323,51 @@ def parse_clause(
             old_names.append(arg)
 
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-    if "result" in names and kind != "ensures":
-        clause.error = "`result` is only meaningful in `ensures`"
+    for intrinsic in ("raised", "decimal_valid"):
+        if intrinsic in names and intrinsic in set(params) | set(module_names) | set(extra_names):
+            clause.error = f"{intrinsic} collides with an outcome specification intrinsic"
+            return clause
+    if "raised" in names and kind not in {"ensures", "ghost_ensures"}:
+        clause.error = "raised() is only meaningful in ensures or ghost_ensures"
+        return clause
+    if "loop_index" in names:
+        if kind not in {"invariant", "decreases", "proof"}:
+            clause.error = "loop_index() is only available in loop annotations"
+            return clause
+        if "loop_index" in set(params) | set(module_names) | set(extra_names):
+            clause.error = "loop_index collides with the loop annotation intrinsic"
+            return clause
+    if "ghost" in names:
+        if kind not in {"invariant", "proof", "ghost_ensures"}:
+            clause.error = "ghost() is only available in invariants, proof arguments and ghost_ensures"
+            return clause
+        if "ghost" in set(params) | set(module_names) | set(extra_names):
+            clause.error = "ghost collides with the proof annotation intrinsic"
+            return clause
+    if "result" in names and kind not in {"ensures", "ghost_ensures"}:
+        clause.error = "`result` is only meaningful in `ensures` or `ghost_ensures`"
         return clause
     allowed = set(params) | SAFE_BUILTINS | set(module_names) | set(extra_names) | _bound_names(tree)
+    allowed.add("decimal_valid")
+    for intrinsic in ("buffer", "old_buffer", "disjoint_buffers", "allow_buffer_alias"):
+        if intrinsic in names and intrinsic in set(params) | set(module_names) | set(extra_names):
+            clause.error = f"{intrinsic} collides with a buffer specification intrinsic"
+            return clause
+    if {"disjoint_buffers", "allow_buffer_alias"} & names and kind != "requires":
+        clause.error = "disjoint_buffers() is only meaningful in requires"
+        return clause
+    if "old_buffer" in names and kind not in {"ensures","ghost_ensures","invariant","proof"}:
+        clause.error = "old_buffer() is only meaningful after entry"
+        return clause
+    allowed |= {"buffer", "old_buffer", "disjoint_buffers", "allow_buffer_alias"}
+    if kind in {"invariant", "decreases", "proof"}:
+        allowed.add("loop_index")
+    if kind in {"invariant", "proof"}:
+        allowed |= {"ghost", "old"}
     if kind == "ensures":
-        allowed |= {"result", "old"}
+        allowed |= {"result", "old", "raised"}
+    if kind == "ghost_ensures":
+        allowed |= {"result", "old", "raised", "ghost"}
     if proof_target is not None:
         allowed |= {proof_target}  # a Dafny lemma name, not a Python one
     unknown = sorted(names - allowed)

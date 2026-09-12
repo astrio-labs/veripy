@@ -668,7 +668,7 @@ def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
     return 0
 
 
-def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False) -> int:
+def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False, backend: str = "dafny") -> int:
     from .guards.emitter import GuardGenError, emit_guarded
 
     by_stem: dict[str, list[Path]] = {}
@@ -689,8 +689,13 @@ def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False) -> i
             status = 1
             continue
         try:
-            guarded = emit_guarded(source, specs, src_name=path.name,
-                                   check_ensures=check_ensures)
+            if backend == "dafny":
+                guarded = emit_guarded(source, specs, src_name=path.name, check_ensures=check_ensures)
+            else:
+                from .api import guard
+                report = guard(path, check_ensures=check_ensures, backend=backend)
+                if not report["ok"]:raise GuardGenError(report["reason"])
+                guarded = report["source"]
         except GuardGenError as e:
             loc = f"{path}:{e.line}" if e.line else str(path)
             print(f"{loc}: cannot guard: {e.message}", file=sys.stderr)
@@ -768,6 +773,7 @@ def main(argv: list[str] | None = None) -> int:
              "executable requires at the boundary (ARCHITECTURE §4)",
     )
     p_guard.add_argument("files", nargs="+", type=Path)
+    p_guard.add_argument("--backend", choices=["dafny", "dafny-outcomes", "dafny-buffers"], default="dafny")
     p_guard.add_argument("-o", "--outdir", type=Path, default=Path("build/guarded"))
     p_guard.add_argument(
         "--check-ensures",
@@ -958,7 +964,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "emit":
         return cmd_emit(args.files, args.outdir)
     if args.command == "guard":
-        return cmd_guard(args.files, args.outdir, check_ensures=args.check_ensures)
+        return cmd_guard(args.files, args.outdir, check_ensures=args.check_ensures, backend=args.backend)
     if args.command == "hunt":
         return cmd_hunt(args.files, args.outdir, args.per_condition_timeout)
     if args.command == "verify":

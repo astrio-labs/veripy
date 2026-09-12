@@ -1,0 +1,37 @@
+{
+  "date": "2026-09-11",
+  "cpu": "Apple M1 Pro",
+  "platform": "macOS-15.7-arm64-arm-64bit-Mach-O",
+  "evaluation_python": "3.13.7",
+  "torch": "2.8.0 CPU",
+  "dafny": "4.11.0",
+  "basedpyright": "1.39.10",
+  "preamble_version": "0.10",
+  "binding_report": "binding-validation.json",
+  "immutable_run": "runs/evaluation-003",
+  "proof_mutants": {
+    "one_dimensional_touch": "invariant failure",
+    "sweep_expire_early": "call-precondition failure",
+    "dispatcher_accept": "call-precondition failure"
+  },
+  "full_regression_status": "passed",
+  "sglang_integration_analysis_tests_passed": 36,
+  "black_proof_refresh": {
+    "normalize": "ok",
+    "parser": "ok"
+  },
+  "legacy_shard_adapter_checks": 10,
+  "legacy_product_inputs": 1000,
+  "legacy_signed_multishard_inputs": 500,
+  "closure_adapter_checks": 18,
+  "paper_pages": 3,
+  "paper_scope": "eight reported functions across three case studies; no VeriPy-Bench in manuscript",
+  "additional_cloud_usd": 0,
+  "model_api_calls": 0,
+  "model_api_usd": 0,
+  "local_compute_and_assistant_cost": "not priced",
+  "full_regression_tests_passed": 1222,
+  "full_regression_wall_seconds": 949.86,
+  "current_binding": "runs/evaluation-004",
+  "regression_source_note": "Concurrent module docstring-only edits were checked for identical executable ASTs; bindings were fully re-proved and refreshed afterward."
+}

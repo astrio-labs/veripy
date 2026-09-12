@@ -1,0 +1,1 @@
+The four executable Luhn function bodies are from python-stdnum, copyright Arthur de Jong, LGPL-2.1-or-later. See COPYING and native-001/result.json for the pinned upstream path and SHA-256. Annotations and proof support are added by VeriPy.

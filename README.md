@@ -2,6 +2,8 @@
 
 > **Status: M0–M2 complete** on the v1 fragment. `#@` specs parse ([grammar v0.2, frozen](docs/SPEC-GRAMMAR.md)), compile to runtime contracts that CrossHair searches for counterexamples, and translate to Dafny for SMT proofs (`veripy verify`). All four soundness layers are built — encoder admission (`veripy check`), boundary guards (`veripy guard`), island integrity with assumptions A1–A7 in the verification report (`--report`), and continuous translation validation (`veripy difftest`, in CI on every PR). The M2 agent layer is live: structured failures (`verify --json`), the proof-repair loop (`veripy repair`), benchmark-derived repair and spec-writing exams, and an LSP (`veripy lsp`) that runs at two speeds — instant conformance diagnostics on every keystroke, prover verdicts on explicit request, expiring the moment the buffer changes ([docs/EDITOR.md](docs/EDITOR.md)). Sixteen corpus functions are proven — including `gcd`'s full maximality spec, `modp`'s modular-power spec and `sum_to_n`'s closed form via the `#@ proof` lemma-sidecar mechanism, and `isqrt`'s maximality spec with no proof additions at all — and scored 16/16 on [veripy-benchmark](docs/BENCHMARK.md)'s assurance ladder (62/77 mutants refuted by the specs, 81%; 13 more crash and 2 diverge under mutation — caught by the interpreter or the wall rather than by the specification, so reported separately and never credited). Licensed under [MIT](LICENSE).
 
+**Lean case-study support:** the same annotated SGLang, Black, PyTorch, Django, vLLM, and CPython components now have Lean proofs. See [Lean setup and scope](docs/LEAN.md) and the [dual-backend evidence](case_studies/lean_parity/README.md).
+
 Developers (and LLM agents) annotate a **typed Python fragment** with specifications in `#@` comments. The toolchain translates that fragment into [Dafny](https://dafny.org/), where an SMT-backed verifier discharges the proofs — with LLM assistance for the ones automation misses. The Python file stays the source of truth: CPython ignores the annotations, and no code is rewritten in another language.
 
 The fragment is small on purpose: `int` / `bool` / `str` / `list` / `Optional`, structured control flow, and an ownership discipline on lists. It is a *generation target* for agent-written helpers, not a filter you point at an existing library. HumanEval/MBPP-style solutions sit around 65% in-fragment; idiomatic OSS libraries sit at 3–23% ([CORPUS-RESULTS.md](docs/CORPUS-RESULTS.md)).
@@ -73,7 +75,7 @@ The result is a precise, honest guarantee: *verified properties hold for every e
 | --- | --- | --- |
 | Embedding | Shallow translation of a typed fragment | The prover sees an inspectable model of a clear fragment; no full-CPython-semantics claim |
 | Typing | Typed island + checked boundary | Precise types where verified; generated guards keep guarantees when untyped code calls in |
-| Backend | Dafny first | Strongest SMT automation and LLM proof DX available today; executable Python backend enables differential testing. A backend-neutral IR (and a second backend) is a design commitment; the encoder currently emits Dafny from CPython `ast`. |
+| Backend | Dafny and Lean | Dafny provides SMT automation; Lean independently checks executable models and proof sidecars for the supported cohort. Both translate CPython `ast`; a backend-neutral IR remains future work. |
 | Spec surface | `#@` comment annotations on real Python | The Python file stays the source of truth; zero runtime or import friction |
 | Mutation | Value semantics under an explicit ownership discipline | Best prover/LLM fit; the encoder enforces ownership-lite (fresh vs. alias) today, not the full §3.2 dataflow pass |
 | Proof DX | Automation first, LLM proof-repair loop for the rest | The repair loop edits only the `.proofs.dfy` sidecar |
@@ -91,9 +93,10 @@ The result is a precise, honest guarantee: *verified properties hold for every e
 | --- | --- | --- |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System as built, soundness design (§1–§9), as-built vs. design gaps | ✅ (system half matches the tree) |
 | [AGENT-INTERFACE.md](docs/AGENT-INTERFACE.md) | Embedding API, failure taxonomy, payload contract | ✅ |
+| [CALLABLE-COMPATIBILITY.md](docs/CALLABLE-COMPATIBILITY.md) | Callable exact contracts and annotated-function backward compatibility | ✅ (Dafny fragment) |
 | [EDITOR.md](docs/EDITOR.md) | LSP: keystroke conformance, on-request proof | ✅ |
 | [SEMANTICS.md](docs/SEMANTICS.md) | Fragment big-step rules and simulation claim (not mechanized) | ✅ (preamble 0.6) |
-| [SPEC-GRAMMAR.md](docs/SPEC-GRAMMAR.md) | The `#@` spec language: clauses, expression syntax, desugaring rules, decisions | ✅ (v0.2, frozen) |
+| [SPEC-GRAMMAR.md](docs/SPEC-GRAMMAR.md) | The `#@` spec language: clauses, expression syntax, desugaring rules, decisions | ✅ (v0.3) |
 | [GRAMMAR-CONTACT.md](docs/GRAMMAR-CONTACT.md) | The M0 exit exercise: 20 annotated HumanEval/MBPP tasks, mutation-tested; friction findings and the freeze decision | ✅ |
 | [CORPUS-RESULTS.md](docs/CORPUS-RESULTS.md) | Fragment-coverage numbers: nine OSS repos + the HumanEval/MBPP greenfield contrast | ✅ (survey still untyped) |
 | [BENCHMARK.md](docs/BENCHMARK.md) | veripy-benchmark: assurance-ladder scoring over 16 annotated-Python tasks, mutant-panel spec strength | ✅ (v0) |
@@ -101,3 +104,8 @@ The result is a precise, honest guarantee: *verified properties hold for every e
 | SUBSET.md | The versioned fragment definition (seeded from the lowering catalog) | planned |
 | DECISIONS.md | Resolved design decisions with rationale and revisit tripwires | planned |
 | RELATED-WORK.md | The verification landscape and positioning | planned |
+
+The [explicit-environment extension studies](case_studies/extensions_v1/README.md)
+add checked fragments from CPython, Packaging, python-stdnum, PyPNG, and Werkzeug
+and preserve all-ten-project regression checkpoints, proof domains, native
+integration evidence, and raw versus modeled type-checking results.

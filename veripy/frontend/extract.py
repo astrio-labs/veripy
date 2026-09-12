@@ -66,7 +66,9 @@ def _safe_params(node: ast.FunctionDef) -> tuple[tuple[str, ...], str | None]:
     names = tuple(p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs))
     if a.vararg or a.kwarg:
         return names, "*args/**kwargs are outside the fragment"
-    reserved = [n for n in names if n in RESERVED_PARAMS]
+    buffer_result = any(p.arg == "result" and isinstance(p.annotation, ast.Name) and p.annotation.id == "bytearray"
+                        for p in (*a.posonlyargs,*a.args,*a.kwonlyargs))
+    reserved = [n for n in names if n in RESERVED_PARAMS and not (n == "result" and buffer_result)]
     if reserved:
         return names, (
             f"parameter name(s) {', '.join(reserved)} collide with the spec "

@@ -2266,6 +2266,9 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
     if specs.errors:
         first = specs.errors[0]
         raise EncodeError(f"spec error: {first.error}", first.line)
+    for spec in specs.functions:
+        for clause in spec.by_kind("ghost_ensures"):
+            raise EncodeError("ghost_ensures is currently supported by Dafny backends only", clause.line)
     # Proof sidecars are live (P3). `proof_lemmas` is the set of names
     # the pack declares, already whitelist-validated by the loader.
     module = ast.parse(source)
@@ -3753,6 +3756,15 @@ def encode_module_lean(source: str, specs: ModuleSpecs, module_name: str,
         emit("", None)
         emit(f"theorem {_ident(theorem)} {sig} :", first_ensures_line)
         emit(f"    {goal} := by", first_ensures_line)
+        # As in the imperative backend, a proved sidecar theorem may discharge
+        # this exact generated postcondition. The function body remains in the
+        # goal and Lean checks definitional equality; a mismatched hook fails.
+        hook = spec_fn.name + "__proof"
+        if hook in getattr(proof_lemmas, "theorems", frozenset()):
+            hook_args = " ".join([*(_ident(_tname(p)) for p in params),
+                                  *(f"h{i}" for i in range(len(hyps)))])
+            emit(f"  exact {_ident(hook)} {hook_args}", first_ensures_line)
+            continue
         # The failing-goal diagnostic lands on the tactic lines; map them
         # to the first ensures clause so a `postcondition` failure points
         # at the contract, not at Lean plumbing.

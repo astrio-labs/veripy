@@ -3879,3 +3879,21 @@ def test_new_paths_inherit_scope_binders_and_rename():
     out3 = _encode(ren3).lean_source
     assert "«x» + «f'»" in out3
     assert "«x» + «f»)" not in out3
+
+
+@pytest.mark.parametrize('priority', [1, 1100, 999999])
+def test_sidecar_allows_numeric_spec_priority(priority):
+    from veripy.backends.lean.sidecar import validate_sidecar_text
+    # This tests syntax admission; Lean still checks the attribute and proof.
+    validate_sidecar_text(f'@[spec {priority}]\ntheorem Checked : True := trivial', 'priority')
+
+
+@pytest.mark.parametrize('attribute', [
+    'spec 0', 'spec -1', 'spec (1000 + 1)', 'spec 1000000',
+    'spec 1100, implemented_by bad', 'spec 1100, unsafe',
+])
+def test_sidecar_priority_does_not_admit_arbitrary_attributes(attribute):
+    from veripy.backends.lean.sidecar import validate_sidecar_text
+    from veripy.backends.dafny.encoder import EncodeError
+    with pytest.raises(EncodeError):
+        validate_sidecar_text(f'@[{attribute}]\ntheorem Checked : True := trivial', 'priority')

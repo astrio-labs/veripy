@@ -661,7 +661,7 @@ def _str_method_still_outside(node: ast.Call) -> bool:
         return False
     admitted = {
         "join", "split", "find", "startswith", "endswith", "replace",
-        "strip", "lstrip", "rstrip",
+        "strip", "lstrip", "rstrip", "lower",
     }
     if name not in admitted:
         return True
@@ -679,13 +679,15 @@ def _str_method_still_outside(node: ast.Call) -> bool:
     if name in ("startswith", "endswith"):
         if len(args) != 1:
             return True
-        return isinstance(args[0], ast.Tuple)
+        return isinstance(args[0], ast.Tuple) and any(not isinstance(a, ast.Constant) or type(a.value) is not str for a in args[0].elts)
     if name == "replace":
         if len(args) != 2:
             return True
         return _empty_str_const(args[0])
+    if name == "lower":
+        return len(args) != 0
     if name in ("strip", "lstrip", "rstrip"):
-        return len(args) != 1
+        return len(args) > 1
     return True
 
 

@@ -178,7 +178,7 @@ def repair(path: Path | str, workdir: Path | str, *, engine: str = "claude",
             "reason": outcome.reason, "sidecar_text": outcome.sidecar_text}
 
 
-def guard(path: Path | str, *, check_ensures: bool = False) -> dict[str, Any]:
+def guard(path: Path | str, *, check_ensures: bool = False, backend: str = "dafny") -> dict[str, Any]:
     """Generate the boundary-guard module source for a verified module.
 
     Returned as TEXT rather than written to disk: where a host puts
@@ -208,9 +208,25 @@ def guard(path: Path | str, *, check_ensures: bool = False) -> dict[str, Any]:
     if specs.errors or specs.orphans:
         return {"ok": False, "source": None,
                 "reason": "spec errors; call conformance() first"}
+    from .backends.dafny.encoder import EncodeError
     try:
-        text = emit_guarded(source, specs, src_name=path.name,
-                            check_ensures=check_ensures)
-    except GuardGenError as exc:
+        emitter = emit_guarded
+        lemmas = frozenset()
+        if backend != "dafny":
+            from .backends.base import get_backend
+            if backend == "dafny-outcomes":
+                from .guards.outcomes import emit_outcome_guarded
+                emitter = emit_outcome_guarded
+            elif backend == "dafny-buffers":
+                from .guards.buffers import emit_buffer_guarded
+                emitter = emit_buffer_guarded
+            else:
+                return {"ok": False, "source": None, "reason": f"no guard emitter for backend {backend!r}"}
+            lemmas = get_backend(backend).load_sidecar(path).lemmas
+        if backend == "dafny":
+            text = emitter(source, specs, src_name=path.name, check_ensures=check_ensures)
+        else:
+            text = emitter(source, specs, src_name=path.name, check_ensures=check_ensures, proof_lemmas=lemmas)
+    except (GuardGenError, EncodeError) as exc:
         return {"ok": False, "source": None, "reason": exc.message}
     return {"ok": True, "source": text, "reason": "generated"}

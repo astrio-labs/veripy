@@ -257,10 +257,13 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
         payload["error"] = f"cannot write stub: {exc}"
         return payload
     payload["stub"] = str(stub) if keep_artifacts else None
-    stub_extent = be.encoded_text(encoded).count("\n") + 1
+    stub_extent = getattr(encoded, "artifact_extent", be.encoded_text(encoded).count("\n") + 1)
     payload["toolchain"]["dafny_version"] = be.prover_version()  # cached per process
     result = be.verify_artifact(stub, encoded.line_map,
                                 time_limit=time_limit, extent=stub_extent)
+    if be.name == "lean" and keep_artifacts:
+        payload["prover_log"] = result.log_path
+        payload["axiom_audit"] = result.audit_path
     if result.error is not None:
         payload["status"] = "tool-error"
         payload["error"] = result.error
@@ -272,7 +275,8 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
     for d in result.diagnostics:
         if d.severity != "error":
             continue
-        in_sidecar = d.dafny_line > stub_extent
+        in_sidecar = (any(lo <= d.dafny_line <= hi for lo, hi in encoded.sidecar_ranges)
+                      if hasattr(encoded, "sidecar_ranges") else d.dafny_line > stub_extent)
         failure: dict[str, Any] = {
             "kind": d.obligation,
             "rule": None,

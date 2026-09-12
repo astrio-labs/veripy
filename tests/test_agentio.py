@@ -523,7 +523,9 @@ def test_fragment_rejections_carry_a_machine_readable_rule(tmp_path):
     assert record["rule"] == "indexed-assignment"
     # The message must not contradict itself by listing the construct it
     # has just rejected as admitted.
-    assert "indexed assignment" in record["message"]
+    # Indexed writes are now admitted on owned locals, while this parameter
+    # write is still rejected. The diagnostic must explain that distinction.
+    assert "fresh, unaliased local list" in record["message"]
     assert "-- admitted: assignment" not in record["message"]
 
 

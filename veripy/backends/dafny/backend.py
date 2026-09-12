@@ -32,7 +32,7 @@ class DafnyBackend:
         return load_proof_sidecar(source_path)
 
     def validate_sidecar(self, text: str) -> None:
-        validate_sidecar_text(text)
+        validate_sidecar_text(text, "proof sidecar")
 
     def encode(self, source: str, specs: Any, *, module_name: str,
                proof_lemmas: Any) -> Any:
