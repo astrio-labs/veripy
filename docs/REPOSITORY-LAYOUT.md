@@ -65,7 +65,9 @@ caches, installed environments and LaTeX intermediates stay outside Git.
 `tools/check_repository_hygiene.py` checks ignore policy and tracked blob sizes.
 See [output conventions](OUTPUT-LAYOUT.md).
 
-The public README and workflow asset do not require the manuscript. A local
-`paper/` checkout may provide manuscript build utilities, but it is not needed
+The public README and workflow asset do not require the manuscript. Private
+table generators live under the author's local `paper/tools/`, with their
+build entry points in `paper/Makefile`. They are not public product utilities.
+A local `paper/` checkout is not needed
 for the product commands or the maintained component runners. Historical paper
 reproduction uses the separately distributed frozen artifact.
