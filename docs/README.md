@@ -32,6 +32,7 @@ tree. Research results retain their own compiler, environment and input bindings
 - [Case studies](../case_studies/README.md) identifies the ten projects and maintained runners.
 - [Evaluation](EVALUATION.md) separates functional, compatibility, integration and maintenance evidence.
 - [Research archives](RESEARCH-ARCHIVES.md) provides catalogs, checksums, reproduction and availability status.
+- [Research replay](RESEARCH-REPLAY.md) gives environment setup and commands for the research-only release.
 - [Roadmap](ROADMAP.md) records remaining engineering and research priorities.
 
 Earlier surveys, selection proposals and design notes are preserved in the

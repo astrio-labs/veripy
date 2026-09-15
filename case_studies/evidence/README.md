@@ -16,10 +16,11 @@ refer to the original tree inside the archive identified by `../history.json`.
 | `completion-audit.md` | Review authority, exposure and remaining transfer limitations |
 | `sglang-runtime.json` | GPU runtime analysis for the recorded workload and hardware |
 
-The normalized inputs for the paper's maintenance tables already live in
-`paper/evidence/maintenance-metric-inputs.json`. They are retained there instead
-of being copied here. Paper table and figure generators use these compact inputs.
-Raw transcript collection requires the extracted historical archive.
+The research replay archive includes normalized maintenance inputs at
+`veripy-supplement/paper/evidence/maintenance-metric-inputs.json`. That historical
+path contains research data rather than manuscript text. Use the
+[replay guide](../../docs/RESEARCH-REPLAY.md) to recompute counts from retained
+trials. Raw transcripts are in the replay and historical archives.
 
 All old failures, rejected requirements, original review decisions and alternative
 attempts are retained in the complete archive. Removing their working directories
