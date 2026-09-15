@@ -32,6 +32,26 @@ def _load(path: Path, name: str):
 # ---- verification report ------------------------------------------------------
 
 
+@pytest.mark.parametrize("count", [0, 3])
+def test_report_renders_numeric_trusted_contract_count(count):
+    from veripy.verification.report import build_report, render_report_text
+
+    report = build_report([], {}, None)
+    report["summary"]["trusted_contracts"] = count
+    assert f"verified modulo {count} trusted contracts" in render_report_text(report)
+
+
+@pytest.mark.parametrize("count", ["private-value-must-not-be-logged", "3", -1, True, 1.5, None])
+def test_report_rejects_invalid_trusted_contract_counts_without_echoing(count):
+    from veripy.verification.report import build_report, render_report_text
+
+    report = build_report([], {}, None)
+    report["summary"]["trusted_contracts"] = count
+    with pytest.raises(ValueError) as caught:
+        render_report_text(report)
+    assert str(caught.value) == "trusted_contracts must be a nonnegative integer"
+
+
 @pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
 def test_report_written_with_verdicts_and_assumptions(tmp_path, capsys):
     src = tmp_path / "m.py"
