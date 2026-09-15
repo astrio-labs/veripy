@@ -141,13 +141,13 @@ def render_report_text(report: dict[str, Any]) -> str:
     count = s["trusted_contracts"]
     if type(count) is not int or count < 0:
         raise ValueError("trusted_contracts must be a nonnegative integer")
-    trusted_count = int(count)
+    contract_count = int(count)
     lines = [
         f"verification report (preamble {report['preamble_version']}, "
         f"dafny {report['dafny_version'] or 'not run'})",
         f"  functions: {s['functions']}  verified: {s['verified']}  "
         f"failed: {s['failed']}  errors: {s['errors']}",
-        f"  guarantee: verified modulo {trusted_count} trusted contracts",
+        f"  guarantee: verified modulo {contract_count} trusted contracts",
     ]
     for f in report["functions"]:
         mark = "[verified]" if f["marked_verified"] else "[spec'd]"
