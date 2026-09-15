@@ -17,15 +17,18 @@ versioned pilots, frozen implementations and complete experiment records are
 preserved in the archive identified by [history.json](../case_studies/history.json).
 They are no longer parallel development trees in the active repository.
 
-## Prepare the public repository
+## Publication and integration
 
-1. Validate the curated sources, tests, documentation and CI in a clean checkout,
-   including the intended source-only distribution without the manuscript.
-2. Reconcile the local implementation with upstream changes before publishing.
-3. Commit maintained code and minimal case-study inputs. Publish the complete
-   historical research archive separately with its checksum and reproduction guide.
-4. Keep generated proof outputs, logs, temporary files and recovery copies outside
-   the source tree. Preserve evidence needed for published results in the archive.
+The curated source update is committed and pushed on
+`codex/public-repository-update`, reconciled with upstream and validated in a
+separate checkout. The [research archive release](RESEARCH-ARCHIVES.md) is
+published with verified downloads, checksums and a reproduction guide. Complete
+private archives and the manuscript remain local.
+
+The remaining integration step is to review and merge the source branch into
+`main`. Keep generated proof outputs, logs, temporary files and recovery copies
+outside the source tree. New research records should receive a new archive
+version, preserving earlier successes and failures.
 
 ## Research priorities
 

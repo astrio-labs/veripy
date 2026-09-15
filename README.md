@@ -109,9 +109,10 @@ runs are retained. Comparative proof-reuse benefits and generalization to unseen
 upstream changes remain unestablished.
 
 Compact evidence and runnable inputs live in `case_studies/`. Large experiment
-records have versioned archive manifests, checksums and reproduction instructions
-in the [research archive guide](docs/RESEARCH-ARCHIVES.md). The guide records
-attachment availability separately from the source repository.
+records are published in the
+[research-2026-09-15 release](https://github.com/astrio-labs/veripy/releases/tag/research-2026-09-15).
+The [research archive guide](docs/RESEARCH-ARCHIVES.md) provides checksums,
+provenance and reproduction instructions.
 
 For development, run the test suite after installing the development dependencies.
 Some integration tests require the external proof toolchains.

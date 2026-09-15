@@ -58,16 +58,16 @@ Commands, scopes and the separate typing gate are described in
 archive by SHA256. The [research archive guide](RESEARCH-ARCHIVES.md) links the
 dated catalog and explains how to verify and reproduce the frozen attachments.
 They preserve original paths, raw logs, transcripts, frozen compilers, review
-decisions and failures. The attachments are prepared locally and must accompany
-a full research-artifact publication. Old paths embedded in
-historical evidence are archive member names, not current checkout paths.
+decisions and failures. Research-only views are published in the
+[research-2026-09-15 release](https://github.com/astrio-labs/veripy/releases/tag/research-2026-09-15).
+Old paths embedded in historical evidence are archive member names, not current
+checkout paths. The complete private archives retain their original bytes.
 
-The submitted anonymous artifact retains its original source layout. Run the
-historical reproduction commands inside that artifact using its frozen compiler,
-inputs and counting scripts. The [archive guide](RESEARCH-ARCHIVES.md) gives the
-commands and attachment status. The optional manuscript's table and figure
-builders are authoring utilities, not prerequisites for the public component
-runners. They may require evidence files absent from a source-only checkout.
+Run historical commands in the extracted replay package with its frozen compiler,
+inputs and counting scripts. The [replay guide](RESEARCH-REPLAY.md) provides
+environment setup, commands and documented dependency adjustments. Manuscript
+table and figure builders are authoring utilities and are not required for
+these reproduction commands.
 
 ## Selection and interpretation
 

@@ -64,12 +64,13 @@ results are retained. Later record-product extensions are reported separately in
 Large logs, transcripts, frozen compilers, obsolete pilots and repeated checkpoints
 were removed from this active tree. They remain together in the historical
 archive outside `case_studies`. Original paths inside historical result records
-refer to archive members. The dated attachments are prepared locally under
-`output/research-archives/2026-09-14/` and should accompany the curated sources
-when publishing the full research artifact. They include earlier research
-bundles and a byte-identical copy of the frozen submission artifact.
+refer to archive members. The public
+[research-2026-09-15 release](https://github.com/astrio-labs/veripy/releases/tag/research-2026-09-15)
+provides research-only views of that history and the frozen replay package,
+including successful and unsuccessful outcomes. The complete original archives
+remain unchanged locally.
 
-The submitted anonymous artifact retains its original layout. Reproduce the
-paper's historical commands inside that artifact, rather than mixing its frozen
-measurements with the current compiler. Fresh runs belong under `build/` or
-`output/`, both ignored by Git.
+Use the [replay guide](../docs/RESEARCH-REPLAY.md) and its matching historical
+compiler to reproduce recorded results. The public development compiler is a
+separate revision. Fresh runs belong under `build/` or `output/`, both ignored
+by Git.

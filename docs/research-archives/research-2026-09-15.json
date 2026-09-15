@@ -1,0 +1,116 @@
+{
+  "archives": [
+    {
+      "bytes": 124652193,
+      "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/veripy-research-history-2026-09-15.tar.gz",
+      "file": "veripy-research-history-2026-09-15.tar.gz",
+      "members": 38833,
+      "sha256": "56aef4590d34a7536e4e6da97f254f207eeae4b3c1aab7abda6f2e87238ac419"
+    },
+    {
+      "bytes": 18817427,
+      "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/veripy-research-replay-2026-09-15.tar.gz",
+      "file": "veripy-research-replay-2026-09-15.tar.gz",
+      "members": 4113,
+      "sha256": "6505d1ee8d7004ed50d550e9ad2485e50d7b35b8887abb38e3a8cf133cfdb86b"
+    },
+    {
+      "bytes": 178024342,
+      "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/veripy-research-records-2026-09-15.tar.gz",
+      "file": "veripy-research-records-2026-09-15.tar.gz",
+      "members": 52577,
+      "sha256": "cca9b5032e6d4df282355a61beea6526cd72d081b7461ba836134ffc3bc8e4b8"
+    }
+  ],
+  "attachments": [
+    {
+      "bytes": 4491493,
+      "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/SELECTION.json.gz",
+      "file": "SELECTION.json.gz",
+      "sha256": "42262ab594877668ba2b11dd9d05540074f4c53688faae40be1fcf3b2e5d7d0e"
+    },
+    {
+      "bytes": 7301,
+      "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/README.md",
+      "file": "README.md",
+      "sha256": "3582e63a3d8d92456b1cb0eb1cb4fa34a7387a8e85060c08599c81ae3cfd4351"
+    },
+    {
+      "bytes": 10536,
+      "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/verify_archives.py",
+      "file": "verify_archives.py",
+      "sha256": "d7636700a5575d7b2d5b75df2d5f62c3204eb36781828942982b393af253b4f6"
+    },
+    {
+      "bytes": 14417,
+      "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/public_release.py",
+      "file": "public_release.py",
+      "sha256": "2e5350f33f5651954d87c837ec7232b12a82c0c80dda119378659dad4a7e1491"
+    },
+    {
+      "bytes": 15801,
+      "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/VALIDATION.json",
+      "file": "VALIDATION.json",
+      "sha256": "9106aa0d09ee9fd7f301e31deea53c39ef1d2b5ee8585edcfb41e48d7009139f"
+    }
+  ],
+  "checksums": {
+    "bytes": 903,
+    "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/SHA256SUMS",
+    "file": "SHA256SUMS",
+    "sha256": "4c1c545f5bd14496fa1d4239bcd2466acf25499a816e1d1f9f8e2007379e8c1d"
+  },
+  "download_verification": {
+    "anonymous_manifest_download": {
+      "authenticated": false,
+      "sha256": "13c949d7f72096ad59c0de0cc84be515d4da72ca3e5a5fdb8f0b4e16ee2bc2c1",
+      "status": 200,
+      "url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/MANIFEST.json"
+    },
+    "archives": 3,
+    "assets": 11,
+    "checked_at": "2026-09-15T11:38:01.114417+00:00",
+    "file_inventory_checked": true,
+    "members_checked": 95523,
+    "status": "passed"
+  },
+  "inventory": {
+    "bytes": 3495619,
+    "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/FILE-INVENTORY.json.gz",
+    "file": "FILE-INVENTORY.json.gz",
+    "sha256": "acdd4a553feff4f710a5fb0066996d452cbd65dfb7a842bdcfab903d9ef308e0"
+  },
+  "manifest": {
+    "bytes": 2561,
+    "download_url": "https://github.com/astrio-labs/veripy/releases/download/research-2026-09-15/MANIFEST.json",
+    "file": "MANIFEST.json",
+    "sha256": "13c949d7f72096ad59c0de0cc84be515d4da72ca3e5a5fdb8f0b4e16ee2bc2c1"
+  },
+  "original_archives": [
+    {
+      "bytes": 166279569,
+      "file": "veripy-case-studies-2026-09-14.tar.gz",
+      "sha256": "192556857b84fd1f0efc6a008e3b5c780054e252446220aa4e3b0ffc2e3783fd"
+    },
+    {
+      "bytes": 23147830,
+      "file": "veripy-paper-artifact-2026-09-14.zip",
+      "sha256": "43978bb6c22a2ece81a2dadb1969ff1003e1db13d648585c29ee404380d9d241"
+    },
+    {
+      "bytes": 240848766,
+      "file": "veripy-experiment-records-2026-09-14.tar.gz",
+      "sha256": "dc642f45b36a6323e2faff0870673d5acbd16557d508bbc5702ec21cbe41ae5c"
+    }
+  ],
+  "packaging_commit": "73d22e6d14d8b75bca7607164249ab426e73bf3a",
+  "publication_status": "published",
+  "published_at": "2026-09-15T11:36:22Z",
+  "release_url": "https://github.com/astrio-labs/veripy/releases/tag/research-2026-09-15",
+  "reproduction_instructions": "docs/RESEARCH-REPLAY.md",
+  "schema": 1,
+  "selection_policy": "All outcomes retained. Manuscript/presentation material, editorial workspaces, recovery copies and installed environments excluded by path. Nested containers expanded. Link metadata retained without following links. Selection ledger identifies original hashes and every decision.",
+  "source_commit": "3557039eaafa8d039b680c403873259d362a8baf",
+  "tag": "research-2026-09-15",
+  "version": "research-2026-09-15"
+}

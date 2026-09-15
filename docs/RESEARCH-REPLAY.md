@@ -1,5 +1,9 @@
 # VeriPy research replay and historical records
 
+Download the [research-2026-09-15 release](https://github.com/astrio-labs/veripy/releases/tag/research-2026-09-15).
+The [repository catalog](research-archives/research-2026-09-15.json) records asset
+hashes, URLs and completed download verification.
+
 This release supplies research records and executable replay inputs without the
 manuscript. It contains successful and unsuccessful trials, rejected requirements
 and empty cohorts. Replaying saved results does not collect new model responses
