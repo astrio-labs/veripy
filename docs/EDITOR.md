@@ -137,7 +137,7 @@ since it encodes without the sidecar. Every function comes back
 
 ## Not yet wired
 
-The type gate (basedpyright) is still a batch tool (`veripy check
---types`), and there are no hovers or code actions. `veripy verify
+The type gate (basedpyright) is still a batch tool (`veripy check FILE.py`,
+with typing enabled by default and `--no-types` as an explicit opt-out), and there are no hovers or code actions. `veripy verify
 --report` remains the authority for the full report, including assumptions
 A1–A7.

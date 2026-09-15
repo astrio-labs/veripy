@@ -1,0 +1,701 @@
+{
+  "packaging_compatibility_counterexamples": {
+    "scope": "Concrete public canonicalize_name compatibility counterexamples; not an exhaustive difference inventory",
+    "python": "3.12.2",
+    "source_sha256": {
+      "before.py": "d05dc787d385b9182b8538066549792b6d85bf560fdad665d73ff680eea42620",
+      "upstream/src/packaging/utils.py": "37873aa19cc5272ea495367702790dcfbb129097acb8558fa7af0b037079740a"
+    },
+    "cases": [
+      {
+        "name": "\u039f\u03a3.\u0391",
+        "validate": false,
+        "before_25_0": {
+          "value": "\u03bf\u03c2-\u03b1"
+        },
+        "after_26_0": {
+          "value": "\u03bf\u03c3-\u03b1"
+        }
+      },
+      {
+        "name": "\u039f\u03a3..\u0391",
+        "validate": false,
+        "before_25_0": {
+          "value": "\u03bf\u03c2-\u03b1"
+        },
+        "after_26_0": {
+          "value": "\u03bf\u03c3-\u03b1"
+        }
+      },
+      {
+        "name": "foo\n",
+        "validate": true,
+        "before_25_0": {
+          "value": "foo\n"
+        },
+        "after_26_0": {
+          "error": "InvalidName"
+        }
+      }
+    ]
+  },
+  "projects": 10,
+  "new_functional_studies": [
+    {
+      "project": "stdnum",
+      "result_file": "stdnum/run-02/results.json",
+      "status": "passed",
+      "native_guard_compiled_comparisons": 7740,
+      "guarded_imei_calls": 200,
+      "bodies_preserved": true,
+      "domain": "builtin scalar strings, alphabet length > 1",
+      "proved": "checksum range and index-error classification; validation format-error classification, allowed exception classes and normal return identity; is_valid does not raise and true implies nonempty representable input; check digit normal return has length one",
+      "not_proved": "Luhn algebraic check-digit round trip or all historical versions",
+      "source_sha256": "440793a9306425ad6a159a34ececf186155bd6a969e9d7dfd884dfbec18038d7"
+    },
+    {
+      "project": "pypng",
+      "result_file": "pypng/run-02/results.json",
+      "status": "passed",
+      "proved": "exact four-filter recurrence against scanline entry state, byte range, bounds, explicit permitted alias, and loop termination",
+      "domain": "exact bytearrays of equal length, positive filter_unit; only result/scanline may alias",
+      "native_guard_compiled_cases": 3360,
+      "forbidden_alias_controls": 8,
+      "guarded_reader_dispatches": 12,
+      "complete_guarded_png_decodes": 4,
+      "bodies_preserved": true,
+      "source_sha256": "2e8a79705ed5b25f190bf1fc717f95fb17df002b05f1262bf493d760ec049d6f"
+    },
+    {
+      "project": "cpython",
+      "result_file": "cpython/run-03/results.json",
+      "status": "passed",
+      "proved": "all six original helper contracts and both universal round trips",
+      "domain": "unbounded positive ordinals and valid positive-year Gregorian dates",
+      "native_guard_compiled_cases": 146122,
+      "complete_400_year_cycle": 146097,
+      "guarded_public_date_calls": 734,
+      "bodies_preserved": true,
+      "source_sha256": "ac158d4f084e772359e4ade0c302bf7c0ef5e25a663150d39cfb0f7f2828b61c"
+    },
+    {
+      "project": "packaging",
+      "result_file": "packaging/run-01/results.json",
+      "status": "passed",
+      "native_guard_compiled_comparisons": 6040,
+      "guarded_requirement_checks": 6,
+      "bodies_preserved": true,
+      "domain": "all builtin Unicode strings; exact Packaging 26.0 regex languages",
+      "proved": "exact Unicode normalization, validation error condition, normalized-name regex result, and loop termination",
+      "historical_difference": "25.0 accepts terminal newline during validation; 26.0 rejects it; native baseline retains this intentional difference",
+      "source_sha256": "a401be1a1bfa1bdaaa7c4dbb3de2011f84caea8c03b8251feca534719bd0d2da"
+    },
+    {
+      "project": "werkzeug",
+      "result_file": "werkzeug/run-03/results.json",
+      "status": "passed",
+      "native_guard_compiled_cases": 613,
+      "regex_capture_position_comparisons": 11349,
+      "guarded_response_calls": 80,
+      "bodies_preserved_except_local_type_annotations": true,
+      "domain": "Unicode strings; parser requires no LF; ETags state modeled as strong/weak sets and star flag, without identity or iteration order",
+      "proved": "exact quote/error behavior, unquote result, ETag parser result sets, and parser termination",
+      "source_sha256": "6772bc7132768d636b8c3344246140a10cca48b74b8fcbbd3d72eda7fc649e20"
+    }
+  ],
+  "checkpoints": [
+    {
+      "name": "01-module-constants",
+      "status": "failed",
+      "projects": 10,
+      "jobs": {
+        "black": {
+          "exit_code": 0,
+          "seconds": 6.051259292056784
+        },
+        "django": {
+          "exit_code": 0,
+          "seconds": 36.65385545801837
+        },
+        "sglang": {
+          "exit_code": 1,
+          "seconds": 0.3929272920358926
+        },
+        "pytorch": {
+          "exit_code": 1,
+          "seconds": 0.18302279198542237
+        },
+        "vllm": {
+          "exit_code": 1,
+          "seconds": 0.18761091597843915
+        },
+        "five-native-baselines": {
+          "exit_code": 0,
+          "seconds": 1.0411968339467421
+        },
+        "five-admission-checks": {
+          "exit_code": 0,
+          "seconds": 2.1825294580776244
+        }
+      },
+      "snapshot_drift": [],
+      "working_source_drift": [],
+      "manifest_verified": true,
+      "result": "checkpoints/01-module-constants/results.json"
+    },
+    {
+      "name": "02-module-environment",
+      "status": "passed",
+      "projects": 10,
+      "jobs": {
+        "black": {
+          "exit_code": 0,
+          "seconds": 4.984750499948859
+        },
+        "django": {
+          "exit_code": 0,
+          "seconds": 33.99420883401763
+        },
+        "sglang": {
+          "exit_code": 0,
+          "seconds": 84.26915166608524
+        },
+        "pytorch": {
+          "exit_code": 0,
+          "seconds": 60.361822208040394
+        },
+        "vllm": {
+          "exit_code": 0,
+          "seconds": 98.12142862507608
+        },
+        "five-native-baselines": {
+          "exit_code": 0,
+          "seconds": 1.8707023750757799
+        },
+        "five-admission-checks": {
+          "exit_code": 0,
+          "seconds": 1.0546307500917464
+        }
+      },
+      "snapshot_drift": [],
+      "working_source_drift": [
+        "veripy/agentio.py",
+        "veripy/guards/outcomes.py",
+        "veripy/guards/emitter.py",
+        "veripy/backends/lean/backend.py",
+        "veripy/backends/lean/imperative.py",
+        "veripy/backends/dafny/encoder.py",
+        "veripy/backends/dafny/outcomes.py"
+      ],
+      "manifest_verified": true,
+      "result": "checkpoints/02-module-environment/results.json"
+    },
+    {
+      "name": "03-string-dependencies",
+      "status": "failed",
+      "projects": 10,
+      "jobs": {
+        "black": {
+          "exit_code": 0,
+          "seconds": 6.4565074580023065
+        },
+        "django": {
+          "exit_code": 0,
+          "seconds": 34.344290792010725
+        },
+        "sglang": {
+          "exit_code": 0,
+          "seconds": 86.33243541594129
+        },
+        "pytorch": {
+          "exit_code": 0,
+          "seconds": 56.66538641706575
+        },
+        "vllm": {
+          "exit_code": 0,
+          "seconds": 101.9321443750523
+        },
+        "five-native-baselines": {
+          "exit_code": 0,
+          "seconds": 2.490879209013656
+        },
+        "five-admission-checks": {
+          "exit_code": 0,
+          "seconds": 1.5836153340060264
+        },
+        "full-regression": {
+          "exit_code": 1,
+          "seconds": 886.6472726250067
+        }
+      },
+      "snapshot_drift": [],
+      "working_source_drift": [
+        "veripy/guards/outcomes.py",
+        "veripy/backends/lean/backend.py",
+        "veripy/backends/lean/sidecar.py",
+        "veripy/backends/lean/imperative.py",
+        "veripy/backends/dafny/preamble.py",
+        "veripy/backends/dafny/encoder.py",
+        "veripy/backends/dafny/outcomes.py",
+        "veripy/backends/dafny/environment.py",
+        "veripy/backends/dafny/declarations.py",
+        "tests/test_module_environment.py",
+        "tests/test_dafny_encoder.py",
+        "tests/test_black_fragment.py",
+        "tests/test_lean_imperative.py"
+      ],
+      "manifest_verified": true,
+      "result": "checkpoints/03-string-dependencies/results.json"
+    },
+    {
+      "name": "04-checksum-exceptions",
+      "status": "passed",
+      "projects": 10,
+      "jobs": {
+        "black": {
+          "exit_code": 0,
+          "seconds": 6.386513915960677
+        },
+        "django": {
+          "exit_code": 0,
+          "seconds": 38.379428833024576
+        },
+        "sglang": {
+          "exit_code": 0,
+          "seconds": 85.57368824991863
+        },
+        "pytorch": {
+          "exit_code": 0,
+          "seconds": 56.26865254098084
+        },
+        "vllm": {
+          "exit_code": 0,
+          "seconds": 96.45387341699097
+        },
+        "five-native-baselines": {
+          "exit_code": 0,
+          "seconds": 2.4385391670512035
+        },
+        "five-admission-checks": {
+          "exit_code": 0,
+          "seconds": 1.4871727919671685
+        },
+        "stdnum-proof-integration": {
+          "exit_code": 0,
+          "seconds": 12.41771379194688
+        }
+      },
+      "snapshot_drift": [],
+      "working_source_drift": [
+        "veripy/frontend/parse.py",
+        "veripy/frontend/extract.py",
+        "veripy/backends/base.py",
+        "veripy/backends/lean/sidecar.py",
+        "veripy/backends/lean/imperative.py",
+        "veripy/backends/dafny/encoder.py"
+      ],
+      "manifest_verified": true,
+      "result": "checkpoints/04-checksum-exceptions/results.json"
+    },
+    {
+      "name": "05-buffers-calendar-admission",
+      "status": "passed",
+      "projects": 10,
+      "jobs": {
+        "black": {
+          "exit_code": 0,
+          "seconds": 7.411896709003486
+        },
+        "django": {
+          "exit_code": 0,
+          "seconds": 34.1745079170214
+        },
+        "sglang": {
+          "exit_code": 0,
+          "seconds": 86.2350001669256
+        },
+        "pytorch": {
+          "exit_code": 0,
+          "seconds": 58.388955041999
+        },
+        "vllm": {
+          "exit_code": 0,
+          "seconds": 102.82373612502124
+        },
+        "five-native-baselines": {
+          "exit_code": 0,
+          "seconds": 2.7132545829517767
+        },
+        "five-admission-checks": {
+          "exit_code": 0,
+          "seconds": 1.8253612499684095
+        },
+        "stdnum-proof-integration": {
+          "exit_code": 0,
+          "seconds": 12.381087625049986
+        },
+        "pypng-proof-integration": {
+          "exit_code": 0,
+          "seconds": 5.432736666989513
+        }
+      },
+      "snapshot_drift": [],
+      "working_source_drift": [
+        "veripy/backends/lean/imperative.py",
+        "veripy/backends/dafny/encoder.py"
+      ],
+      "manifest_verified": true,
+      "result": "checkpoints/05-buffers-calendar-admission/results.json"
+    },
+    {
+      "name": "06-calendar-round-trips",
+      "status": "passed",
+      "projects": 10,
+      "jobs": {
+        "black": {
+          "exit_code": 0,
+          "seconds": 6.332018541987054
+        },
+        "django": {
+          "exit_code": 0,
+          "seconds": 37.836240083910525
+        },
+        "sglang": {
+          "exit_code": 0,
+          "seconds": 84.98373324994463
+        },
+        "pytorch": {
+          "exit_code": 0,
+          "seconds": 53.797696458990686
+        },
+        "vllm": {
+          "exit_code": 0,
+          "seconds": 96.95024325000122
+        },
+        "five-native-baselines": {
+          "exit_code": 0,
+          "seconds": 1.725206583039835
+        },
+        "five-admission-checks": {
+          "exit_code": 0,
+          "seconds": 1.4758762079291046
+        },
+        "stdnum-proof-integration": {
+          "exit_code": 0,
+          "seconds": 12.29034262499772
+        },
+        "pypng-proof-integration": {
+          "exit_code": 0,
+          "seconds": 5.224540999974124
+        },
+        "cpython-proof-integration": {
+          "exit_code": 0,
+          "seconds": 23.29870591708459
+        }
+      },
+      "snapshot_drift": [],
+      "working_source_drift": [
+        "veripy/guards/outcomes.py",
+        "veripy/backends/lean/imperative.py",
+        "veripy/backends/dafny/regex_strings.py",
+        "veripy/backends/dafny/unicode_strings.py",
+        "veripy/backends/dafny/encoder.py",
+        "veripy/backends/dafny/outcomes.py",
+        "tests/test_regex_strings.py",
+        "tests/test_dafny_encoder.py"
+      ],
+      "manifest_verified": true,
+      "result": "checkpoints/06-calendar-round-trips/results.json"
+    },
+    {
+      "name": "07-complete-fragments",
+      "status": "failed",
+      "projects": 10,
+      "jobs": {
+        "black": {
+          "exit_code": 0,
+          "seconds": 6.699777083005756
+        },
+        "django": {
+          "exit_code": 0,
+          "seconds": 34.49596670793835
+        },
+        "sglang": {
+          "exit_code": 0,
+          "seconds": 85.90359100000933
+        },
+        "pytorch": {
+          "exit_code": 1,
+          "seconds": 38.03276204201393
+        },
+        "vllm": {
+          "exit_code": 0,
+          "seconds": 101.40571466705296
+        },
+        "five-native-baselines": {
+          "exit_code": 0,
+          "seconds": 1.0865259170532227
+        },
+        "five-admission-checks": {
+          "exit_code": 0,
+          "seconds": 3.1681633749976754
+        },
+        "stdnum-proof-integration": {
+          "exit_code": 0,
+          "seconds": 14.605164834065363
+        },
+        "pypng-proof-integration": {
+          "exit_code": 0,
+          "seconds": 5.795596958021633
+        },
+        "cpython-proof-integration": {
+          "exit_code": 0,
+          "seconds": 25.09043554100208
+        },
+        "packaging-proof-integration": {
+          "exit_code": 0,
+          "seconds": 32.98374454199802
+        },
+        "werkzeug-proof-integration": {
+          "exit_code": 0,
+          "seconds": 49.55813845898956
+        },
+        "full-regression": {
+          "exit_code": 0,
+          "seconds": 819.7246792500373
+        }
+      },
+      "snapshot_drift": [],
+      "working_source_drift": [
+        "veripy/guards/outcomes.py",
+        "veripy/backends/lean/sidecar.py",
+        "veripy/backends/lean/imperative.py",
+        "veripy/backends/dafny/encoder.py",
+        "tests/test_http_dependencies.py",
+        "tests/test_tagged_outcomes.py",
+        "tests/test_lean_imperative.py"
+      ],
+      "manifest_verified": true,
+      "result": "checkpoints/07-complete-fragments/results.json"
+    },
+    {
+      "name": "08-boundary-audit",
+      "status": "failed",
+      "projects": 10,
+      "jobs": {
+        "black": {
+          "exit_code": 0,
+          "seconds": 9.143640541937202
+        },
+        "django": {
+          "exit_code": 0,
+          "seconds": 40.19432866596617
+        },
+        "sglang": {
+          "exit_code": 0,
+          "seconds": 86.36481333407573
+        },
+        "pytorch": {
+          "exit_code": 1,
+          "seconds": 42.00661112496164
+        },
+        "vllm": {
+          "exit_code": 0,
+          "seconds": 113.96575824997853
+        },
+        "five-native-baselines": {
+          "exit_code": 0,
+          "seconds": 1.1885364579502493
+        },
+        "five-admission-checks": {
+          "exit_code": 0,
+          "seconds": 1.6992372079985216
+        },
+        "explicit-environment-typecheck": {
+          "exit_code": 0,
+          "seconds": 2.740417249966413
+        },
+        "stdnum-proof-integration": {
+          "exit_code": 0,
+          "seconds": 15.05681174993515
+        },
+        "pypng-proof-integration": {
+          "exit_code": 0,
+          "seconds": 8.938633583951741
+        },
+        "cpython-proof-integration": {
+          "exit_code": 0,
+          "seconds": 43.08378174994141
+        },
+        "packaging-proof-integration": {
+          "exit_code": 0,
+          "seconds": 53.807761542033404
+        },
+        "werkzeug-proof-integration": {
+          "exit_code": 1,
+          "seconds": 54.23029804206453
+        },
+        "extension-regression": {
+          "exit_code": 0,
+          "seconds": 120.22182299999986
+        }
+      },
+      "snapshot_drift": [],
+      "working_source_drift": [
+        "veripy/guards/outcomes.py",
+        "veripy/backends/lean/sidecar.py",
+        "veripy/backends/lean/imperative.py",
+        "tests/test_tagged_outcomes.py"
+      ],
+      "manifest_verified": true,
+      "result": "checkpoints/08-boundary-audit/results.json"
+    },
+    {
+      "name": "09-final-compatibility",
+      "status": "passed",
+      "projects": 10,
+      "jobs": {
+        "black": {
+          "exit_code": 0,
+          "seconds": 12.217259707977064
+        },
+        "django": {
+          "exit_code": 0,
+          "seconds": 49.760753541952
+        },
+        "sglang": {
+          "exit_code": 0,
+          "seconds": 101.59664054191671
+        },
+        "pytorch": {
+          "exit_code": 0,
+          "seconds": 90.60791679203976
+        },
+        "vllm": {
+          "exit_code": 0,
+          "seconds": 128.42540883400943
+        },
+        "five-native-baselines": {
+          "exit_code": 0,
+          "seconds": 1.4555837080115452
+        },
+        "five-admission-checks": {
+          "exit_code": 0,
+          "seconds": 1.5875126250321046
+        },
+        "explicit-environment-typecheck": {
+          "exit_code": 0,
+          "seconds": 1.5200625830329955
+        },
+        "stdnum-proof-integration": {
+          "exit_code": 0,
+          "seconds": 14.219783999957144
+        },
+        "pypng-proof-integration": {
+          "exit_code": 0,
+          "seconds": 5.936228125006892
+        },
+        "cpython-proof-integration": {
+          "exit_code": 0,
+          "seconds": 24.830499125062488
+        },
+        "packaging-proof-integration": {
+          "exit_code": 0,
+          "seconds": 32.70235274999868
+        },
+        "werkzeug-proof-integration": {
+          "exit_code": 0,
+          "seconds": 56.96265970892273
+        },
+        "extension-regression": {
+          "exit_code": 0,
+          "seconds": 81.57451754203066
+        },
+        "full-regression": {
+          "exit_code": 0,
+          "seconds": 668.4541397920111
+        }
+      },
+      "snapshot_drift": [],
+      "working_source_drift": [
+        "veripy/backends/lean/sidecar.py",
+        "veripy/backends/lean/imperative.py",
+        "veripy/backends/dafny/http_strings.py",
+        "tests/test_http_dependencies.py"
+      ],
+      "manifest_verified": true,
+      "result": "checkpoints/09-final-compatibility/results.json"
+    },
+    {
+      "name": "10-final-dependency-guard",
+      "status": "passed",
+      "projects": 10,
+      "jobs": {
+        "black": {
+          "exit_code": 0,
+          "seconds": 7.799382375087589
+        },
+        "django": {
+          "exit_code": 0,
+          "seconds": 44.01227545796428
+        },
+        "sglang": {
+          "exit_code": 0,
+          "seconds": 95.57708112499677
+        },
+        "pytorch": {
+          "exit_code": 0,
+          "seconds": 57.09808387490921
+        },
+        "vllm": {
+          "exit_code": 0,
+          "seconds": 97.26887495804112
+        },
+        "five-native-baselines": {
+          "exit_code": 0,
+          "seconds": 1.4460172499530017
+        },
+        "five-admission-checks": {
+          "exit_code": 0,
+          "seconds": 1.885315916966647
+        },
+        "explicit-environment-typecheck": {
+          "exit_code": 0,
+          "seconds": 1.182649957947433
+        },
+        "stdnum-proof-integration": {
+          "exit_code": 0,
+          "seconds": 12.488541708095
+        },
+        "pypng-proof-integration": {
+          "exit_code": 0,
+          "seconds": 5.70594695804175
+        },
+        "cpython-proof-integration": {
+          "exit_code": 0,
+          "seconds": 23.175769624998793
+        },
+        "packaging-proof-integration": {
+          "exit_code": 0,
+          "seconds": 33.776330166962
+        },
+        "werkzeug-proof-integration": {
+          "exit_code": 0,
+          "seconds": 30.930736750015058
+        },
+        "extension-regression": {
+          "exit_code": 0,
+          "seconds": 74.69022358302027
+        }
+      },
+      "snapshot_drift": [],
+      "working_source_drift": [
+        "veripy/backends/lean/imperative.py"
+      ],
+      "manifest_verified": true,
+      "result": "checkpoints/10-final-dependency-guard/results.json"
+    }
+  ],
+  "type_checking": "Raw CPython and Werkzeug typing discrepancies are retained; explicit environment/dependency views pass strict basedpyright without changing executable function bodies.",
+  "scope": "Selected functions and explicit dependencies, not whole repositories or universal historical compatibility. Earlier native release comparisons and intentional differences are preserved."
+}

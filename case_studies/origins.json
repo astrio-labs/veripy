@@ -1,0 +1,853 @@
+{
+  "black/mapping.py": {
+    "sha256": "cc546d77959c729ece3b294bf7961ec04db42bc41a826c9d54147c7a89a43f89",
+    "archived_paths": [
+      "case_studies/lean_parity/black-compatibility/mapping.py",
+      "case_studies/repository_driven_v2/black-compatibility/mapping.py"
+    ]
+  },
+  "black/mapping.proofs.dfy": {
+    "sha256": "226b8c4fc74f5b55c210320b376468e836c2f8aef31fef3b6dc1a42066f191ba",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/black-compatibility/mapping.proofs.dfy"
+    ]
+  },
+  "black/mapping.proofs.lean": {
+    "sha256": "66307681df04042319626b49c0606b30a036ee2db2bd113795b8072e33d1de32",
+    "archived_paths": [
+      "case_studies/lean_parity/black-compatibility/mapping.proofs.lean"
+    ]
+  },
+  "black/normalize.py": {
+    "sha256": "e85d020a1e9f1b4fa4d003c422ed068b7c4b982b637a354cfaa07cd15a1d55f1",
+    "archived_paths": [
+      "case_studies/lean_parity/black-normalizer/normalize.py",
+      "case_studies/repository_driven_v2/black-ranges/normalize.py"
+    ]
+  },
+  "black/normalize.proofs.dfy": {
+    "sha256": "3d0fd033bf5b771acd4b71676a4c909108a8bc6bdee5eb8531dbaf67b446e1c4",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/black-ranges/normalize.proofs.dfy"
+    ]
+  },
+  "black/normalize.proofs.lean": {
+    "sha256": "853cd411c9cf8246a002728a0f303e5acd453d3ca32dc51e1fc632db6e9b0096",
+    "archived_paths": [
+      "case_studies/lean_parity/black-normalizer/normalize.proofs.lean"
+    ]
+  },
+  "black/parser.py": {
+    "sha256": "9dd2ca3a8dba4bd83888c0a10dbaf07de392fde771ca1bb91ed275b2954af420",
+    "archived_paths": [
+      "case_studies/lean_parity/black-parser/parser.py",
+      "case_studies/repository_driven_v2/black-ranges/parser.py"
+    ]
+  },
+  "black/parser.proofs.lean": {
+    "sha256": "f7a6fd7f946de28a0dc8a0284da00e045122565538acad6dcb5c2321052cd4bc",
+    "archived_paths": [
+      "case_studies/lean_parity/black-parser/parser.proofs.lean"
+    ]
+  },
+  "django/base36.py": {
+    "sha256": "c30eb1e31732f8e55b2cc85d736a37edc2efa392fe1d7da855e558d3a89ec5a3",
+    "archived_paths": [
+      "case_studies/lean_parity/django-base36/consumer.py",
+      "case_studies/repository_driven_v2/django-base36/consumer.py"
+    ]
+  },
+  "django/base36.proofs.dfy": {
+    "sha256": "beac67b8d80df4d0c97ebf7d0ed0977509070dd78dbdaf2e58cf5c9feb163936",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/django-base36/consumer.proofs.dfy"
+    ]
+  },
+  "django/base36.proofs.lean": {
+    "sha256": "8da5b8f0ba3c933bb49a51f2e6631d920b421d63f7dc11416962ebf3fd6b9a0c",
+    "archived_paths": [
+      "case_studies/lean_parity/django-base36/consumer.proofs.lean"
+    ]
+  },
+  "pytorch/pair.py": {
+    "sha256": "7e0cdb28167cae11510039961c74dd4c5b31a11c7302b5f53478676db89345f9",
+    "archived_paths": [
+      "case_studies/lean_parity/pytorch-pair/pair.py",
+      "case_studies/repository_driven_v2/pytorch-shards/pair.py"
+    ]
+  },
+  "pytorch/pair.proofs.lean": {
+    "sha256": "787ec463ff3de2bcaecc9eff03690ca25b0e3e7e735edb29ba20e18a41c31c85",
+    "archived_paths": [
+      "case_studies/lean_parity/pytorch-pair/pair.proofs.lean"
+    ]
+  },
+  "pytorch/search1d.py": {
+    "sha256": "f393042c814d78578711785b4c68778df2644260f5124610b32c744d56789d4b",
+    "archived_paths": [
+      "case_studies/lean_parity/pytorch-search1d/search1d.py",
+      "case_studies/repository_driven_v2/pytorch-shards/closure/search1d.py"
+    ]
+  },
+  "pytorch/search1d.proofs.dfy": {
+    "sha256": "97520563999c324c0d4cfcadf46482fc9d29ed49c32edaafb7d38b603d60f6ac",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/pytorch-shards/closure/search1d.proofs.dfy"
+    ]
+  },
+  "pytorch/search1d.proofs.lean": {
+    "sha256": "e87561af217080e1c91c81e9cdc51b6489f86cce4770d4910e0fe644eb17d067",
+    "archived_paths": [
+      "case_studies/lean_parity/pytorch-search1d/search1d.proofs.lean"
+    ]
+  },
+  "pytorch/searchnd.py": {
+    "sha256": "8fea1fc54494feec40da1ccc273b164ab66a173fbc90fa292d6eac0396155e43",
+    "archived_paths": [
+      "case_studies/lean_parity/pytorch-searchnd/searchnd.py",
+      "case_studies/repository_driven_v2/pytorch-shards/closure/searchnd.py"
+    ]
+  },
+  "pytorch/searchnd.proofs.dfy": {
+    "sha256": "d0d3b823ee0d4ea1c9944d6bf7a0b6a9484858e51dd95b8f94504cab32ecb675",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/pytorch-shards/closure/searchnd.proofs.dfy"
+    ]
+  },
+  "pytorch/searchnd.proofs.lean": {
+    "sha256": "b6a8ace1c972765f9cc2fc8423dcf0d43cb72cec0d2eb3cb2bb43726cef9c523",
+    "archived_paths": [
+      "case_studies/lean_parity/pytorch-searchnd/searchnd.proofs.lean"
+    ]
+  },
+  "pytorch/validation.py": {
+    "sha256": "98179d7c7a3765b1d561729d4c9d85757e8345de807034d9798ce25658610524",
+    "archived_paths": [
+      "case_studies/lean_parity/pytorch-validation/validation.py",
+      "case_studies/repository_driven_v2/pytorch-shards/closure/validation.py"
+    ]
+  },
+  "pytorch/validation.proofs.dfy": {
+    "sha256": "9971d6fd20727d211749b8f825b85239229ec3583953f5164fc64b8461b23138",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/pytorch-shards/closure/validation.proofs.dfy"
+    ]
+  },
+  "pytorch/validation.proofs.lean": {
+    "sha256": "5a1d691be96d93b0d9c03f2ed3afd4b79108bcb27711fadf71760e5eb3968888",
+    "archived_paths": [
+      "case_studies/lean_parity/pytorch-validation/validation.proofs.lean"
+    ]
+  },
+  "sglang/live_planner.py": {
+    "sha256": "d5910d19f24d889c293f25e45eb430aad4b56286b3940fcaa1859a3342891877",
+    "archived_paths": [
+      "case_studies/lean_parity/sglang-live/planner.py",
+      "case_studies/repository_driven_v2/sglang-planner-live/planner.py"
+    ]
+  },
+  "sglang/live_planner.proofs.dfy": {
+    "sha256": "85ab8bfc8813c43db4f1264a1ee4b5e0dc4af8d7c9ec82fca77cf82f08ff0fcd",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/sglang-planner-live/planner.proofs.dfy"
+    ]
+  },
+  "sglang/live_planner.proofs.lean": {
+    "sha256": "506b2bcba13f3ff98d6b65eb1b471bcba78d2e1386b8e3ddc0f124f79f1971cf",
+    "archived_paths": [
+      "case_studies/lean_parity/sglang-live/planner.proofs.lean"
+    ]
+  },
+  "pytorch/sharding.py": {
+    "sha256": "769156ad9666d6a8d0a7e1f2da411832b0367770b054a45e972fd97b19928e31",
+    "archived_paths": [
+      "case_studies/lean_parity/scalar-inventory/01-pytorch-sharding/case.py",
+      "case_studies/real_world_v1/verification/inputs-004/01-pytorch-sharding/case.py"
+    ]
+  },
+  "pytorch/sharding.proofs.dfy": {
+    "sha256": "487d7f2483dc0816f53e83733cccad3a115291258dbf89e787498972a0d47e42",
+    "archived_paths": [
+      "case_studies/real_world_v1/verification/inputs-004/01-pytorch-sharding/case.proofs.dfy"
+    ]
+  },
+  "pytorch/sharding.proofs.lean": {
+    "sha256": "5001921b9e87307a72827a996cce2e39e2930940cc174adbae681fc1adbd9f80",
+    "archived_paths": [
+      "case_studies/lean_parity/scalar-inventory/01-pytorch-sharding/case.proofs.lean"
+    ]
+  },
+  "vllm/alignment.py": {
+    "sha256": "15fb75b50dbad137791c7c453f0dea8f0ddcfd240aa9a2ea1ecc873a377856f4",
+    "archived_paths": [
+      "case_studies/lean_parity/scalar-inventory/02-vllm-alignment/case.py",
+      "case_studies/real_world_v1/verification/inputs-004/02-vllm-alignment/case.py"
+    ]
+  },
+  "vllm/alignment.proofs.dfy": {
+    "sha256": "487d7f2483dc0816f53e83733cccad3a115291258dbf89e787498972a0d47e42",
+    "archived_paths": [
+      "case_studies/real_world_v1/verification/inputs-004/02-vllm-alignment/case.proofs.dfy"
+    ]
+  },
+  "vllm/alignment.proofs.lean": {
+    "sha256": "050aeb3a5c5553a16db0928f2662efd48600e56ad8a22d1ef3c5259e5ee7ceb5",
+    "archived_paths": [
+      "case_studies/lean_parity/scalar-inventory/02-vllm-alignment/case.proofs.lean"
+    ]
+  },
+  "sglang/prefill.py": {
+    "sha256": "b4ff3daf572eec44244f4a3070b71f938d0fbaabe53db79a754fcdefd7ad3165",
+    "archived_paths": [
+      "case_studies/lean_parity/scalar-inventory/03-sglang-prefill-budget/case.py",
+      "case_studies/real_world_v1/verification/inputs-004/03-sglang-prefill-budget/case.py"
+    ]
+  },
+  "cpython/rounding.py": {
+    "sha256": "d7c72887ac4076368af96639824cd6bb212e659f59524359f7d6fa5242d76a57",
+    "archived_paths": [
+      "case_studies/lean_parity/scalar-inventory/04-cpython-rounding/case.py",
+      "case_studies/real_world_v1/verification/inputs-004/04-cpython-rounding/case.py"
+    ]
+  },
+  "cpython/rounding.proofs.dfy": {
+    "sha256": "487d7f2483dc0816f53e83733cccad3a115291258dbf89e787498972a0d47e42",
+    "archived_paths": [
+      "case_studies/real_world_v1/verification/inputs-004/04-cpython-rounding/case.proofs.dfy"
+    ]
+  },
+  "cpython/rounding.proofs.lean": {
+    "sha256": "b3ee07c950dab4ee9e70e1f3b5d226f47a57f1d25c06f268e19af6420e6430c3",
+    "archived_paths": [
+      "case_studies/lean_parity/scalar-inventory/04-cpython-rounding/case.proofs.lean"
+    ]
+  },
+  "cpython/calendar_helpers.py": {
+    "sha256": "393919d6f9e507d77b23e3f65faf53d6849d42e71c0b911127157da344b98c80",
+    "archived_paths": [
+      "case_studies/lean_parity/scalar-inventory/05-cpython-calendar/case.py",
+      "case_studies/real_world_v1/verification/inputs-004/05-cpython-calendar/case.py"
+    ]
+  },
+  "sglang/alignment.py": {
+    "sha256": "81a3e5219e27ee199dae7a1023be2bccee32fc4d34ed503b2defe889ed94dd9d",
+    "archived_paths": [
+      "case_studies/lean_parity/scalar-inventory/06-sglang-first-milestone/case.py",
+      "case_studies/repository_driven_v2/first-milestone/implementation-v1/sglang_alignment.py"
+    ]
+  },
+  "sglang/alignment.proofs.dfy": {
+    "sha256": "65f1c7b6bb5ec69de49e01d9423067aab5e561465dbd38014f204d54d8d76045",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/first-milestone/implementation-v1/sglang_alignment.proofs.dfy"
+    ]
+  },
+  "sglang/alignment.proofs.lean": {
+    "sha256": "195736f6c5643df503b3d907fa613f59ddb02bebd50ff29cc18421b574f03ae2",
+    "archived_paths": [
+      "case_studies/lean_parity/scalar-inventory/06-sglang-first-milestone/case.proofs.lean"
+    ]
+  },
+  "sglang/planner.py": {
+    "sha256": "4a43be310223f3de5a98f36ae1e6191fb589f48aca80805694442b986b8a3e0a",
+    "archived_paths": [
+      "case_studies/lean_parity/sglang-aligned/planner.py",
+      "case_studies/repository_driven_v2/sglang-planner/planner.py"
+    ]
+  },
+  "sglang/planner.proofs.dfy": {
+    "sha256": "adab80a75d088e415fb7b4d88caf526cc111171b6eb0ab688243b468f44e6ee7",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/sglang-planner/planner.proofs.dfy"
+    ]
+  },
+  "sglang/planner.proofs.lean": {
+    "sha256": "ddbf7e05b26f0de3a763795376071504b95ace2b7e2326c2e5b1625508d467fb",
+    "archived_paths": [
+      "case_studies/lean_parity/sglang-aligned/planner.proofs.lean"
+    ]
+  },
+  "pytorch/tensor.py": {
+    "sha256": "993a2acde710211bee37a03fca1837989f8063cf3348e54971de3d05aa097bd9",
+    "archived_paths": [
+      "case_studies/lean_parity/pytorch-tensor/tensor.py",
+      "case_studies/repository_driven_v2/pytorch-shards/tensor.py"
+    ]
+  },
+  "pytorch/tensor.proofs.dfy": {
+    "sha256": "333acd546178a2811bb304654c007597e02b9577bec9df5dccc6a4b37ad34ec1",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/pytorch-shards/tensor.proofs.dfy"
+    ]
+  },
+  "pytorch/tensor.proofs.lean": {
+    "sha256": "37ff10fd5b0b3c30de569e5568eedcfe2278d69f45a8252693b1ec165fe5bdec",
+    "archived_paths": [
+      "case_studies/lean_parity/pytorch-tensor/tensor.proofs.lean"
+    ]
+  },
+  "black/adjusted.py": {
+    "sha256": "fa3f543d734e59348411dfb27e51ddac6e85d98f174b795e334eddcccc5514b6",
+    "archived_paths": [
+      "case_studies/lean_parity/black-adjusted/consumer.py",
+      "case_studies/repository_driven_v2/black-adjusted/consumer.py"
+    ]
+  },
+  "black/adjusted.proofs.dfy": {
+    "sha256": "5cbebb925884266a60e070d1ad3bc4e62851c407f365ce1d44e1902f1f4c3692",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/black-adjusted/consumer.proofs.dfy"
+    ]
+  },
+  "black/adjusted.proofs.lean": {
+    "sha256": "a1e6bb7dfb9eeb202430e1dae6085239d5d9226a3caf86e1ced5855f3f46aaf5",
+    "archived_paths": [
+      "case_studies/lean_parity/black-adjusted/consumer.proofs.lean"
+    ]
+  },
+  "black/consumer.py": {
+    "sha256": "28855fb67d0ef18856a07090be63b755e0b9e426ad8f14ffea9232f2e63fae56",
+    "archived_paths": [
+      "case_studies/lean_parity/black-compatibility/consumer.py",
+      "case_studies/repository_driven_v2/black-compatibility/consumer.py"
+    ]
+  },
+  "black/consumer.proofs.dfy": {
+    "sha256": "b510d531c21e03f05b2cdf677871907a19827786d9f76ca8d4272eb14123bc94",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/black-compatibility/consumer.proofs.dfy"
+    ]
+  },
+  "black/consumer.proofs.lean": {
+    "sha256": "7d42a7828a52d1ca13a7ee3980c70c3f9b1d15a0cd250f5f27f215ff540d0ce2",
+    "archived_paths": [
+      "case_studies/lean_parity/black-compatibility/consumer.proofs.lean"
+    ]
+  },
+  "black/composition.py": {
+    "sha256": "9127c3d2650ab305fc746c2a67e41bb1218556bb125e91e227c9e319f7aa264e",
+    "archived_paths": [
+      "case_studies/lean_parity/black-compatibility/composition.py",
+      "case_studies/repository_driven_v2/black-compatibility/composition.py"
+    ]
+  },
+  "black/composition.proofs.dfy": {
+    "sha256": "49643a5a94a226ef766de4ccd8bbbaa055835c568aef0da8f501d222faf9b59a",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/black-compatibility/composition.proofs.dfy"
+    ]
+  },
+  "black/composition.proofs.lean": {
+    "sha256": "303c37f2601c56eb18600e23676070016781b9161093a7aad9de3236953e8643",
+    "archived_paths": [
+      "case_studies/lean_parity/black-compatibility/composition.proofs.lean"
+    ]
+  },
+  "vllm/optimizer.py": {
+    "sha256": "18bc81b46c8a597a95a82eb25b57df589e6563d9e2afb720eadd971917b97e1a",
+    "archived_paths": [
+      "case_studies/lean_parity/vllm-padding/optimizer.py",
+      "case_studies/repository_driven_v2/vllm-padding/optimizer.py"
+    ]
+  },
+  "vllm/optimizer.proofs.lean": {
+    "sha256": "ed2a17405febf21fb262b6bc234fbab6acd3f7208eb159940849b0c2a1b7e9a1",
+    "archived_paths": [
+      "case_studies/lean_parity/vllm-padding/optimizer.proofs.lean"
+    ]
+  },
+  "stdnum/checksum.py": {
+    "sha256": "b2adda47e5461a18eb3484881e2d3bc7a2def6ec38bb6cefa9ca5d430e69e931",
+    "archived_paths": [
+      "case_studies/luhn_exact_v1/checksum.py"
+    ]
+  },
+  "stdnum/checksum.proofs.dfy": {
+    "sha256": "75118fa2e0020a2053fd8d5e7b2b444fb936b5b58232fc056be49eb45a08e546",
+    "archived_paths": [
+      "case_studies/luhn_exact_v1/checksum.proofs.dfy"
+    ]
+  },
+  "stdnum/checksum.proofs.lean": {
+    "sha256": "fae06c02d3839e3714176e3f568c97c950af4791873e0bc7bce156fa55bb0c3b",
+    "archived_paths": [
+      "case_studies/luhn_exact_v1/checksum.proofs.lean"
+    ]
+  },
+  "stdnum/roundtrip.py": {
+    "sha256": "d26d543f7fe7ab1368cc396e7c98f4cf2406aa7c5e8546674ce50b316ed3f4be",
+    "archived_paths": [
+      "case_studies/luhn_roundtrip_v1/luhn.py"
+    ]
+  },
+  "stdnum/roundtrip.proofs.dfy": {
+    "sha256": "022cc12dee68105dd2ecc6f0fa1ec641bbdd7a820535b871300032c0eaaa9156",
+    "archived_paths": [
+      "case_studies/luhn_roundtrip_v1/luhn.proofs.dfy"
+    ]
+  },
+  "stdnum/roundtrip.proofs.lean": {
+    "sha256": "a02b61f2857159dc0ffb9f6f91e40698ce11ad803ec0a8f8bfd13307bcdef890",
+    "archived_paths": [
+      "case_studies/luhn_roundtrip_v1/luhn.proofs.lean"
+    ]
+  },
+  "stdnum/validation.py": {
+    "sha256": "440793a9306425ad6a159a34ececf186155bd6a969e9d7dfd884dfbec18038d7",
+    "archived_paths": [
+      "case_studies/luhn_validation_v1/luhn.py"
+    ]
+  },
+  "stdnum/validation.proofs.lean": {
+    "sha256": "d90fbec5dfad8913f3588451ebd4aaf38f1bb3d605b774858eb0c12b02cc4958",
+    "archived_paths": [
+      "case_studies/luhn_validation_v1/luhn.proofs.lean"
+    ]
+  },
+  "cpython/time_parser.py": {
+    "sha256": "3703989bf2e8cf337a1b5551dc199641d7d63d63887a341d3f7a35583f006005",
+    "archived_paths": [
+      "case_studies/cpython_time_parser_v1/semantics_v1/direct-lean.py"
+    ]
+  },
+  "cpython/time_parser.proofs.lean": {
+    "sha256": "955d491793bd040a28b3cd2519d13ded6a772c439a5e4fab96e406169ca2e521",
+    "archived_paths": [
+      "case_studies/cpython_time_parser_v1/semantics_v1/direct-lean.proofs.lean"
+    ]
+  },
+  "cpython/calendar.py": {
+    "sha256": "ac158d4f084e772359e4ade0c302bf7c0ef5e25a663150d39cfb0f7f2828b61c",
+    "archived_paths": [
+      "case_studies/extensions_v1/cpython/calendar.py"
+    ]
+  },
+  "cpython/calendar.proofs.dfy": {
+    "sha256": "baca23b393d2e6a5d513aeee08afba00a192e7e3be0b754d23d287b904c717ea",
+    "archived_paths": [
+      "case_studies/extensions_v1/cpython/calendar.proofs.dfy"
+    ]
+  },
+  "packaging/names.py": {
+    "sha256": "a401be1a1bfa1bdaaa7c4dbb3de2011f84caea8c03b8251feca534719bd0d2da",
+    "archived_paths": [
+      "case_studies/extensions_v1/packaging/names.py"
+    ]
+  },
+  "packaging/names.proofs.dfy": {
+    "sha256": "ffaa317bc0260550a7b4ad5248aa46475f626a4b356f2fd96304ae7fc8cf519e",
+    "archived_paths": [
+      "case_studies/extensions_v1/packaging/names.proofs.dfy"
+    ]
+  },
+  "pypng/filters.py": {
+    "sha256": "2e8a79705ed5b25f190bf1fc717f95fb17df002b05f1262bf493d760ec049d6f",
+    "archived_paths": [
+      "case_studies/extensions_v1/pypng/filters.py"
+    ]
+  },
+  "pypng/filters.proofs.dfy": {
+    "sha256": "d88ee7ec8522dfbbc06d0a99239256966743094ef2e96681bba7d237a6758dab",
+    "archived_paths": [
+      "case_studies/extensions_v1/pypng/filters.proofs.dfy"
+    ]
+  },
+  "werkzeug/etags.py": {
+    "sha256": "6772bc7132768d636b8c3344246140a10cca48b74b8fcbbd3d72eda7fc649e20",
+    "archived_paths": [
+      "case_studies/extensions_v1/werkzeug/etags.py"
+    ]
+  },
+  "werkzeug/etags.proofs.dfy": {
+    "sha256": "af306a8093e5e84ed0f2a2220b82b82be01dde619b1ec0b76c8fe567e24b8d26",
+    "archived_paths": [
+      "case_studies/extensions_v1/werkzeug/etags.proofs.dfy"
+    ]
+  },
+  "sglang/original.py": {
+    "sha256": "43be55dabc63564ddfc8226b8354a8554ed5ba01c9f130901a434ac9a30cc9e0",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/sglang-planner/original.py"
+    ]
+  },
+  "tools/run_matrix.py": {
+    "sha256": "30bd992ce66a732ebcd0c08bcd0fecf5818031e791a245b0476c97c3c4cedd37",
+    "archived_paths": [
+      "case_studies/lean_hardening/run_matrix.py"
+    ],
+    "archived_sha256": "44ff6ea078d563f5c33dd4b3a656b0f2d3871b532d7f3a2961a26f91c736a635",
+    "change": "Consolidated runner paths and explicitly bound shared source/sidecar inputs across backend invocations."
+  },
+  "tools/certify_parser_mutations.py": {
+    "sha256": "6663af2725e71d4b469128b2de5899778917ccb0a1ea820a3496fb1867097d20",
+    "archived_paths": [
+      "case_studies/cpython_time_parser_v1/semantics_v1/certify-mutations.py"
+    ],
+    "archived_sha256": "1d009a889e569385ec1a23cf7117156cb69372a92b8e4799001b48b1ce8b0d7e",
+    "change": "Runner paths updated for consolidated layout."
+  },
+  "cpython/mutations/field-value.py": {
+    "sha256": "3086aabbac5cbd28ff8df0836760834f6868939a788b1a2a443108f2c18396ca",
+    "archived_paths": [
+      "case_studies/cpython_time_parser_v1/semantics_v1/lean-mutations/field-value.py"
+    ]
+  },
+  "cpython/mutations/fraction-scale.py": {
+    "sha256": "de8414029bc559296e8af9d53a2b1c634e264bd5e07a8184925443aaf220ae56",
+    "archived_paths": [
+      "case_studies/cpython_time_parser_v1/semantics_v1/lean-mutations/fraction-scale.py"
+    ]
+  },
+  "cpython/mutations/fraction-truncation.py": {
+    "sha256": "1891a45d530b7ba2968a7534af5d24a4ffe9d4e52e38d3a3be5be798298283e7",
+    "archived_paths": [
+      "case_studies/cpython_time_parser_v1/semantics_v1/lean-mutations/fraction-truncation.py"
+    ]
+  },
+  "cpython/mutations/separator.py": {
+    "sha256": "fb5302e706be08e9916fa54d92e356b9a195157cab627d1b929594b0658a5299",
+    "archived_paths": [
+      "case_studies/cpython_time_parser_v1/semantics_v1/lean-mutations/separator.py"
+    ]
+  },
+  "black/compatibility/old.py": {
+    "sha256": "8b4dc313b8366ca984046cdeca8ec7ba391c3dcaf1f2f6da4e607c3381a2235d",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/black/execution/old.py"
+    ]
+  },
+  "black/compatibility/new.py": {
+    "sha256": "45435a4e23d4711c96ec2c2dd3f39e98c90b4167b380238d3878e320758c3991",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/black/execution/new.py"
+    ]
+  },
+  "django/compatibility/old.py": {
+    "sha256": "b94ef22f297b2d6cc7a2f9f1fbe2c8228dcbdc42aa0044517527bd60ec662a43",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/django/execution/old.py"
+    ]
+  },
+  "django/compatibility/old.proofs.dfy": {
+    "sha256": "881b1f635f93cd71ca4adc2e5f1051f3136179a80b36c1d572d7f12787a94f97",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/django/execution/old.proofs.dfy"
+    ]
+  },
+  "django/compatibility/new.py": {
+    "sha256": "c435c5fb7f9fffea259a04aa81c0f24b259710244112422970ff62042a124341",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/django/execution/new.py"
+    ]
+  },
+  "django/compatibility/new.proofs.dfy": {
+    "sha256": "a58f2adddf53f1fc33e22b677fe905121f7832e218df6ba096acec6c995b9aef",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/django/execution/new.proofs.dfy"
+    ]
+  },
+  "django/compatibility/relation.dfy": {
+    "sha256": "1efcf634ff000b05dd4f4b6886ea8fc8709007cfa426f13f0d59edee145d647b",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/django/execution/relation-input.dfy"
+    ]
+  },
+  "cpython/compatibility/old.py": {
+    "sha256": "37f0e693aab96a99dd2c1bdbdc93447f3b04b2018a843591bfdaf33333de9aed",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/cpython/execution/old.py"
+    ]
+  },
+  "cpython/compatibility/new.py": {
+    "sha256": "37f0e693aab96a99dd2c1bdbdc93447f3b04b2018a843591bfdaf33333de9aed",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/cpython/execution/new.py"
+    ]
+  },
+  "stdnum/compatibility/old.py": {
+    "sha256": "440793a9306425ad6a159a34ececf186155bd6a969e9d7dfd884dfbec18038d7",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/stdnum/execution/old.py"
+    ]
+  },
+  "stdnum/compatibility/new.py": {
+    "sha256": "440793a9306425ad6a159a34ececf186155bd6a969e9d7dfd884dfbec18038d7",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/stdnum/execution/new.py"
+    ]
+  },
+  "werkzeug/compatibility/old.py": {
+    "sha256": "8da4a048bf30c474b6fa35c2e5485d3c24a86fcbd21bd827aef5b1bf73af08aa",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/werkzeug/execution/old.py"
+    ]
+  },
+  "werkzeug/compatibility/old.proofs.dfy": {
+    "sha256": "181f85970b997a4bfce3d48e4662d4236b152251b85e53a433037536026a57cf",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/werkzeug/execution/old.proofs.dfy"
+    ]
+  },
+  "werkzeug/compatibility/new.py": {
+    "sha256": "8da4a048bf30c474b6fa35c2e5485d3c24a86fcbd21bd827aef5b1bf73af08aa",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/werkzeug/execution/new.py"
+    ]
+  },
+  "werkzeug/compatibility/new.proofs.dfy": {
+    "sha256": "181f85970b997a4bfce3d48e4662d4236b152251b85e53a433037536026a57cf",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/werkzeug/execution/new.proofs.dfy"
+    ]
+  },
+  "werkzeug/compatibility/relation.dfy": {
+    "sha256": "443d43c9923555dd89393148421f2e2ee143a2273304d788dc8e06f29c32c50d",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/werkzeug/execution/relation-input.dfy"
+    ]
+  },
+  "packaging/compatibility/old.py": {
+    "sha256": "f4b74219b2cb0f7bc20724d59d9607d0f9be415c5882dc92f416b30d6dd23f7f",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/packaging/old-closure.py"
+    ]
+  },
+  "packaging/compatibility/new.py": {
+    "sha256": "602fae246127e167449a02f487442fbe92d6a4728d93939757c50289598094a9",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/packaging/new-closure.py"
+    ]
+  },
+  "pypng/compatibility/old.py": {
+    "sha256": "153ef3ca362990b67212dfbfd305bbae012b6713802d8babd8f825554ae1c756",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/pypng/execution/old.py"
+    ]
+  },
+  "pypng/compatibility/new.py": {
+    "sha256": "153ef3ca362990b67212dfbfd305bbae012b6713802d8babd8f825554ae1c756",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/pypng/execution/new.py"
+    ]
+  },
+  "sglang/compatibility/old.py": {
+    "sha256": "c0bc0c20f7391d1f57922ecdfd7ef880fcaddbb89c9f806418f62dd86a8e197b",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/sglang/execution/old.py"
+    ]
+  },
+  "sglang/compatibility/new.py": {
+    "sha256": "c0bc0c20f7391d1f57922ecdfd7ef880fcaddbb89c9f806418f62dd86a8e197b",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/sglang/execution/new.py"
+    ]
+  },
+  "pytorch/compatibility/old.py": {
+    "sha256": "4918c512a8a830f04661664fdb5ed418b052b06f55184736a69494195782785f",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/pytorch/execution/old.py"
+    ]
+  },
+  "pytorch/compatibility/new.py": {
+    "sha256": "4918c512a8a830f04661664fdb5ed418b052b06f55184736a69494195782785f",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/pytorch/execution/new.py"
+    ]
+  },
+  "vllm/compatibility/old.py": {
+    "sha256": "4ae2da0de93efc0867664abfb539fb06999f3ed93e895737b52e54b11025086e",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/vllm/execution/old.py"
+    ]
+  },
+  "vllm/compatibility/new.py": {
+    "sha256": "4ae2da0de93efc0867664abfb539fb06999f3ed93e895737b52e54b11025086e",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/vllm/execution/new.py"
+    ]
+  },
+  "black/LICENSE": {
+    "sha256": "9c0428f0c3b4779850cf5bd96e11aaa8afc72d4a86d4a36223d7aba2e58d6e00",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/black-ranges/UPSTREAM-LICENSE"
+    ]
+  },
+  "django/LICENSE": {
+    "sha256": "b846415d1b514e9c1dff14a22deb906d794bc546ca6129f950a18cd091e2a669",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/django-base36/UPSTREAM-LICENSE"
+    ]
+  },
+  "cpython/LICENSE": {
+    "sha256": "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231",
+    "archived_paths": [
+      "case_studies/cpython_time_parser_v1/LICENSE"
+    ]
+  },
+  "stdnum/LICENSE": {
+    "sha256": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a",
+    "archived_paths": [
+      "case_studies/luhn_validation_v1/COPYING"
+    ]
+  },
+  "werkzeug/LICENSE": {
+    "sha256": "3b49dcee4105eb37bac10faf1be260408fe85d252b8e9df2e0979fc1e094437b",
+    "archived_paths": [
+      "case_studies/breadth_v1/werkzeug-etags/upstream/LICENSE.txt"
+    ]
+  },
+  "packaging/LICENSE": {
+    "sha256": "cad1ef5bd340d73e074ba614d26f7deaca5c7940c3d8c34852e65c4909686c48",
+    "archived_paths": [
+      "case_studies/breadth_v1/packaging-names/upstream/LICENSE"
+    ]
+  },
+  "pytorch/LICENSE": {
+    "sha256": "bd018feef8825e88181c84eb7e3aa4eafb8f08a20d9fd6ef948569610c4a3e43",
+    "archived_paths": [
+      "case_studies/real_world_v1/upstream/pytorch__pytorch/LICENSE"
+    ]
+  },
+  "sglang/LICENSE": {
+    "sha256": "1495e1e757ef4d0925a2350563cf5754bb23c51701a8ec4fb3c5cdcbedae6747",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/sglang-integration/upstream/LICENSE"
+    ]
+  },
+  "vllm/LICENSE": {
+    "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "archived_paths": [
+      "case_studies/real_world_v1/upstream/vllm-project__vllm/LICENSE"
+    ]
+  },
+  "packaging/LICENSE.APACHE": {
+    "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+    "archived_paths": [
+      "case_studies/breadth_v1/packaging-names/upstream/LICENSE.APACHE"
+    ]
+  },
+  "packaging/LICENSE.BSD": {
+    "sha256": "b70e7e9b742f1cc6f948b34c16aa39ffece94196364bc88ff0d2180f0028fac5",
+    "archived_paths": [
+      "case_studies/breadth_v1/packaging-names/upstream/LICENSE.BSD"
+    ]
+  },
+  "evidence/historical-compatibility.json": {
+    "sha256": "eb2e2ab0ae5a47c9cf5eccaa6b8cae010e2a2b8823c3ee24f2505937208b68b2",
+    "archived_paths": [
+      "case_studies/compatibility_v2/run-03/results.json"
+    ]
+  },
+  "evidence/functional-portfolio.json": {
+    "sha256": "4fcc3ae938cd23d3bec081a330fd208284ed5f6dcf0f6c180673b7c2133d9988",
+    "archived_paths": [
+      "case_studies/extensions_v1/portfolio.json"
+    ]
+  },
+  "evidence/record-compatibility.json": {
+    "sha256": "80fcf33c97afae9069f2c73314a3a378861675b77d0f766b4c913699fe486aa8",
+    "archived_paths": [
+      "case_studies/relational_records_v1/measurements.json"
+    ]
+  },
+  "evidence/library-diagnostic.json": {
+    "sha256": "342ef8bccf0605364f9eee8531c96ff1bdc17a94ca9e10e37dac3fa4ed76718b",
+    "archived_paths": [
+      "case_studies/research_evaluation_v2/library-diagnostic-01/analysis.json"
+    ]
+  },
+  "evidence/sglang-runtime.json": {
+    "sha256": "003c12b123bd4d758a8913a96aba32e4eb12cf5cf4878058716147cb0a7a0260",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/sglang-integration/cloud/runs/aws-002/analysis.json"
+    ]
+  },
+  "evidence/maintenance-results.md": {
+    "sha256": "d0a7a52b59e1ca172619064f482d32bbb5cbcb437a82c759ec97768a90f34e8f",
+    "archived_paths": [
+      "case_studies/research_evaluation_v2/controlled-01/RESULTS.md"
+    ]
+  },
+  "evidence/calendar-search.md": {
+    "sha256": "9bdfff9279661f03dde9ff21e334be238fcd5b16cb9254af591d2791d446f84d",
+    "archived_paths": [
+      "case_studies/research_evaluation_v2/calendar-prospective-01/RESULTS.md"
+    ]
+  },
+  "evidence/completion-audit.md": {
+    "sha256": "117edd8a82850c223adcca28fc90bbe1fa1420b51f7dc57f398d4fbaf97e2087",
+    "archived_paths": [
+      "case_studies/research_evaluation_v2/completion-audit-01/REPORT.md"
+    ]
+  },
+  "evidence/linux/parity-arithmetic.json": {
+    "sha256": "3c5703f48f568896aee00d0c1cf3b46e583172649c97f0f9ddbd02270dcb5a46",
+    "archived_paths": [
+      "case_studies/workshop_checkpoint_v1/linux-001/parity-arithmetic/manifest.json"
+    ]
+  },
+  "evidence/linux/parity-black.json": {
+    "sha256": "2466bc899106f1abf97e1d4b8e61e59fa67e32a0eaa7f1cb0305e39a23380c72",
+    "archived_paths": [
+      "case_studies/workshop_checkpoint_v1/linux-001/parity-black/manifest.json"
+    ]
+  },
+  "evidence/linux/parity-cpython-parser.json": {
+    "sha256": "6dc46fa883b5d1645316c47af2d0cae14060462d892303f19c39ee138ac46d12",
+    "archived_paths": [
+      "case_studies/workshop_checkpoint_v1/linux-001/parity-cpython-parser/manifest.json"
+    ]
+  },
+  "evidence/linux/parity-luhn.json": {
+    "sha256": "7f3eb4b8300e02356e1543ec51bb9fb85e2272ff756d4b6fa6c9fda0de5feded",
+    "archived_paths": [
+      "case_studies/workshop_checkpoint_v1/linux-001/parity-luhn/manifest.json"
+    ]
+  },
+  "evidence/linux/parity-pytorch.json": {
+    "sha256": "9564751f46fff8f3c0d31b7313db1269961c8cfb7285f14dd663fe4aec7a4130",
+    "archived_paths": [
+      "case_studies/workshop_checkpoint_v1/linux-001/parity-pytorch/manifest.json"
+    ]
+  },
+  "evidence/linux/parity-sglang.json": {
+    "sha256": "e550639c3fa503e99ef6fbc001b29b4b351ad89909c029611b41410d1f3e38a2",
+    "archived_paths": [
+      "case_studies/workshop_checkpoint_v1/linux-001/parity-sglang/manifest.json"
+    ]
+  },
+  "pypng/LICENSE": {
+    "sha256": "8dd127d87bb901ab9c8f584e98b7c7aa8539db27fe62ff01b1ee4be93b6a513a",
+    "archived_paths": [
+      "case_studies/breadth_v1/pypng-filters/upstream/LICENCE"
+    ]
+  },
+  "pytorch/SEMANTICS.md": {
+    "sha256": "6e75793f78596c160611d25090108f87f365da0d56dcf892701e7db0b01230ae",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/pytorch-shards/SEMANTICS.md"
+    ],
+    "archived_sha256": "416c3b21462f175e702c6ad76f5ccf721a106c6bb17d368f588d70a44edeb705",
+    "change": "Documentation links updated for consolidated layout."
+  },
+  "sglang/SEMANTICS.md": {
+    "sha256": "44b396304e80f692392fcb4657733376463ceacfabfe3451adabae4bd4b7f91a",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/sglang-planner/SEMANTICS.md"
+    ]
+  },
+  "pytorch/SEARCH-SEMANTICS.md": {
+    "sha256": "8b3d7e10680215c320a093c2ed67efea818d5d6c6b132ab6adbda21998e7b7ad",
+    "archived_paths": [
+      "case_studies/repository_driven_v2/pytorch-shards/closure/SEMANTICS.md"
+    ]
+  },
+  "stdnum/LICENSE-NOTICE.md": {
+    "sha256": "8c406626318c7cc4d92a267860027a7a58b87426a47dcef03cd704a19de96e33",
+    "archived_paths": [
+      "case_studies/luhn_validation_v1/LICENSE-NOTICE.md"
+    ],
+    "archived_sha256": "edd905731fc12ac00b505fe8cfd0774f762450c7d518abf0c953bd9c4732bf59",
+    "change": "Consolidated license notice with current provenance and license links."
+  }
+}

@@ -18,7 +18,8 @@ from __future__ import annotations
 import ast
 import hashlib
 
-from ..frontend.parse import FunctionSpec, ModuleSpecs, rewrite_old
+from veripy.frontend.parse import FunctionSpec, ModuleSpecs, rewrite_old
+from veripy.frontend.records import record_schemas, RecordError
 
 
 class GuardGenError(Exception):
@@ -43,14 +44,17 @@ def _reject_reserved_names(module: ast.Module) -> None:
             name = n.name
         elif isinstance(n, ast.alias):
             name = (n.asname or n.name).split(".")[0]
-        if name is not None and name.startswith("_veripy"):
+        if name is not None and (name.startswith("_veripy") or name in {
+            "_VeripyPreconditionError", "_VeripyPostconditionError",
+            "_VERIPY_ISLAND_SHA256",
+        }):
             raise GuardGenError(
                 f"name {name!r} is reserved for generated guard code — rename it",
                 getattr(n, "lineno", None),
             )
 
 
-def _descriptor(ann: ast.expr | None, where: ast.AST) -> tuple:
+def _descriptor(ann: ast.expr | None, where: ast.AST, records=None) -> tuple:
     """Annotation -> runtime type descriptor. Mirrors the encoder's
     `_dafny_type` admission exactly — anything else is outside the fragment."""
     if ann is None:
@@ -59,12 +63,14 @@ def _descriptor(ann: ast.expr | None, where: ast.AST) -> tuple:
             getattr(where, "lineno", None),
         )
     match ann:
+        case ast.Name(id=name) if records and name in records:
+            return ("record", name, tuple((field, _descriptor(t, where, records)) for field, t in records[name]))
         case ast.Name(id=("int" | "bool" | "str") as name):
             return (name,)
         case ast.Subscript(value=ast.Name(id="list"), slice=inner):
-            return ("list", _descriptor(inner, where))
+            return ("list", _descriptor(inner, where, records))
         case ast.Subscript(value=ast.Name(id="Optional"), slice=inner):
-            return ("opt", _descriptor(inner, where))
+            return ("opt", _descriptor(inner, where, records))
         case ast.Subscript(value=ast.Name(id=("tuple" | "Tuple")), slice=sl):
             elts = sl.elts if isinstance(sl, ast.Tuple) else [sl]
             if not (2 <= len(elts) <= 8):
@@ -72,11 +78,11 @@ def _descriptor(ann: ast.expr | None, where: ast.AST) -> tuple:
                     "tuple types in the fragment have 2–8 elements",
                     getattr(where, "lineno", None),
                 )
-            return ("tuple", *(_descriptor(e, where) for e in elts))
+            return ("tuple", *(_descriptor(e, where, records) for e in elts))
         case ast.BinOp(left=left, op=ast.BitOr(), right=ast.Constant(value=None)):
-            return ("opt", _descriptor(left, where))
+            return ("opt", _descriptor(left, where, records))
         case ast.BinOp(left=ast.Constant(value=None), op=ast.BitOr(), right=right):
-            return ("opt", _descriptor(right, where))
+            return ("opt", _descriptor(right, where, records))
         case _:
             raise GuardGenError(
                 f"type {ast.unparse(ann)!r} is outside the fragment",
@@ -90,14 +96,17 @@ def _signature(fn: ast.FunctionDef) -> tuple[str, str, list[tuple[str, ast.expr 
     a = fn.args
     if a.vararg or a.kwarg:
         raise GuardGenError("*args/**kwargs are outside the fragment", fn.lineno)
-    if a.defaults or any(d is not None for d in a.kw_defaults):
-        raise GuardGenError("parameter defaults are outside the fragment", fn.lineno)
+    from veripy.backends.dafny.encoder import _checked_defaults, EncodeError
+    try:
+        defaults = _checked_defaults(fn)
+    except EncodeError as exc:
+        raise GuardGenError(exc.message, exc.line) from exc
     params: list[tuple[str, ast.expr | None]] = []
     def_parts: list[str] = []
     call_parts: list[str] = []
     for p in (*a.posonlyargs, *a.args):
         params.append((p.arg, p.annotation))
-        def_parts.append(p.arg)
+        def_parts.append(p.arg + ("=" + ast.unparse(defaults[p.arg]) if p.arg in defaults else ""))
         call_parts.append(p.arg)
     if a.posonlyargs:
         def_parts.insert(len(a.posonlyargs), "/")
@@ -105,19 +114,19 @@ def _signature(fn: ast.FunctionDef) -> tuple[str, str, list[tuple[str, ast.expr 
         def_parts.append("*")
         for p in a.kwonlyargs:
             params.append((p.arg, p.annotation))
-            def_parts.append(p.arg)
+            def_parts.append(p.arg + ("=" + ast.unparse(defaults[p.arg]) if p.arg in defaults else ""))
             call_parts.append(f"{p.arg}={p.arg}")
     return ", ".join(def_parts), ", ".join(call_parts), params
 
 
-def _wrapper(fn: ast.FunctionDef, spec: FunctionSpec, check_ensures: bool) -> list[str]:
+def _wrapper(fn: ast.FunctionDef, spec: FunctionSpec, check_ensures: bool, records=None) -> list[str]:
     name = spec.name
     if "result" in {p.arg for p in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs)}:
         raise GuardGenError("parameter named 'result' shadows the spec word", fn.lineno)
     def_params, call_args, params = _signature(fn)
     body: list[str] = [f"def {name}({def_params}):"]
     for pname, ann in params:
-        desc = _descriptor(ann, fn)
+        desc = _descriptor(ann, fn, records)
         body.append(
             f"    {pname} = _veripy_bound_guard({pname}, {desc!r}, "
             f"function={name!r}, param={pname!r})"
@@ -141,7 +150,7 @@ def _wrapper(fn: ast.FunctionDef, spec: FunctionSpec, check_ensures: bool) -> li
         )
     ensures = spec.by_kind("ensures") if check_ensures else []
     old_names = sorted({n for c in ensures for n in c.old_names})
-    descs = {p: _descriptor(ann, fn) for p, ann in params}
+    descs = {p: _descriptor(ann, fn, records) for p, ann in params}
     for n in old_names:
         if n not in descs:
             raise GuardGenError(f"old({n}) does not name a parameter", fn.lineno)
@@ -197,6 +206,18 @@ def emit_guarded(
 ) -> str:
     """Emit the guarded sibling module for every spec'd function."""
     module = ast.parse(source)
+    for spec in specs.functions:
+        for clause in spec.clauses:
+            if clause.desugared and any(
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id in {"raised", "decimal_valid", "buffer", "old_buffer", "disjoint_buffers", "allow_buffer_alias"}
+                for n in ast.walk(ast.parse(clause.desugared, mode="eval"))
+            ):
+                raise GuardGenError("outcome specifications require emit_outcome_guarded", clause.line)
+    try:
+        records = record_schemas(module)
+    except RecordError as exc:
+        raise GuardGenError(str(exc), exc.line) from exc
     # Specs cannot smuggle generated identifiers either: the frontend
     # rejects unknown names in clauses, and the two ways a _veripy* name
     # could become KNOWN (a parameter, a module-level binding) are both
@@ -215,14 +236,17 @@ def emit_guarded(
             raise GuardGenError(
                 "package-relative imports cannot survive relocation into the "
                 "guarded sibling module — use absolute imports", n.lineno)
+    future_annotations = False
     for stmt in module.body:
         if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
-            # The island is a verbatim mid-file copy; a __future__ import
-            # there would be a SyntaxError, and silently hoisting it would
-            # break the byte-identical-island property.
-            raise GuardGenError(
-                "__future__ imports are not supported in guarded modules "
-                "(fragment types need none)", stmt.lineno)
+            if any(alias.name != "annotations" or alias.asname for alias in stmt.names):
+                raise GuardGenError("only postponed annotations are supported in guarded modules", stmt.lineno)
+            future_annotations = True
+    if future_annotations:
+        try:
+            compile(source, src_name, "exec", dont_inherit=True)
+        except SyntaxError as exc:
+            raise GuardGenError(str(exc), exc.lineno) from exc
     # Only module-level functions can be guarded: the island alias binds
     # the name at module scope, which a nested def never reaches (the
     # generated module would import cleanly and NameError on first call).
@@ -260,6 +284,44 @@ def emit_guarded(
         "",
         "",
     ]
+    if future_annotations:
+        # Keep the complete island first, including its docstring and future
+        # statement. Runtime imports follow it, so no source line is hoisted.
+        begin = out.index("# ---- VERIPY ISLAND BEGIN (verbatim copy of the admitted source) ----")
+        finish = out.index("# ---- VERIPY ISLAND END ----")
+        runtime = out.index("from veripy.guards.runtime import (")
+        out = [f"# Generated by veripy guard from {src_name} -- DO NOT EDIT.", "",
+               *out[begin:finish + 1], "", *out[runtime:begin], *out[finish + 1:]]
+    if records:
+        out.extend([
+            "from functools import partial as _veripy_partial",
+            "_veripy_record_types = {" + ", ".join(f"{name!r}: {name}" for name in records) + "}",
+            "_veripy_guard_value = _veripy_partial(_veripy_guard_value, record_types=_veripy_record_types)",
+            "_veripy_copy_value = _veripy_partial(_veripy_copy_value, record_types=_veripy_record_types)",
+        ])
+    from veripy.backends.dafny.environment import resolve_for_encoder, EnvironmentError
+    try:
+        environment = resolve_for_encoder(module)
+    except EnvironmentError as exc:
+        raise GuardGenError(exc.message, exc.line) from exc
+    fn_nodes = {(n.name,n.lineno):n for n in environment.module.body if isinstance(n,ast.FunctionDef)}
+    if environment.values:
+        out.extend([
+            "from veripy.backends.dafny.environment import guard_environment as _veripy_guard_environment",
+            f"_veripy_module_values = {environment.values!r}",
+        ])
+        for spec in specs.functions:
+            out.append(f"{spec.name} = _veripy_guard_environment({spec.name}, _veripy_module_values)")
+    from veripy.backends.dafny.unicode_strings import guard_code
+    out.extend(guard_code(module, specs).splitlines())
+    from veripy.backends.dafny.regex_strings import guard_code as regex_guard_code
+    out.extend(regex_guard_code(module, specs).splitlines())
+    from veripy.backends.dafny.http_lists import guard_code as http_list_guard_code
+    out.extend(http_list_guard_code(module, specs).splitlines())
+    from veripy.backends.dafny.percent_decoding import guard_code as percent_guard_code
+    out.extend(percent_guard_code(module, specs).splitlines())
+    from veripy.backends.dafny.declarations import guard_code as declarations_guard_code
+    out.extend(declarations_guard_code(module, specs).splitlines())
     for spec in specs.functions:
         node = fn_nodes.get((spec.name, spec.lineno))
         if node is None:
@@ -270,7 +332,7 @@ def emit_guarded(
             raise GuardGenError(
                 f"{spec.name}: spec errors — fix them before guarding", spec.lineno
             )
-        out.extend(_wrapper(node, spec, check_ensures))
+        out.extend(_wrapper(node, spec, check_ensures, records))
         guarded.append(spec.name)
     if not guarded:
         raise GuardGenError("no spec'd functions to guard")

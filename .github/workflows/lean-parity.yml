@@ -1,0 +1,94 @@
+name: Lean and Dafny parity
+
+on:
+  pull_request:
+  push:
+    branches: [main, "repro/workshop-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: sglang
+            components: sglang-live sglang-aligned 03-sglang-prefill-budget 06-sglang-first-milestone
+          - group: black
+            components: black-normalizer black-parser black-adjusted black-mapping black-consumer black-composition
+          - group: pytorch
+            components: pytorch-pair pytorch-tensor pytorch-search1d pytorch-searchnd pytorch-validation 01-pytorch-sharding
+          - group: luhn
+            components: luhn-exact luhn-roundtrip luhn-validation
+          - group: cpython-parser
+            components: cpython-time-parser
+          - group: arithmetic
+            components: django-base36 vllm-padding 02-vllm-alignment 04-cpython-rounding 05-cpython-calendar
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f
+        with:
+          python-version: '3.12.2'
+      - uses: actions/setup-dotnet@6bd8b7f7774af54e05809fcc5431931b3eb1ddee
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install pinned provers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y elan
+          elan toolchain install leanprover/lean4:v4.33.1
+          elan default leanprover/lean4:v4.33.1
+          dotnet tool install --global dafny --version 4.11.0
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+      - name: Install project
+        run: python -m pip install -e '.[dev]'
+      - name: Check toolchains
+        run: |
+          lean --version
+          dafny --version
+          python -c 'import sys,unicodedata; assert sys.version_info[:3] == (3,12,2); assert unicodedata.unidata_version == "15.0.0"; assert sys.get_int_max_str_digits() == 4300'
+      - name: Prove identical sources in both backends
+        env:
+          PYTHONPATH: .
+          PARITY_GROUP: ${{ matrix.group }}
+          PARITY_COMPONENTS: ${{ matrix.components }}
+        run: |
+          read -r -a components <<< "$PARITY_COMPONENTS"
+          python case_studies/tools/run_matrix.py --out "build/parity-$PARITY_GROUP" --components "${components[@]}" --wall 900
+      - name: Certify parser mutation witnesses
+        if: matrix.group == 'cpython-parser'
+        env:
+          PYTHONPATH: .
+        run: python case_studies/tools/certify_parser_mutations.py "$PWD/build/parity-cpython-parser/mutation-certificates"
+      - name: Retain artifacts, logs, and axiom audits
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: parity-${{ matrix.group }}
+          path: build/parity-${{ matrix.group }}
+          if-no-files-found: warn
+
+  adversarial:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f
+        with:
+          python-version: '3.12.2'
+      - name: Install Lean and project
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y elan
+          elan toolchain install leanprover/lean4:v4.33.1
+          elan default leanprover/lean4:v4.33.1
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          python -m pip install -e '.[dev]'
+      - name: Translation and proof-boundary controls
+        run: python -m pytest -q tests/lean/test_lean_audit.py tests/lean/test_lean_translation_audit.py tests/lean/test_lean_imperative.py tests/lean/test_lean_backend.py tests/frontend/test_conformance.py

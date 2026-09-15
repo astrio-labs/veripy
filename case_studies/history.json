@@ -1,0 +1,9 @@
+{
+  "archive": "output/research-archives/2026-09-14/veripy-case-studies-2026-09-14.tar.gz",
+  "version": "2026-09-14",
+  "catalog": "docs/research-archives/2026-09-14.json",
+  "reproduction_instructions": "docs/RESEARCH-ARCHIVES.md",
+  "sha256": "192556857b84fd1f0efc6a008e3b5c780054e252446220aa4e3b0ffc2e3783fd",
+  "scope": "Complete pre-cleanup case_studies tree, including failed runs, frozen compiler snapshots and review provenance. Original paths in evidence records refer to members of this archive.",
+  "publication_status": "Prepared locally as a versioned research attachment, not uploaded. The catalog records all companion archives and checksums."
+}

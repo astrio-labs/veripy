@@ -22,8 +22,8 @@ rejection):
   eager `all`/`any`/`sum` genexp folds (filters included; all/any →
   forall/exists, sum → mapped PySum), imported `math.gcd` / `factorial` /
   `isqrt` (`PyGcd`/`PyFact`/`PyIsqrt`; IEEE float is a permanent veto),
-  `sorted(xs)` on `list[int]` as
-  `PySorted` (permutation + order; no `key=`/`reverse=`/`list[str]`),
+  `sorted(xs)` on integer lists or lists of integer pairs/triples as
+  `PySorted`/`PySorted2`/`PySorted3` (no general `key=`/`reverse=`/`list[str]`),
   walrus `:=` in always-evaluated
   positions (if/while tests, return, assignment, assert, call args;
   while-test `:=` is re-emitted at continue / loop-end — a bare Dafny
@@ -39,6 +39,9 @@ rejection):
   Unicode-table methods (`lower`/`upper`/`isdigit`/…) and no-arg
   `strip`/`split` are rejected — ASCII-only would be a silent
   approximation.
+- calls: closed same-module acyclic scalar/Optional helper calls, checked
+  bodies and contracts, eager expression temporaries, Python argument binding;
+  conditional-expression and loop-header call contexts remain rejected.
 - specs: requires/ensures/invariant/decreases; forall/exists over range or
   membership domains; `result`; `old(param)` lowers to the parameter (our
   fragment's parameters are immutable — guards copy in, ownership forbids
@@ -91,11 +94,22 @@ from __future__ import annotations
 import ast
 import copy
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from ...frontend.parse import Clause, FunctionSpec, ModuleSpecs
-from .preamble import PREAMBLE, PREAMBLE_NAMES
+from veripy.frontend.parse import Clause, FunctionSpec, ModuleSpecs
+from veripy.frontend.records import RecordError, record_schemas, record_type, record_constructor, record_field
+from veripy.backends.dafny.preamble import PREAMBLE, PREAMBLE_NAMES
+from veripy.backends.dafny import unicode_strings, regex_strings, checksum_sequences, percent_decoding
+PREAMBLE_NAMES = PREAMBLE_NAMES | unicode_strings.NAMES | regex_strings.NAMES | percent_decoding.NAMES
+
+
+class ProofSymbols(frozenset):
+    """Lemma names with separately tracked, defined ghost predicates."""
+    def __new__(cls, lemmas=(), predicates=()):
+        value = super().__new__(cls, lemmas)
+        value.predicates = frozenset(predicates)
+        return value
 
 
 @dataclass(frozen=True)
@@ -252,6 +266,7 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
                 rule="lambda",
             )
     lemmas: set[str] = set()
+    predicates: set[str] = set()
     depth = 0
     expecting_decl = True  # at file start and after every body closes
     current_decl_has_body = True  # vacuously, before any declaration
@@ -295,6 +310,8 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
                 idx += 1
             if w == "lemma" and idx + 1 < len(words):
                 lemmas.add(words[idx + 1])
+            if words[idx] == "predicate" and idx + 1 < len(words):
+                predicates.add(words[idx + 1])
             expecting_decl = False
             current_decl_has_body = False
         elif depth == 0 and expecting_decl:
@@ -310,7 +327,7 @@ def _validate_sidecar(text: str, name: str) -> frozenset[str]:
             f"every lemma/function must be proved",
             rule="bodiless",
         )
-    return frozenset(lemmas)
+    return ProofSymbols(lemmas, predicates)
 
 
 def load_proof_sidecar(source_path: Path) -> ProofSidecar:
@@ -403,10 +420,14 @@ def _err(node: ast.AST, message: str, rule: str | None = None) -> EncodeError:
                        rule=rule or _default_rule(node))
 
 
-def _dafny_type(ann: ast.expr | None, where: ast.AST) -> str:
+def _dafny_type(ann: ast.expr | None, where: ast.AST, records: dict | None = None) -> str:
     if ann is None:
         raise _err(where, "missing type annotation (the fragment requires precise types)")
+    if ast.unparse(ann) == 'tuple[str, bool] | tuple[None, None]':return '(PyOpt<string>, PyOpt<bool>)'
+    if ast.unparse(ann) == 'ds.ETags':return 'VHttpETags'
     match ann:
+        case ast.Name(id=name) if records and name in records:
+            return record_type(name)
         case ast.Name(id="int"):
             return "int"
         case ast.Name(id="bool"):
@@ -414,9 +435,9 @@ def _dafny_type(ann: ast.expr | None, where: ast.AST) -> str:
         case ast.Name(id="str"):
             return "string"
         case ast.Subscript(value=ast.Name(id="list"), slice=inner):
-            return f"seq<{_dafny_type(inner, where)}>"
+            return f"seq<{_dafny_type(inner, where, records)}>"
         case ast.Subscript(value=ast.Name(id="Optional"), slice=inner):
-            return f"PyOpt<{_dafny_type(inner, where)}>"
+            return f"PyOpt<{_dafny_type(inner, where, records)}>"
         case ast.Subscript(value=ast.Name(id=("tuple" | "Tuple")), slice=sl):
             elts = sl.elts if isinstance(sl, ast.Tuple) else [sl]
             if not (2 <= len(elts) <= 8):
@@ -425,12 +446,12 @@ def _dafny_type(ann: ast.expr | None, where: ast.AST) -> str:
                     "(a 1-tuple is just the element; longer tuples are "
                     "outside the slice encoder)"
                 ))
-            parts = [_dafny_type(e, where) for e in elts]
+            parts = [_dafny_type(e, where, records) for e in elts]
             return "(" + ", ".join(parts) + ")"
         case ast.BinOp(left=left, op=ast.BitOr(), right=ast.Constant(value=None)):
-            return f"PyOpt<{_dafny_type(left, where)}>"
+            return f"PyOpt<{_dafny_type(left, where, records)}>"
         case ast.BinOp(left=ast.Constant(value=None), op=ast.BitOr(), right=right):
-            return f"PyOpt<{_dafny_type(right, where)}>"
+            return f"PyOpt<{_dafny_type(right, where, records)}>"
         case _:
             raise _err(where, f"type {ast.unparse(ann)!r} is outside the slice-1 encoder "
                        f"-- fragment types are int, bool, str, list[T], "
@@ -465,6 +486,9 @@ def _concat_types(left: ast.expr, right: ast.expr,
     against a list only (`[] + "s"` is a TypeError in Python), and only
     for `+`. `[] + []` stays undecidable and stays rejected.
     """
+    if lt in {"char", "string"} and rt in {"char", "string"}:
+        return "string", "string"
+
     def bare_empty(n: ast.expr) -> bool:
         return isinstance(n, ast.List) and not n.elts
 
@@ -488,8 +512,8 @@ def _is_empty_list(node: ast.expr) -> bool:
 # str methods this encoder models, plus names it rejects with a rewrite
 # rather than the generic "only append statements" message.
 _STR_ADMITTED = frozenset({
-    "join", "split", "find", "startswith", "endswith", "replace",
-    "strip", "lstrip", "rstrip",
+    "join", "split", "find", "index", "startswith", "endswith", "replace",
+    "strip", "lstrip", "rstrip", "count",
 })
 _STR_UNICODE_TABLE = frozenset({
     "lower", "upper", "isdigit", "isalpha", "isalnum", "isspace",
@@ -552,15 +576,15 @@ class _Scope:
 
 _ENCODED_BUILTINS = frozenset({
     "len", "min", "max", "abs", "sum", "sorted", "range", "bool", "all", "any", "old",
-    "str", "int",
+    "str", "int", "divmod", "enumerate", "tuple", "reversed", "map",
 })
 
 # Imported math names the encoder resolves. NOT in _ENCODED_BUILTINS: that
 # set rejects module-level bindings that shadow builtins (`from math import
 # prod as sum`). Putting gcd there would illegally reject `from math import
 # gcd`. Track an import table and resolve in `_call` instead.
-_ADMITTED_MATH = frozenset({"gcd", "factorial", "isqrt"})
-_MATH_TO_PREAMBLE = {"gcd": "PyGcd", "factorial": "PyFact", "isqrt": "PyIsqrt"}
+_ADMITTED_MATH = frozenset({"gcd", "factorial", "isqrt", "prod"})
+_MATH_TO_PREAMBLE = {"gcd": "PyGcd", "factorial": "PyFact", "isqrt": "PyIsqrt", "prod": "PyProd"}
 _MATH_FLOAT = frozenset({
     "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "cbrt",
     "ceil", "copysign", "cos", "cosh", "degrees", "dist", "e", "erf",
@@ -600,20 +624,192 @@ def _preamble_clash(name: str) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class _HelperSignature:
+    node: ast.FunctionDef
+    parameters: tuple[tuple[str, str], ...]
+    returns: str
+    outcome: bool = False
+
+
+def _checked_defaults(node):
+    """Only immutable literal defaults: no definition-time calls or shared data."""
+    a = node.args
+    if a.vararg or a.kwarg:
+        raise _err(node, "varargs/defaults require a fixed signature and immutable literals")
+    positional = [*a.posonlyargs, *a.args]
+    pairs = list(zip(positional[len(positional)-len(a.defaults):], a.defaults))
+    pairs += [(p, d) for p, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None]
+    defaults = {}
+    for parameter, default in pairs:
+        if not isinstance(default, ast.Constant) or type(default.value) not in (int, bool, str, type(None)):
+            raise _err(default, "parameter defaults require immutable scalar literals")
+        dtype = _dafny_type(parameter.annotation, parameter)
+        want = _opt_inner(dtype) or dtype
+        got = {int:"int", bool:"bool", str:"string"}.get(type(default.value))
+        if (default.value is None and _opt_inner(dtype) is None) or (default.value is not None and got != want):
+            raise _err(default, "parameter default type does not match its annotation")
+        defaults[parameter.arg] = default
+    return defaults
+
+
+def _scalar_type(dtype: str | None) -> bool:
+    inner = _opt_inner(dtype) or dtype
+    return inner in {"int", "bool", "string"} or (_is_tuple(inner) and all(_scalar_type(t) for t in _tuple_elems(inner)))
+
+
+def _helper_signatures(module: ast.Module, specs: ModuleSpecs, records: dict | None = None) -> dict[str, _HelperSignature]:
+    """Close the executable call graph before emitting any methods.
+
+    Resolution assumes this closed module's bindings remain unchanged at run
+    time. No imported contracts, decorators, rebindings or recursive SCCs are
+    admitted. The ordinary body encoder checks the rest of the pure fragment.
+    """
+    defs = {n.name: n for n in module.body if isinstance(n, ast.FunctionDef)}
+    specified = {s.name: s for s in specs.functions}
+    for spec in specs.functions:
+        if spec.name not in defs:
+            raise EncodeError(f"cannot locate function {spec.name!r}", spec.lineno)
+    edges: dict[str, set[str]] = {name: set() for name in specified}
+    for name in specified:
+        for n in ast.walk(defs[name]):
+            callee = (n.func.id if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in defs else
+                      n.args[0].id if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "map"
+                      and n.args and isinstance(n.args[0], ast.Name) and n.args[0].id in defs else None)
+            if callee is not None:
+                if callee not in specified or not (specified[callee].by_kind("ensures") or specified[callee].by_kind("ghost_ensures")):
+                    raise _err(n, f"helper {callee!r} needs an explicit checked postcondition")
+                if isinstance(n.func, ast.Name) and n.func.id == "map" and specified[callee].by_kind("requires"):
+                    raise _err(n, "literal predicate map requires a helper without preconditions")
+                edges[name].add(callee)
+    if not any(edges.values()):
+        return {}
+    # Module initialization is deliberately restricted: executing arbitrary
+    # top-level Python could replace even an apparently unassigned helper.
+    for n in module.body:
+        if isinstance(n, ast.FunctionDef):
+            if n.name not in specified:
+                raise _err(n, "all function bodies in a composed module must be explicitly specified")
+            if n.decorator_list:
+                raise _err(n, "decorated functions are outside checked helper composition")
+        elif isinstance(n, ast.ClassDef) and records and n.name in records:
+            pass  # independently validated frozen declarations
+        elif isinstance(n, ast.ImportFrom) and n.level == 0 and n.module in {"typing", "math", "__future__", "dataclasses", "bisect"}:
+            if any(a.name == "*" for a in n.names):
+                raise _err(n, "star imports are outside checked helper composition")
+        elif isinstance(n, ast.Import) and all(a.name in {"typing", "math", "sys"} for a in n.names):
+            pass
+        elif isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str):
+            pass
+        else:
+            raise _err(n, "module initialization/rebinding is outside checked helper composition")
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            if any((a.asname or a.name).split(".")[0] in defs for a in n.names):
+                raise _err(n, "import shadows a helper binding")
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            raise _err(defs[name], "recursive helper calls are outside the acyclic fragment")
+        if name in visited:
+            return
+        visiting.add(name)
+        for callee in sorted(edges[name]):
+            visit(callee)
+        visiting.remove(name)
+        visited.add(name)
+
+    for name in sorted(edges):
+        visit(name)
+    targets = set().union(*edges.values())
+    signatures: dict[str, _HelperSignature] = {}
+    for name in sorted(targets):
+        node = defs[name]
+        a = node.args
+        _checked_defaults(node)
+        parameters = tuple((p.arg, _dafny_type(p.annotation, p, records))
+                           for p in (*a.posonlyargs, *a.args, *a.kwonlyargs))
+        returns = _dafny_type(node.returns, node, records)
+        if not all(_scalar_type(t) or t.startswith("seq<") or t.startswith("VRec") for _, t in parameters) or not (_scalar_type(returns) or returns.startswith("seq<")):
+            raise _err(node, "checked helper returns require scalar/tuple or read-only sequence values")
+        signatures[name] = _HelperSignature(node, parameters, returns)
+    return signatures
+
+
+def _localize_scalar_parameters(node, spec, reserved_names=frozenset()):
+    """Keep entry values immutable while representing Python local rebinding."""
+    parameters={a.arg:a for a in (*node.args.posonlyargs,*node.args.args,*node.args.kwonlyargs)}
+    rebound={n.id for n in ast.walk(node) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Store)} & parameters.keys()
+    if not rebound:return node,spec
+    if any(_dafny_type(parameters[name].annotation,parameters[name]) not in {'int','bool','string','PyOpt<string>'} for name in rebound):
+        raise _err(node,'parameter rebinding supports scalar parameters only')
+    if any(isinstance(n,(ast.Lambda,ast.ListComp,ast.GeneratorExp,ast.SetComp,ast.DictComp,ast.AsyncFunctionDef)) or isinstance(n,ast.FunctionDef) and n is not node for n in ast.walk(node)):
+        raise _err(node,'rebound scalar parameters do not support nested scopes')
+    used={n.id for n in ast.walk(node) if isinstance(n,ast.Name)}|set(reserved_names)
+    for clause in spec.clauses:
+        if clause.desugared:used.update(n.id for n in ast.walk(ast.parse(clause.desugared,mode='eval')) if isinstance(n,ast.Name))
+    names={}
+    for name in sorted(rebound):
+        local=name+'_local'
+        while local in used:local+='_'
+        names[name]=local;used.add(local)
+    class Rename(ast.NodeTransformer):
+        def visit_Name(self,n):return ast.copy_location(ast.Name(id=names.get(n.id,n.id),ctx=n.ctx),n)
+        def visit_Call(self,n):
+            if isinstance(n.func,ast.Name) and n.func.id=='old':return n
+            return self.generic_visit(n)
+    node,spec=copy.deepcopy(node),copy.deepcopy(spec)
+    node.body=[Rename().visit(stmt) for stmt in node.body]
+    initializers=[ast.copy_location(ast.Assign(targets=[ast.Name(id=local,ctx=ast.Store())],value=ast.Name(id=name,ctx=ast.Load())),node.body[0]) for name,local in names.items()]
+    node.body=initializers+node.body;ast.fix_missing_locations(node)
+    for clause in spec.clauses:
+        if clause.kind in {'invariant','decreases','proof'} and clause.desugared:
+            clause.desugared=ast.unparse(Rename().visit(ast.parse(clause.desugared,mode='eval')))
+    return node,spec
+
+
 class _MethodEncoder:
     def __init__(self, node: ast.FunctionDef, spec: FunctionSpec,
                  proof_lemmas: frozenset[str] = frozenset(),
                  source_lines: list[str] | None = None,
                  math_names: dict[str, str] | None = None,
                  math_aliases: frozenset[str] = frozenset(),
-                 math_other: dict[str, str] | None = None):
+                 math_other: dict[str, str] | None = None,
+                 reserved_names: frozenset[str] = frozenset(),
+                 helpers: dict[str, _HelperSignature] | None = None,
+                 records: dict | None = None, sequence_imports: dict | None = None,
+                 module_values: dict | None = None, regex_models: dict | None = None, newtypes: dict | None = None, casts=frozenset(), exceptions: dict | None = None):
         self.node = node
+        self.module_values = module_values or {}
+        self.regex_models = regex_models or {}
+        self.newtypes = newtypes or {}
+        self.casts = casts
+        self.exceptions = exceptions or {}
         self.spec = spec
         self.proof_lemmas = proof_lemmas
+        self.proof_predicates = getattr(proof_lemmas, "predicates", frozenset())
         self.source_lines = source_lines or []
+        from veripy.backends.dafny import http_lists
+        try:
+            self.http_list_names = http_lists.imports(ast.parse("\n".join(self.source_lines)))
+            self.percent_names = percent_decoding.imports(ast.parse("\n".join(self.source_lines)))
+        except ValueError as exc:raise EncodeError(str(exc), node.lineno) from exc
         self.math_names = math_names or {}
         self.math_aliases = math_aliases
         self.math_other = math_other or {}
+        self.helpers = helpers or {}
+        self.records = records or {}
+        self.sequence_imports = sequence_imports or {}
+        self.quantified_functions: dict[str, tuple[str, list[str], int]] = {}
+        self._abstracting_quantifier = False
+        self._quantifier_context = []
+        self._compiled_requirements = []
+        self._spec_clause_kind = None
+        self._spec_clause_line = node.lineno
+        self.record_fields = {record_type(name): {field: _dafny_type(ann, node, self.records)
+                                                  for field, ann in fields}
+                              for name, fields in self.records.items()}
         self.lines: list[str] = []
         self.line_map: dict[int, int] = {}  # emitted index -> python line
         self.params: set[str] = {
@@ -627,6 +823,8 @@ class _MethodEncoder:
                 f"to — rename it", node.lineno)
         for p in sorted(self.params & PREAMBLE_NAMES):
             raise EncodeError(f"parameter {_preamble_clash(p)}", node.lineno)
+        if "result" in self.params:
+            raise EncodeError("parameter named 'result' shadows the postcondition result", node.lineno)
         self._shadowed = set(self.params)
         for n in ast.walk(node):
             bound: list[str] = []
@@ -652,12 +850,20 @@ class _MethodEncoder:
                     and set(n.names) & _ENCODED_BUILTINS:
                 raise _err(n, "global/nonlocal on a builtin name is outside the fragment")
         self.types: dict[str, str | None] = {}
+        if self.helpers:
+            clashes = self._shadowed & self.helpers.keys()
+            if clashes:
+                raise _err(node, f"local binding shadows a helper: {sorted(clashes)!r}")
+            if any(isinstance(n, (ast.Global, ast.Nonlocal, ast.FunctionDef,
+                                  ast.AsyncFunctionDef, ast.ClassDef))
+                   for stmt in node.body for n in ast.walk(stmt)):
+                raise _err(node, "nested scopes/global/nonlocal are outside checked helper composition")
         self.scopes: list[set[str]] = [set()]
         self.retired: set[str] = set()
         self.spec_mode = False
         self.return_type: str | None = None
 
-        self.used_names = self._collect_used_names()
+        self.used_names = self._collect_used_names() | set(reserved_names)
         self.mangle_map = self._build_mangle_map()
         self._invariants_by_loop: dict[int, list[Clause]] = {}
         self._decreases_by_loop: dict[int, list[Clause]] = {}
@@ -704,10 +910,13 @@ class _MethodEncoder:
 
     def _build_mangle_map(self) -> dict[str, str]:
         mapping: dict[str, str] = {}
-        taken = set(self.used_names)
+        taken = set(self.used_names) | set(PREAMBLE_NAMES)
         for name in sorted(self.used_names):
-            if name in DAFNY_KEYWORDS:
-                candidate = f"{name}_py"
+            if name in DAFNY_KEYWORDS or name.startswith("_") or name == "result":
+                # Dafny rejects user identifiers beginning with underscore.
+                # Preserve private Python names via a collision-free mapping,
+                # exactly as for identifiers that are Dafny keywords.
+                candidate = f"py{name}" if name.startswith("_") else f"{name}_py"
                 while candidate in taken:
                     candidate += "_"
                 mapping[name] = candidate
@@ -754,17 +963,114 @@ class _MethodEncoder:
 
     # -- conservative type inference ------------------------------------------------
 
+    def _known_nonnegative(self, node):
+        if isinstance(node, ast.Constant):
+            return type(node.value) is int and node.value >= 0
+        if isinstance(node, ast.Name):
+            return node.id in self.nonneg
+        if (self.spec_mode and isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "loop_index" and not node.args and not node.keywords
+                and getattr(self, "iteration_cursor", None) is not None):
+            return True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mult)):
+            return self._known_nonnegative(node.left) and self._known_nonnegative(node.right)
+        return False
+
+    def _normalize_enumerated_comp(self, node):
+        # The supported source is an exact list name, evaluated once by Python.
+        # The fragment forbids changes to it during this pure comprehension.
+        if not isinstance(node, ast.ListComp) or len(node.generators) != 1:
+            return node
+        c = node.generators[0]
+        if not (isinstance(c.target, ast.Tuple) and len(c.target.elts) == 2
+                and all(isinstance(x, ast.Name) for x in c.target.elts)
+                and isinstance(c.iter, ast.Call) and isinstance(c.iter.func, ast.Name)
+                and c.iter.func.id == "enumerate" and len(c.iter.args) == 1
+                and isinstance(c.iter.args[0], ast.Name) and not c.iter.keywords and not c.is_async):
+            return node
+        index, value = [x.id for x in c.target.elts]
+        if index == value or any(n in self.types or n in self.name_overrides for n in (index, value)):
+            raise _err(node, "enumerated comprehension names must be distinct and unbound")
+        if not (self._infer(c.iter.args[0]) or "").startswith("seq<"):
+            raise _err(node, "enumerated comprehension requires a list")
+        if any(isinstance(n, (ast.GeneratorExp, ast.ListComp, ast.Lambda, ast.NamedExpr))
+               for e in [node.elt, *c.ifs] for n in ast.walk(e)):
+            raise _err(node, "nested scopes/rebinding in enumerated comprehensions are unsupported")
+        source = c.iter.args[0]
+        class Replace(ast.NodeTransformer):
+            def visit_Name(self, n):
+                if n.id == value and isinstance(n.ctx, ast.Load):
+                    return ast.copy_location(ast.Subscript(value=copy.deepcopy(source),
+                        slice=ast.Name(id=index, ctx=ast.Load()), ctx=ast.Load()), n)
+                return n
+        result = copy.deepcopy(node)
+        result.elt = Replace().visit(result.elt)
+        cc = result.generators[0]
+        cc.ifs = [Replace().visit(e) for e in cc.ifs]
+        cc.target = ast.copy_location(ast.Name(id=index, ctx=ast.Store()), c.target)
+        cc.iter = ast.copy_location(ast.Call(func=ast.Name(id="range", ctx=ast.Load()),
+            args=[ast.Call(func=ast.Name(id="len", ctx=ast.Load()), args=[copy.deepcopy(source)], keywords=[])], keywords=[]), c.iter)
+        return ast.fix_missing_locations(result)
+
+    def _identity_cast(self, node):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id in self._shadowed:
+            return None
+        name = node.func.id
+        if name in self.casts:
+            if len(node.args) != 2 or node.keywords:
+                raise _err(node, "cast requires a modeled NewType and one scalar value")
+            target = node.args[0]
+            alias = target.id if isinstance(target, ast.Name) else target.value if isinstance(target, ast.Constant) else None
+            if alias not in self.newtypes or isinstance(target,ast.Name) and alias in self._shadowed:
+                raise _err(node, "cast target requires an explicit NewType model")
+            value = node.args[1]
+        elif name in self.newtypes:
+            if len(node.args) != 1 or node.keywords:raise _err(node, "NewType requires one scalar value")
+            alias, value = name, node.args[0]
+        else:return None
+        dtype = {"str":"string", "int":"int", "bool":"bool"}[self.newtypes[alias]]
+        if self._infer(value) != dtype:raise _err(node, "NewType identity model requires its exact builtin scalar type")
+        return value
+
     def _infer(self, node: ast.expr) -> str | None:
+        from veripy.backends.dafny import http_lists
+        if isinstance(node, ast.Call):
+            percent = percent_decoding.call_model(self, node)
+            if percent is not None:return percent[0]
+            http = http_lists.call_model(self, node)
+            if http is not None:return http[0]
+        identity = self._identity_cast(node)
+        if identity is not None:return self._infer(identity)
+        if isinstance(node, ast.Call):
+            regex = regex_strings.call_model(self, node)
+            if regex is not None:return regex[0]
+        if (self.spec_mode and isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "ghost"):
+            return "bool"
+        node = self._normalize_enumerated_comp(node)
         match node:
+            case ast.Attribute(value=ast.Name(id=name), attr="maxsize") if self.sequence_imports.get(name) == "sys" and name not in self._shadowed:
+                return "int"
+            case ast.Call(func=ast.Name(id=name)) if self.sequence_imports.get(name) == "bisect_right" and name not in self._shadowed:
+                return "int"
+            case ast.Attribute(value=value, attr=attr):
+                return self.record_fields.get(self._infer(value), {}).get(attr)
+            case ast.Call(func=ast.Name(id=name)) if name in self.helpers:
+                return self.helpers[name].returns
+            case ast.Call(func=ast.Name(id=name)) if name in self.records and name not in self._shadowed:
+                return record_type(name)
             case ast.Constant(value=bool()):
                 return "bool"
             case ast.Constant(value=int()):
                 return "int"
             case ast.Constant(value=str()):
                 return "string"
-            case ast.Name(id="result") if self.spec_mode:
+            case ast.Name(id="result") if self.spec_mode and self._spec_clause_kind in {"ensures", "ghost_ensures"}:
                 return self.return_type
             case ast.Name(id=name):
+                if name not in self._shadowed and name not in self.types and name not in self.name_overrides and name in self.module_values:
+                    from veripy.backends.dafny.environment import literal
+                    return self._infer(literal(self.module_values[name], node))
                 return self.types.get(name)
             case ast.UnaryOp(op=ast.Not()):
                 return "bool"
@@ -773,9 +1079,12 @@ class _MethodEncoder:
             case ast.BoolOp() | ast.Compare():
                 return "bool"
             case ast.BinOp(left=left, op=op, right=right):
+                if self._literal_repeat(node):
+                    return self._infer(left)
                 lt, rt = self._infer(left), self._infer(right)
                 if isinstance(op, (ast.FloorDiv, ast.Mod)):
                     return "int" if lt == "int" and rt == "int" else None
+                if isinstance(op, ast.Add) and {lt,rt} == {"int","bool"}:return "int"
                 if isinstance(op, ast.Add):
                     lt, rt = _concat_types(left, right, lt, rt)
                 if isinstance(op, ast.Add) and lt == rt and lt is not None \
@@ -784,18 +1093,28 @@ class _MethodEncoder:
                 if lt == "int" and rt == "int":
                     return "int"
                 return None
+            case ast.Call(func=ast.Name(id="tuple"), args=[ast.GeneratorExp() as gen], keywords=[]):
+                dtype = self._infer(ast.copy_location(ast.ListComp(elt=gen.elt, generators=gen.generators), gen))
+                return f"VChecksumTuple<{dtype[4:-1]}>" if dtype and dtype.startswith("seq<") else None
             case ast.Call(func=ast.Name(id="len")):
                 return "int"
+            case ast.Call(func=ast.Name(id="loop_index")) if self.spec_mode:
+                return "int"
+            case ast.Call(func=ast.Name(id="divmod"), args=[left, right], keywords=[]):
+                return "(int, int)" if self._eff_type(left) == self._eff_type(right) == "int" else None
             case ast.Call(func=ast.Name(id="str"), args=[arg], keywords=[]):
-                return "string" if self._infer(arg) == "int" else None
+                return "string" if self._infer(arg) in {"int", "string"} else None
             case ast.Call(func=ast.Name(id="int"), args=[arg], keywords=[]):
                 return "int" if self._infer(arg) == "string" else None
             case ast.Call(func=ast.Name(id=("min" | "max" | "abs" | "sum"))):
                 return "int"
             case ast.Call(func=ast.Name(id="bool")):
                 return "bool"
+            case ast.Call(func=ast.Name(id="sorted"), args=[arg], keywords=[]):
+                dtype = self._infer(arg)
+                return dtype if dtype in {"seq<int>", "seq<(int, int)>", "seq<(int, int, int)>"} else None
             case ast.Call(func=ast.Name(id="sorted")):
-                return "seq<int>"
+                return "seq<int>"  # the separately checked keyed range form
             case ast.Call(func=ast.Name(id=("all" | "any"))):
                 return "bool"
             case ast.Call(func=ast.Name(id="old"), args=[ast.Name(id=name)]):
@@ -803,9 +1122,11 @@ class _MethodEncoder:
             case ast.Call() as call if self._admitted_math_canon(call) is not None:
                 return "int"
             case ast.Subscript(value=value, slice=ast.Slice()):
-                return self._infer(value)  # a slice keeps the sequence type
+                return self._eff_type(value)  # slicing projects Optional with a VC
             case ast.Subscript(value=value, slice=index):
                 base = self._infer(value)
+                if _is_tuple(_opt_inner(base)):
+                    base = _opt_inner(base)
                 if _is_tuple(base):
                     k = _const_int_index(index)
                     if k is None:
@@ -816,14 +1137,28 @@ class _MethodEncoder:
                     if 0 <= k < len(elems):
                         return elems[k]
                     return None
+                if checksum_sequences.element(base):
+                    return checksum_sequences.element(base)
                 if base == "string":
                     return "char"
                 if base is not None and base.startswith("seq<"):
                     return base[4:-1]
                 return None
-            case ast.IfExp(body=body, orelse=orelse):
+            case ast.IfExp(test=test, body=body, orelse=orelse):
                 bt, ot = self._infer(body), self._infer(orelse)
-                return bt if bt == ot else None
+                if bt == ot:
+                    return bt
+                if (isinstance(test, ast.Compare) and isinstance(test.left, ast.Name)
+                        and len(test.ops) == len(test.comparators) == 1
+                        and isinstance(test.comparators[0], ast.Constant)
+                        and test.comparators[0].value is None):
+                    selected = body if isinstance(test.ops[0], ast.IsNot) else orelse if isinstance(test.ops[0], ast.Is) else None
+                    if isinstance(selected, ast.Name) and selected.id == test.left.id:
+                        inner = _opt_inner(self._infer(selected))
+                        other = ot if selected is body else bt
+                        if inner is not None and inner == other:
+                            return inner
+                return None
             case ast.List(elts=elts):
                 inner = {self._infer(e) for e in elts}
                 if len(inner) == 1 and None not in inner:
@@ -867,11 +1202,11 @@ class _MethodEncoder:
         string and then fail later on a different rule."""
         if self._infer(receiver) != "string":
             return None
-        if method in ("join", "replace", "strip", "lstrip", "rstrip"):
+        if method in ("join", "replace", "strip", "lstrip", "rstrip", "lower"):
             return "string"
         if method == "split":
             return "seq<string>"
-        if method == "find":
+        if method in ("find", "count", "index"):
             return "int"
         if method in ("startswith", "endswith"):
             return "bool"
@@ -883,7 +1218,13 @@ class _MethodEncoder:
                 and it.func.id == "range" and 1 <= len(it.args) <= 2 \
                 and not it.keywords:
             return "int"
+        if (isinstance(it, ast.Call) and isinstance(it.func, ast.Name) and it.func.id == "reversed"
+                and len(it.args) == 1 and not it.keywords):
+            dtype = self._infer(it.args[0])
+            return "char" if dtype == "string" else dtype[4:-1] if dtype and dtype.startswith("seq<") else checksum_sequences.element(dtype)
         dt = self._infer(it)
+        if dt == "string":return "char"
+        if checksum_sequences.element(dt):return checksum_sequences.element(dt)
         if dt is not None and dt.startswith("seq<"):
             return dt[4:-1]
         return None
@@ -900,7 +1241,19 @@ class _MethodEncoder:
 
     # -- expressions ---------------------------------------------------------------------
 
+    def _literal_repeat(self, node: ast.expr) -> bool:
+        return (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
+                and isinstance(node.left, ast.List) and len(node.left.elts) == 1
+                and isinstance(node.left.elts[0], ast.Constant)
+                and type(node.left.elts[0].value) in {int, bool, str}
+                and self._infer(node.right) == "int")
+
     def expr(self, node: ast.expr) -> str:
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.attr == "maxsize"
+                and self.sequence_imports.get(node.value.id) == "sys" and node.value.id not in self._shadowed):
+            import sys
+            return str(sys.maxsize)
+        node = self._normalize_enumerated_comp(node)
         match node:
             case ast.Constant(value=bool() as b):
                 return "true" if b else "false"
@@ -909,12 +1262,17 @@ class _MethodEncoder:
             case ast.Constant(value=str() as s):
                 return self._escape_str(s, node)
             case ast.Name(id=name):
+                # The return-value intrinsic has precedence over module constants.
+                if name == "result" and self.spec_mode and self._spec_clause_kind in {"ensures", "ghost_ensures"}:
+                    return "result"
+                if name not in self._shadowed and name not in self.types and name not in self.name_overrides and name in self.module_values:
+                    from veripy.backends.dafny.environment import literal
+                    return self.expr(literal(self.module_values[name], node))
                 if name in self.name_overrides:
                     return self.name_overrides[name]
                 if name == "result":
-                    if not self.spec_mode:
-                        raise _err(node, "`result` is spec-only")
-                    return "result"
+                    if name not in self.types:
+                        raise _err(node, "`result` requires a local binding outside postconditions")
                 if name in self.retired:
                     raise _err(node, (
                         f"loop index {name!r} used after its loop — Python leaves it at "
@@ -938,7 +1296,11 @@ class _MethodEncoder:
                 if self._is_seqish(self._infer(operand)):
                     # §7.3 truthiness: `not xs` on a list/str means emptiness.
                     return f"(|{self.expr(operand)}| == 0)"
-                return f"!({self.expr(operand)})"
+                if _is_tuple(self._infer(operand)):
+                    # All admitted tuples have fixed, nonzero arity. Retain
+                    # evaluation (and bounds/call VCs) of the operand.
+                    return f"(var {self._fresh('tuple_truth')} := {self.expr(operand)}; false)"
+                return f"!({self._bool_ctx(operand)})"
             case ast.UnaryOp(op=ast.USub(), operand=operand):
                 return f"(-{self.expr(operand)})"
             case ast.BoolOp(op=op, values=values):
@@ -951,6 +1313,20 @@ class _MethodEncoder:
                 joiner = " && " if isinstance(op, ast.And) else " || "
                 return "(" + joiner.join(f"({self.expr(v)})" for v in values) + ")"
             case ast.BinOp(left=left, op=op, right=right):
+                if self._literal_repeat(node):
+                    n = self.expr(right)
+                    return f"seq((if {n} > 0 then {n} else 0), {self._fresh('repeat_index')} => {self.expr(left.elts[0])})"
+                if isinstance(op, ast.RShift):
+                    shift = _const_int_index(right)
+                    if self._infer(left) != "int" or shift is None or not 0 <= shift <= 4096:
+                        raise _err(node,"right shift requires an integer and a bounded nonnegative literal shift")
+                    return f"PyFloorDiv({self.expr(left)}, {1 << shift})"
+                if isinstance(op, ast.BitAnd):
+                    mask = _const_int_index(right); value = left
+                    if mask is None:mask = _const_int_index(left); value = right
+                    if mask is None or mask < 0 or (mask & (mask + 1)) != 0 or self._infer(value) != "int":
+                        raise _err(node,"bitwise and requires an integer and a literal low-bit mask")
+                    return f"PyMod({self.expr(value)}, {mask+1})"
                 if type(op) not in self._ARITH_SYMBOL:
                     raise _err(node, f"operator {type(op).__name__} is outside the slice-1 encoder")
                 # Operand types BEFORE emission: everything below assumes
@@ -960,6 +1336,12 @@ class _MethodEncoder:
                 l, r = self._deopt(left), self._deopt(right)
                 match op:
                     case ast.Add():
+                        if self._eff_type(left) == "bool":l = f"(if {l} then 1 else 0)"
+                        if self._eff_type(right) == "bool":r = f"(if {r} then 1 else 0)"
+                        if self._eff_type(left) == "char":
+                            l = f"[{l}]"
+                        if self._eff_type(right) == "char":
+                            r = f"[{r}]"
                         return f"({l} + {r})"
                     case ast.Sub():
                         return f"({l} - {r})"
@@ -979,21 +1361,29 @@ class _MethodEncoder:
             case ast.Call():
                 return self._call(node)
             case ast.IfExp(test=test, body=body, orelse=orelse):
-                return f"(if {self.expr(test)} then {self.expr(body)} else {self.expr(orelse)})"
+                result_type = self._infer(node)
+                def branch(value):
+                    return self._deopt(value) if result_type is not None and _opt_inner(self._infer(value)) == result_type else self.expr(value)
+                return f"(if {self.expr(test)} then {branch(body)} else {branch(orelse)})"
             case ast.Subscript(value=value, slice=index):
                 if isinstance(index, ast.Slice):
-                    if _is_tuple(self._infer(value)):
-                        raise _err(node, (
-                            "slicing a tuple is outside the slice encoder — "
-                            "index with a constant or unpack the components"
-                        ))
-                    if index.step is not None:
-                        raise _err(node, "slice steps are outside the slice encoder")
-                    base = self.expr(value)
+                    dtype = self._infer(value)
+                    if _is_tuple(dtype):raise _err(node, "slicing a fixed tuple is outside the slice encoder")
+                    base = self._deopt(value)
+                    immutable = checksum_sequences.element(dtype) is not None
+                    if immutable:base = f"({base}).VChecksumValues"
                     lo = self.expr(index.lower) if index.lower is not None else "0"
                     hi = self.expr(index.upper) if index.upper is not None else f"|{base}|"
-                    return f"PySlice({base}, {lo}, {hi})"
-                if _is_tuple(self._infer(value)):
+                    if index.step is not None:
+                        step = _const_int_index(index.step)
+                        if step is None or step <= 0:raise _err(node, "slice steps require a positive literal integer")
+                        result = f"VChecksumStride({base}, {lo}, {hi}, {step})"
+                    else:result = f"PySlice({base}, {lo}, {hi})"
+                    return f"VChecksumTupleMake({result})" if immutable else result
+                if checksum_sequences.element(self._infer(value)):
+                    base = f"({self.expr(value)}).VChecksumValues"
+                    return f"{base}[PyIndex({self.expr(index)}, |{base}|)]"
+                if _is_tuple(self._infer(value)) or _is_tuple(_opt_inner(self._infer(value))):
                     return self._tuple_index_expr(node, value, index)
                 base = self.expr(value)
                 idx = self.expr(index)
@@ -1003,12 +1393,7 @@ class _MethodEncoder:
                 # >= 0 — nonneg literals and tracked 0-based binders/loop
                 # variables — are emitted BARE so spec quantifier triggers
                 # match the body's ground terms; everything else is wrapped.
-                provably_nonneg = (
-                    isinstance(index, ast.Constant)
-                    and isinstance(index.value, int) and index.value >= 0
-                ) or (
-                    isinstance(index, ast.Name) and index.id in self.nonneg
-                )
+                provably_nonneg = self._known_nonnegative(index)
                 if provably_nonneg:
                     return f"{base}[{idx}]"
                 return f"{base}[PyIndex({idx}, |{base}|)]"
@@ -1057,6 +1442,10 @@ class _MethodEncoder:
                     _IEEE_FLOAT_MSG if attr in _MATH_FLOAT
                     else f"math.{attr} is outside the fragment — {_MATH_REWRITE}"
                 ))
+            case ast.Attribute(value=value, attr=attr) if self._infer(value) in self.record_fields:
+                if attr not in self.record_fields[self._infer(value)]:
+                    raise _err(node, f"unknown record field {attr!r}")
+                return f"({self.expr(value)}).{record_field(attr)}"
             case _:
                 raise _err(node, f"expression {type(node).__name__} is outside the slice-1 encoder "
                                  f"-- see the admitted-construct table in docs/SEMANTICS.md")
@@ -1066,7 +1455,7 @@ class _MethodEncoder:
         """Project `p[k]` as Dafny `p.k`. The index is a constant (negative
         wrap is Python's); a variable index would treat a product as a
         sequence, which Dafny tuples are not."""
-        elems = _tuple_elems(self._infer(value) or "")
+        elems = _tuple_elems(_opt_inner(self._infer(value)) or self._infer(value) or "")
         k = _const_int_index(index)
         if k is None:
             raise _err(node, (
@@ -1082,8 +1471,8 @@ class _MethodEncoder:
                 f"{n}-tuple (Python would raise IndexError) — the fragment "
                 f"checks arity at encode time"
             ))
-        base = self.expr(value)
-        if not isinstance(value, ast.Name):
+        base = self._deopt(value)
+        if not isinstance(value, ast.Name) or _opt_inner(self._infer(value)) is not None:
             base = f"({base})"
         return f"{base}.{k}"
 
@@ -1112,13 +1501,18 @@ class _MethodEncoder:
             override = f"(({lo}) + {idx})"
             binder_type: str | None = "int"
         else:
-            dt = self._infer(it)
-            if not (dt is not None and dt.startswith("seq<")):
-                raise _err(node, "comprehension sources must be range(...) or a list")
-            src = self.expr(it)
+            reverse = (isinstance(it, ast.Call) and isinstance(it.func, ast.Name) and it.func.id == "reversed"
+                       and len(it.args) == 1 and not it.keywords)
+            source = it.args[0] if reverse else it
+            dt = self._infer(source)
+            if not (dt == "string" or checksum_sequences.element(dt) or dt and dt.startswith("seq<")):
+                raise _err(node, "comprehension sources must be range(...) or a finite sequence")
+            src = self.expr(source)
+            if checksum_sequences.element(dt):src = f"({src}).VChecksumValues"
+            if reverse:src = f"VChecksumReverse({src})"
             count = f"|{src}|"
             override = f"{src}[{idx}]"
-            binder_type = dt[4:-1]
+            binder_type = "char" if dt == "string" else checksum_sequences.element(dt) or dt[4:-1]
         saved_override = self.name_overrides.get(raw)
         saved_type = self.types.get(raw)
         self.name_overrides[raw] = override
@@ -1283,6 +1677,7 @@ class _MethodEncoder:
         lt, rt = self._eff_type(left), self._eff_type(right)
         if isinstance(op, ast.Add):
             lt, rt = _concat_types(left, right, lt, rt)
+        if isinstance(op, ast.Add) and {lt,rt} == {"int","bool"}:return
         if lt == "int" and rt == "int":
             return
         if isinstance(op, ast.Add) and lt is not None and lt == rt \
@@ -1352,6 +1747,10 @@ class _MethodEncoder:
         parts = []
         current = left
         for op, comp in zip(ops, comps):
+            if isinstance(op,(ast.Eq,ast.NotEq,ast.In,ast.NotIn)):
+                kinds=(self._infer(current) or '',self._infer(comp) or '')
+                if any(token in kind for kind in kinds for token in ('VRegexMatch','VHttpMatch','VHttpETags','VCharsetCapture')):
+                    raise _err(node,'modeled dependency objects support presence checks, not value equality or containment, including inside containers')
             if isinstance(op, (ast.Is, ast.IsNot)):
                 # Only `x is [not] None` on an Optional is in the fragment.
                 if isinstance(comp, ast.Constant) and comp.value is None \
@@ -1381,6 +1780,9 @@ class _MethodEncoder:
                 l, r = self._deopt(current), self._deopt(comp)
             elif isinstance(op, (ast.Eq, ast.NotEq)):
                 lt, rt = self._infer(current), self._infer(comp)
+                if {"PyOpt<VRegexMatch>","PyOpt<VHttpMatch>","PyOpt<VCharsetCapture>"} & {lt,rt}:raise _err(node,"regex match objects support presence checks, not value equality")
+                if (checksum_sequences.element(lt) or checksum_sequences.element(rt)) and lt != rt:
+                    raise _err(node,"immutable tuple equality requires matching tuple types")
                 if _opt_inner(lt) is not None and _opt_inner(lt) == rt:
                     # Python's == never raises: Optional-vs-T equality means
                     # "is Some AND the payload matches".
@@ -1393,7 +1795,12 @@ class _MethodEncoder:
                     parts.append(inner if isinstance(op, ast.Eq) else f"!{inner}")
                     current = comp
                     continue
-                l, r = self.expr(current), self.expr(comp)
+                if {lt, rt} == {"char", "string"}:
+                    # Python indexing returns a length-one str. Lift the model
+                    # character before comparing with strings of any length.
+                    l, r = self._coerce(current, "string"), self._coerce(comp, "string")
+                else:
+                    l, r = self.expr(current), self.expr(comp)
             else:
                 l, r = self.expr(current), self.expr(comp)
             match op:
@@ -1410,7 +1817,12 @@ class _MethodEncoder:
                 case ast.GtE():
                     parts.append(f"{l} >= {r}")
                 case ast.In() | ast.NotIn():
-                    rt = self._infer(comp)
+                    rt = self._eff_type(comp)
+                    if rt == "string" and self._infer(current) in {"string", "char"}:
+                        needle = self._coerce(current, "string")
+                        parts.append(f"(PyStrFind({self._deopt(comp)}, {needle}) {'>=' if isinstance(op, ast.In) else '<'} 0)")
+                        current = comp
+                        continue
                     if rt is None or not rt.startswith("seq<"):
                         raise _err(node, (
                             "`in` is only supported against list operands (Python's "
@@ -1465,6 +1877,10 @@ class _MethodEncoder:
                 f"— {_MATH_REWRITE}"
             ))
         args = node.args
+        if canon == "prod":
+            if len(args) != 1 or self._infer(args[0]) != "seq<int>":
+                raise _err(node, "math.prod requires one list[int], without start")
+            return f"PyProd({self.expr(args[0])})"
         if canon == "gcd":
             if len(args) != 2:
                 raise _err(node, (
@@ -1487,6 +1903,58 @@ class _MethodEncoder:
         return f"{py}({self._deopt(args[0])})"
 
     def _call(self, node: ast.Call) -> str:
+        from veripy.backends.dafny import http_lists
+        percent = percent_decoding.call_model(self, node)
+        if percent is not None:return percent[1]
+        http = http_lists.call_model(self, node)
+        if http is not None:return http[1]
+        identity = self._identity_cast(node)
+        if identity is not None:return self.expr(identity)
+        regex = regex_strings.call_model(self, node)
+        if regex is not None:return regex[1]
+        if isinstance(node.func, ast.Name) and node.func.id in self.records:
+            name = node.func.id
+            fields = self.records[name]
+            if name in self._shadowed or self._has_helper(node):
+                raise _err(node, "record constructors require an unshadowed schema and pure scalar arguments")
+            if any(not isinstance(ann, ast.Name) or ann.id not in {"int", "bool", "str"} for _, ann in fields):
+                raise _err(node, "record construction currently supports scalar fields only")
+            if len(node.args) > len(fields) or any(isinstance(a, ast.Starred) for a in node.args):
+                raise _err(node, "record constructor has too many or unpacked arguments")
+            values = list(zip((field for field, _ in fields), node.args))
+            for kw in node.keywords:
+                if kw.arg is None or kw.arg not in dict(fields) or kw.arg in dict(values):
+                    raise _err(node, "record constructor has unpacked, unknown or duplicate keywords")
+                values.append((kw.arg, kw.value))
+            if len(values) != len(fields):
+                raise _err(node, "record constructor requires every field")
+            temps = {}
+            bindings = []
+            for field, value in values:
+                want = _dafny_type(dict(fields)[field], node, self.records)
+                if self._infer(value) != want:
+                    raise _err(value, "record constructor argument must match its scalar field type")
+                temp = self._fresh("record_arg")
+                temps[field] = temp
+                bindings.append(f"var {temp} := {self.expr(value)}; ")
+            # Let bindings retain Python's positional/keyword evaluation order.
+            result = record_constructor(name) + "(" + ", ".join(temps[field] for field, _ in fields) + ")"
+            return "(" + "".join(bindings) + result + ")"
+        if isinstance(node.func, ast.Name) and node.func.id == "ghost":
+            if (not self.spec_mode or self._spec_clause_kind not in {"invariant", "proof", "ghost_ensures"}
+                    or node.keywords or not node.args or not isinstance(node.args[0], ast.Constant)
+                    or type(node.args[0].value) is not str or node.args[0].value not in self.proof_predicates):
+                raise _err(node, "ghost() requires a defined sidecar predicate name in an invariant or proof argument")
+            return node.args[0].value + "(" + ", ".join(self.expr(a) for a in node.args[1:]) + ")"
+        if (isinstance(node.func, ast.Name) and self.sequence_imports.get(node.func.id) == "bisect_right"
+                and node.func.id not in self._shadowed):
+            if node.keywords or len(node.args) != 2 or self._infer(node.args[0]) != "seq<(int, int)>" or self._infer(node.args[1]) != "(int, int)":
+                raise _err(node, "bisect_right supports an integer-pair list and integer-pair key only")
+            seq, key = map(self.expr, node.args)
+            return f"PyBisect2({seq}, {key}, 0, |{seq}|)"
+        if isinstance(node.func, ast.Name) and node.func.id in self.helpers:
+            context = "spec expressions" if self.spec_mode else "this expression context"
+            raise _err(node, f"executable helper calls are outside {context}")
         math = self._admitted_math_canon(node)
         if math is not None:
             return self._emit_math(math, node)
@@ -1499,30 +1967,49 @@ class _MethodEncoder:
                              "`xs.append(v)` statements are modeled")
         name = func.id
         args = node.args
+        if name == "loop_index":
+            cursor = getattr(self, "iteration_cursor", None)
+            if not self.spec_mode or cursor is None or args or node.keywords:
+                raise _err(node, "loop_index() requires a for-each loop annotation and no arguments")
+            return cursor
         if name == "sorted":
-            # One positional list[int]; key=/reverse=/str stay rejected
-            # with a rewrite (Dafny seq < is prefix, not lex).
-            if node.keywords or len(args) != 1 \
-                    or self._infer(args[0]) != "seq<int>":
+            # Reuse the checked lexicographic models used by list.sort.
+            model = {"seq<int>": "PySorted", "seq<(int, int)>": "PySorted2",
+                     "seq<(int, int, int)>": "PySorted3"}.get(
+                         self._infer(args[0]) if len(args) == 1 else None)
+            if node.keywords or model is None:
                 raise _err(node, (
-                    "sorted() in this slice takes a list[int] — drop "
-                    "key=/reverse=, or sort a list of ints; for strings "
-                    "write an explicit loop (Dafny seq order is prefix, "
-                    "not lex)"
+                    "sorted() takes a list[int] or a list of integer pairs/triples — "
+                    "drop key=/reverse=; other element types remain outside the fragment"
                 ))
-            return f"PySorted({self.expr(args[0])})"
+            return f"{model}({self.expr(args[0])})"
         if node.keywords:
             # No encoded builtin takes keywords; silently dropping one
             # (e.g. max(a, b, key=abs)) would change the meaning.
             raise _err(node, f"keyword arguments to {name}() are outside the fragment")
+        if name == "divmod":
+            if len(args) != 2 or any(self._eff_type(a) != "int" for a in args):
+                raise _err(node, "divmod() requires exactly two int operands in the fragment")
+            # Expressions are pure; use the already modeled Python floor /
+            # remainder semantics, including negative divisors. Both helpers
+            # require b != 0, so a possible ZeroDivisionError remains a VC.
+            left, right = self._deopt(args[0]), self._deopt(args[1])
+            return f"(PyFloorDiv({left}, {right}), PyMod({left}, {right}))"
+        if name == "bool" and len(args) == 1:return self._bool_ctx(args[0])
+        if name == "tuple" and len(args) == 1 and isinstance(args[0], ast.GeneratorExp):
+            gen = args[0]
+            if len(gen.generators) != 1 or gen.generators[0].is_async or not isinstance(gen.generators[0].target, ast.Name):
+                raise _err(node, "tuple materialization requires one synchronous generator")
+            return f"VChecksumTupleMake({self._list_comp(gen, gen.elt, gen.generators[0])})"
         if name == "len" and len(args) == 1:
             t = self._infer(args[0])
+            if checksum_sequences.element(t):return f"|({self.expr(args[0])}).VChecksumValues|"
             if _is_tuple(t):
                 # Dafny `|p|` is sequence length; a tuple's len is its
                 # (static) arity. Fragment expressions are pure, so
                 # emitting the constant does not drop observable effects.
                 return str(len(_tuple_elems(t)))
-            return f"|{self.expr(args[0])}|"
+            return f"|{self._deopt(args[0])}|"
         if name == "tuple":
             raise _err(node, (
                 "tuple() conversion is outside the slice encoder — write "
@@ -1555,7 +2042,12 @@ class _MethodEncoder:
                 mapped = self._list_comp(arg, arg.elt, arg.generators[0],
                                          require_int_elt=True)
                 return f"PySum({mapped})"
-            if self._infer(arg) != "seq<int>":
+            dtype = self._infer(arg)
+            if checksum_sequences.element(dtype) == "int":return f"PySum(({self.expr(arg)}).VChecksumValues)"
+            if _is_tuple(dtype) and all(t == "int" for t in _tuple_elems(dtype)):
+                value = self.expr(arg)
+                return "(" + " + ".join(f"({value}).{i}" for i in range(len(_tuple_elems(dtype)))) + ")"
+            if dtype != "seq<int>":
                 raise _err(node, "sum() needs a list[int] operand in the slice encoder")
             return f"PySum({self.expr(arg)})"
         if name == "old" and self.spec_mode and len(args) == 1 and isinstance(args[0], ast.Name):
@@ -1564,12 +2056,21 @@ class _MethodEncoder:
                 raise _err(node, "old() takes a parameter name")
             return self._mangle(args[0].id)
         if name == "bool" and self.spec_mode and len(args) == 1:
+            if self._infer(args[0]) == "int":
+                return f"({self.expr(args[0])} != 0)"
             if self._infer(args[0]) != "bool":
                 raise _err(node, (
                     "truthiness in specs is outside the fragment — write an explicit "
                     "comparison (e.g. `x != 0`) instead of relying on bool(<non-bool>)"
                 ))
             return f"({self.expr(args[0])})"
+        if name in ("all", "any") and len(args) == 1 and isinstance(args[0], ast.Call):
+            from veripy.frontend.literal_map import expand_literal_map
+            try: expanded = expand_literal_map(node, {k:v.node for k,v in self.helpers.items()})
+            except ValueError as exc: raise _err(node, str(exc)) from exc
+            if expanded is not None:
+                if self._infer(args[0].args[1]) != "string":raise _err(node, "literal predicate map requires a string iterable")
+                return self._quantifier(name, expanded.args[0])
         if name in ("all", "any") and len(args) == 1 \
                 and isinstance(args[0], ast.GeneratorExp):
             return self._quantifier(name, args[0])
@@ -1580,6 +2081,7 @@ class _MethodEncoder:
                     "not a sequence; this slice admits str(int) only"
                 ))
             t = self._infer(args[0])
+            if t == "string":return self.expr(args[0])
             if t == "int":
                 return f"PyIntToStr({self.expr(args[0])})"
             if t == "bool":
@@ -1622,6 +2124,7 @@ class _MethodEncoder:
     def _require_str_arg(self, node: ast.Call, method: str, arg: ast.expr,
                          what: str) -> str:
         t = self._infer(arg)
+        if t == "char":return f"[{self.expr(arg)}]"
         if t != "string":
             raise _err(node, (
                 f".{method}() is outside the fragment because {what} is "
@@ -1642,15 +2145,22 @@ class _MethodEncoder:
                 "because they would be silently dropped — pass positional "
                 "arguments"
             ))
-        recv_t = self._infer(func.value)
+        recv_t = self._eff_type(func.value)
         if recv_t != "string":
             raise _err(node, (
                 f".{method}() is outside the fragment because the receiver "
                 f"is {_py_type_name(recv_t)}, not str — call it on a str "
                 "(or annotate the receiver)"
             ))
-        recv = self.expr(func.value)
+        recv = self._deopt(func.value)
         args = node.args
+        if method == "index":
+            if len(args) != 1 or self._infer(args[0]) not in {"string", "char"}:
+                raise _err(node, ".index() requires one string needle")
+            return f"VChecksumIndex({recv}, {self._coerce(args[0], 'string')})"
+        if method == "lower":
+            if args:raise _err(node, ".lower() takes no arguments")
+            return f"VUnicodeLower({recv})"
         if method in _STR_UNICODE_TABLE:
             raise _err(node, (
                 f".{method}() is outside the fragment because Unicode-table "
@@ -1707,6 +2217,11 @@ class _MethodEncoder:
                 ))
             sep = self._require_str_arg(node, method, args[0], "sep")
             return f"PyStrSplit({recv}, {sep})"
+        if method == "count":
+            if len(args) != 1:
+                raise _err(node, "str.count supports one substring; start/end are outside the fragment")
+            sub = self._require_str_arg(node, method, args[0], "the substring")
+            return f"PyStrCount({recv}, {sub})"
         if method == "find":
             if len(args) != 1:
                 raise _err(node, (
@@ -1719,19 +2234,24 @@ class _MethodEncoder:
         if method in ("startswith", "endswith"):
             kind = "prefix" if method == "startswith" else "suffix"
             fn = "PyStrStartsWith" if method == "startswith" else "PyStrEndsWith"
-            if len(args) != 1:
-                raise _err(node, (
-                    f".{method}() is outside the fragment because it takes "
-                    f"one str {kind} in this slice — drop start/end"
-                ))
+            if not 1 <= len(args) <= 3:
+                raise _err(node, f".{method}() requires a {kind} and at most two integer bounds")
+            bounds = ""
+            if len(args) > 1:
+                if any(self._infer(bound) != "int" for bound in args[1:]):
+                    raise _err(node, f".{method}() start/end bounds require exact integers")
+                start = self.expr(args[1])
+                end = self.expr(args[2]) if len(args) == 3 else f"|{recv}|"
+                bounds = f", {start}, {end}"
+                fn += "Range"
             if isinstance(args[0], ast.Tuple):
-                raise _err(node, (
-                    f".{method}() is outside the fragment because a tuple "
-                    f"of {kind}es is not in this slice — write "
-                    f"s.{method}(a) or s.{method}(b), or an `or` of those"
-                ))
+                if any(not isinstance(arg, ast.Constant) or type(arg.value) is not str for arg in args[0].elts):
+                    raise _err(node, "tuple prefix/suffix arguments must be literal strings")
+                parts = [f"{fn}({recv}, {self._require_str_arg(node, method, arg, kind)}{bounds})" for arg in args[0].elts]
+                # Even an empty tuple evaluates its bounds before matching.
+                return "(" + " || ".join(parts) + ")" if parts else (f'({fn}({recv}, ""{bounds}) && false)' if bounds else "false")
             arg = self._require_str_arg(node, method, args[0], f"the {kind}")
-            return f"{fn}({recv}, {arg})"
+            return f"{fn}({recv}, {arg}{bounds})"
         if method == "replace":
             if len(args) == 3:
                 raise _err(node, (
@@ -1755,11 +2275,8 @@ class _MethodEncoder:
             return f"PyStrReplace({recv}, {old}, {new})"
         # strip / lstrip / rstrip
         if len(args) == 0:
-            raise _err(node, (
-                f".{method}() is outside the fragment because no-arg "
-                f"{method} uses the Unicode whitespace table — pass an "
-                f"explicit chars argument (e.g. s.{method}(' \\t\\n'))"
-            ))
+            fn = {"strip":"VUnicodeStrip", "lstrip":"VUnicodeLStrip", "rstrip":"VUnicodeRStrip"}[method]
+            return f"{fn}({recv})"
         if len(args) != 1:
             raise _err(node, (
                 f".{method}() is outside the fragment because it takes "
@@ -1775,6 +2292,7 @@ class _MethodEncoder:
         domains: list[str] = []
         binder_names: list[str] = []
         saved_types: dict[str, str | None] = {}
+        pushed_context = False
         try:
             for comp in gen.generators:
                 if comp.is_async or not isinstance(comp.target, ast.Name):
@@ -1804,20 +2322,22 @@ class _MethodEncoder:
                         lo, hi = self.expr(domain.args[0]), self.expr(domain.args[1])
                     domains.append(f"{lo} <= {var} < {hi}")
                     binder_type: str | None = "int"
-                    if lo == "0" or (lo.lstrip("(").rstrip(")").isdigit()):
+                    if len(domain.args) == 1 or self._known_nonnegative(domain.args[0]):
                         self.nonneg.add(raw)
                 else:
                     dt = self._infer(domain)
-                    if dt is None or not dt.startswith("seq<"):
-                        raise _err(gen, "quantifier domains must be range(...) or a list")
+                    if not (dt == "string" or dt is not None and dt.startswith("seq<")):
+                        raise _err(gen, "quantifier domains must be range(...) or a finite sequence")
                     domains.append(f"{var} in {self.expr(domain)}")
-                    binder_type = dt[4:-1]
+                    binder_type = "char" if dt == "string" else dt[4:-1]
                 binders.append(var)
                 binder_names.append(raw)
                 saved_types[raw] = self.types.get(raw)
                 self.types[raw] = binder_type
                 for pred in comp.ifs:
                     domains.append(self._bool_ctx(pred))
+            self._quantifier_context.append((tuple(binder_names), tuple(domains)))
+            pushed_context = True
             body = self.expr(gen.elt)
             if not self.spec_mode and self._eff_type(gen.elt) != "bool":
                 raise _err(gen, (
@@ -1825,6 +2345,8 @@ class _MethodEncoder:
                     "write an explicit comparison (e.g. `x > 0`)"
                 ))
         finally:
+            if pushed_context:
+                self._quantifier_context.pop()
             for raw in binder_names:
                 prev = saved_types.get(raw)
                 if prev is None:
@@ -1834,7 +2356,46 @@ class _MethodEncoder:
                 self.nonneg.discard(raw)
         quant = "forall" if kind == "all" else "exists"
         connective = "==>" if kind == "all" else "&&"
-        return f"({quant} {', '.join(binders)} :: ({' && '.join(domains)}) {connective} ({body}))"
+        expression = f"({quant} {', '.join(binders)} :: ({' && '.join(domains)}) {connective} ({body}))"
+        return self._name_input_quantifier(kind, gen, expression)
+
+    def _name_input_quantifier(self, kind, gen, expression):
+        """Share nested input-only propositions in the sweep fragment.
+
+        These are defined ghost predicates, verified under the original input
+        contracts. They avoid repeatedly skolemizing equivalent nested
+        quantifiers at a postcondition and a ghost-call argument. Local state,
+        results, old(), and executable expressions are never abstracted.
+        """
+        if (not self.spec_mode or "bisect_right" not in self.sequence_imports
+                or self._abstracting_quantifier or self._spec_clause_kind == "requires"):
+            return expression
+        nodes = list(ast.walk(gen))
+        if sum(isinstance(n, ast.GeneratorExp) for n in nodes) < 2 and not self._quantifier_context:
+            return expression
+        if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+               and n.func.id in {"old", "loop_index"} for n in nodes):
+            return expression
+        bound = {n.target.id for n in nodes if isinstance(n, ast.comprehension)
+                 and isinstance(n.target, ast.Name)}
+        used = {n.id for n in nodes if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+        # Only builtins that introduce no ambient state are ignored here.
+        free = used - bound - {"all", "any", "range", "len", "min", "max", "sum", "abs", "bool"}
+        enclosing = {n for names, _ in self._quantifier_context for n in names}
+        if not free <= self.params | enclosing:
+            return expression
+        captured = sorted(self.params | enclosing)
+        key = kind + ast.dump(gen, include_attributes=False) + repr(self._quantifier_context)
+        if key not in self.quantified_functions:
+            name = self._fresh("VSpec" + self._mangle(self.node.name))
+            args = ", ".join(f"{self._mangle(n)}: {self.types[n]}" for n in captured)
+            requirements = [*self._compiled_requirements,
+                            *[domain for _, domains in self._quantifier_context for domain in domains]]
+            declaration = [f"ghost predicate {name}({args})", *["  requires " + r for r in requirements],
+                           "{", "  " + expression, "}"]
+            self.quantified_functions[key] = (name, declaration, self._spec_clause_line)
+        name = self.quantified_functions[key][0]
+        return name + "(" + ", ".join(self._mangle(n) for n in captured) + ")"
 
     # -- specs -------------------------------------------------------------------------------
 
@@ -1842,12 +2403,18 @@ class _MethodEncoder:
         assert clause.desugared is not None
         tree = ast.parse(clause.desugared, mode="eval")
         self.spec_mode = True
+        self._spec_clause_kind = clause.kind
+        self._spec_clause_line = clause.line
         try:
-            return self.expr(tree.body)
+            expression = self.expr(tree.body)
+            if clause.kind == "requires":
+                self._compiled_requirements.append(expression)
+            return expression
         except EncodeError as exc:
             raise EncodeError(exc.message, clause.line) from exc
         finally:
             self.spec_mode = False
+            self._spec_clause_kind = None
 
     # -- hoisting analysis (Dafny block scoping vs Python function scoping) --------------------
 
@@ -1898,7 +2465,7 @@ class _MethodEncoder:
                     case ast.AnnAssign(target=ast.Name(id=name), annotation=ann, value=value):
                         record_store(name, path, value, stmt)
                         try:
-                            ann_types[name] = _dafny_type(ann, stmt)
+                            ann_types[name] = _dafny_type(ann, stmt, self.records)
                         except EncodeError:
                             pass
                         if value is not None:
@@ -1911,6 +2478,11 @@ class _MethodEncoder:
                         record_expr_loads(test, path, stmt)
                         walk(body, path + (idx, "t"))
                         walk(orelse, path + (idx, "e"))
+                    case ast.Try(body=body, handlers=handlers, orelse=orelse, finalbody=finalbody):
+                        walk(body, path + (idx, "try"))
+                        for j,handler in enumerate(handlers):walk(handler.body, path + (idx, "except", j))
+                        walk(orelse, path + (idx, "else"))
+                        walk(finalbody, path + (idx, "finally"))
                     case ast.While(test=test, body=body):
                         record_expr_loads(test, path, stmt)
                         walk(body, path + (idx, "w"))
@@ -1927,7 +2499,7 @@ class _MethodEncoder:
 
         hoisted: dict[str, str] = {}
         for name, paths in stores.items():
-            if name in self.params or name in loop_indices:
+            if name in self.params or name in loop_indices or name in getattr(self, "_managed_conversion_locals", ()):
                 continue
             all_access = paths + loads.get(name, [])
             shortest = min(paths, key=len)
@@ -2027,10 +2599,13 @@ class _MethodEncoder:
         call = tree.body
         assert isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
         self.spec_mode = True
+        self._spec_clause_kind = "proof"
+        self._spec_clause_line = clause.line
         try:
             args = ", ".join(self.expr(a) for a in call.args)
         finally:
             self.spec_mode = False
+            self._spec_clause_kind = None
         # The lemma name is Dafny-side (validated against the sidecar's
         # declared lemmas) — never mangled; ghost, so it cannot affect state.
         self.emit(f"{indent}{call.func.id}({args});", clause.line)
@@ -2135,12 +2710,30 @@ class _MethodEncoder:
             for n, v in zip(names, rhs_nodes):
                 self._update_ownership(n, v)
         else:
-            raise _err(stmt, "tuple assignment mixing new and existing variables is outside the slice-1 encoder")
+            # Declare only the new bindings, then perform one simultaneous
+            # assignment. Sequential assignments would change swaps and divmod.
+            for n, dtype in zip(names, rhs_types):
+                if n in fresh:
+                    if dtype is None:
+                        raise _err(stmt, "cannot infer the new tuple-assignment binding type")
+                    self.emit(f"{indent}var {self._mangle(n)}: {dtype};", stmt.lineno)
+                    self._declare(n)
+                    self.types.setdefault(n, dtype)
+            self.emit(f"{indent}{lhs} := {rhs};", stmt.lineno)
+            for n, value_node in zip(names, rhs_nodes):
+                self._update_ownership(n, value_node)
 
     def _update_ownership(self, name: str, rhs_node: ast.expr | None) -> None:
         """Ownership-lite: fresh allocations are appendable; aliases are not,
         and aliasing a list forfeits the source's ownership too."""
-        if isinstance(rhs_node, (ast.List, ast.ListComp)):
+        # An owned list escaping through a tuple/list/conditional must lose
+        # ownership too, not only a direct `alias = xs` binding. Conservative
+        # for read-only subexpressions; callers can keep such reads in specs.
+        if rhs_node is not None and "seq<" in (self._infer(rhs_node) or ""):
+            for n in ast.walk(rhs_node):
+                if isinstance(n, ast.Name) and self._is_seqish(self.types.get(n.id)):
+                    self.owned.discard(n.id)
+        if isinstance(rhs_node, (ast.List, ast.ListComp)) or (rhs_node is not None and self._literal_repeat(rhs_node)):
             self.owned.add(name)
             return
         self.owned.discard(name)
@@ -2262,22 +2855,160 @@ class _MethodEncoder:
     def _emit_walruses(self, expr: ast.expr, indent: str, stmt: ast.stmt) -> ast.expr:
         """Turn always-evaluated `:=` into assignments; return the
         assignment-free expression (the bound names)."""
+        if self._has_helper(expr):
+            if any(isinstance(n, ast.NamedExpr) for n in ast.walk(expr)):
+                raise _err(expr, "mixing helper calls and walrus expressions is outside the fragment")
+            return self._lower_helpers(expr, indent)
         self._reject_walrus_context(expr)
         stripped, bindings = self._strip_walruses(expr)
         self._emit_walrus_bindings(bindings, indent, stmt)
         return stripped
 
+    def _has_helper(self, node: ast.AST) -> bool:
+        return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                   and n.func.id in self.helpers for n in ast.walk(node))
+
+    def _capture_scalar(self, node: ast.expr, indent: str, want: str | None = None, *, readonly_input=False) -> ast.expr:
+        """Evaluate now, including partial-operation VCs, before later calls."""
+        got = self._infer(node)
+        if want is None and isinstance(node, ast.Constant) and node.value is None:
+            return node  # only used by Optional equality / identity comparisons
+        dtype = want or got
+        if not (_scalar_type(dtype) or readonly_input and dtype is not None and (dtype.startswith("seq<") or dtype.startswith("VRec"))):
+            raise _err(node, "helper argument/operand needs a supported value type")
+        is_none = isinstance(node, ast.Constant) and node.value is None
+        if not (got == dtype or (_opt_inner(dtype) is not None and
+                                (got == _opt_inner(dtype) or is_none)) or
+                (_opt_inner(got) is not None and _opt_inner(got) == dtype)):
+            raise _err(node, f"helper argument type {got!r} does not match {dtype!r}")
+        temp = self._fresh("call_value")
+        self.emit(f"{indent}var {temp}: {dtype} := {self._coerce(node, dtype)};", node.lineno)
+        self.types[temp] = dtype
+        return ast.copy_location(ast.Name(id=temp, ctx=ast.Load()), node)
+
+    def _lower_helpers(self, node: ast.expr, indent: str) -> ast.expr:
+        """A-normalize only eager scalar contexts, preserving Python order.
+
+        Capturing *all* earlier operands matters: hoisting just method calls
+        would reorder division/index failures relative to later calls.
+        Unsupported conditional and repeated evaluation fails closed.
+        """
+        if not self._has_helper(node):
+            return node
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in self.helpers:
+            sig = self.helpers[node.func.id]
+            a = sig.node.args
+            positional = [p.arg for p in (*a.posonlyargs, *a.args)]
+            posonly = {p.arg for p in a.posonlyargs}
+            types = dict(sig.parameters)
+            if len(node.args) > len(positional) or any(isinstance(v, ast.Starred) for v in node.args):
+                raise _err(node, "invalid helper positional argument binding")
+            # CPython evaluates positional expressions, then keyword values
+            # in written order, even when keywords reorder the formals.
+            bindings: list[tuple[str, ast.expr]] = list(zip(positional, node.args))
+            bound = {name for name, _ in bindings}
+            for kw in node.keywords:
+                if kw.arg is None or kw.arg not in types or kw.arg in posonly or kw.arg in bound:
+                    raise _err(node, "invalid helper keyword argument binding")
+                bound.add(kw.arg)
+                bindings.append((kw.arg, kw.value))
+            for name, default in _checked_defaults(sig.node).items():
+                if name not in bound:
+                    bindings.append((name, default)); bound.add(name)
+            if bound != types.keys():
+                raise _err(node, "missing helper arguments")
+            values: dict[str, ast.expr] = {}
+            for name, expr in bindings:
+                lowered = self._lower_helpers(expr, indent)
+                values[name] = self._capture_scalar(lowered, indent, types[name], readonly_input=True)
+            args = ", ".join(self.expr(values[name]) for name, _ in sig.parameters)
+            temp = self._fresh("call_result")
+            self.emit(f"{indent}var {temp}: {sig.returns};", node.lineno)
+            if sig.outcome:
+                if not hasattr(self, "_emit_error"):raise _err(node, "outcome helper requires an outcome caller")
+                error = self._fresh("call_error")
+                self.emit(f"{indent}var {error}: int;")
+                self.emit(f"{indent}{temp}, {error} := {self._mangle(node.func.id)}({args});", node.lineno)
+                self.emit(f"{indent}if {error} != 0 {{")
+                self._emit_error(error, indent + "  ")
+                self.emit(f"{indent}}}")
+            else:
+                self.emit(f"{indent}{temp} := {self._mangle(node.func.id)}({args});", node.lineno)
+            self.types[temp] = sig.returns
+            if sig.returns.startswith("seq<"):
+                # A sequence result may alias any sequence argument. Never
+                # grant ownership to it or retain ownership of possible aliases.
+                self.owned.clear()
+            return ast.copy_location(ast.Name(id=temp, ctx=ast.Load()), node)
+        result = copy.copy(node)
+        if isinstance(node, ast.BinOp):
+            result.left = self._capture_scalar(self._lower_helpers(node.left, indent), indent)
+            result.right = self._capture_scalar(self._lower_helpers(node.right, indent), indent)
+        elif isinstance(node, ast.UnaryOp):
+            result.operand = self._capture_scalar(self._lower_helpers(node.operand, indent), indent)
+        elif isinstance(node, ast.BoolOp):
+            if any(self._infer(value) != "bool" for value in node.values):
+                raise _err(node,"short-circuit helper operands must be boolean")
+            first=self._lower_helpers(node.values[0],indent)
+            temp=self._fresh("short_circuit")
+            self.emit(f"{indent}var {temp}: bool := {self.expr(first)};")
+            self.types[temp]="bool"
+            for operand in node.values[1:]:
+                self.emit(f"{indent}if {temp if isinstance(node.op,ast.And) else '!'+temp} {{")
+                value=self._lower_helpers(operand,indent+"  ")
+                self.emit(f"{indent}  {temp} := {self.expr(value)};")
+                self.emit(f"{indent}}}")
+            return ast.copy_location(ast.Name(id=temp,ctx=ast.Load()),node)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"bool", "str"} and len(node.args) == 1 and not node.keywords:
+            result.args = [self._capture_scalar(self._lower_helpers(node.args[0], indent), indent)]
+        elif isinstance(node, ast.Compare) and len(node.ops) > 1:
+            left=self._capture_scalar(self._lower_helpers(node.left,indent),indent)
+            temp=self._fresh("comparison_chain")
+            self.emit(f"{indent}var {temp}: bool := false;");self.types[temp]="bool"
+            def step(index,left,where):
+                right=self._capture_scalar(self._lower_helpers(node.comparators[index],where),where)
+                comparison=ast.copy_location(ast.Compare(left=left,ops=[node.ops[index]],comparators=[right]),node)
+                if index==len(node.ops)-1:self.emit(f"{where}{temp} := {self.expr(comparison)};")
+                else:
+                    self.emit(f"{where}if {self.expr(comparison)} {{")
+                    step(index+1,right,where+"  ")
+                    self.emit(f"{where}}}")
+            step(0,left,indent)
+            return ast.copy_location(ast.Name(id=temp,ctx=ast.Load()),node)
+        elif isinstance(node, ast.Compare) and len(node.ops) == 1:
+            result.left = self._capture_scalar(self._lower_helpers(node.left, indent), indent)
+            result.comparators = [self._capture_scalar(self._lower_helpers(node.comparators[0], indent), indent)]
+        else:
+            raise _err(node, "helper calls require eager scalar expressions; conditional, container and builtin-call contexts are outside the fragment")
+        return result
+
     def _bool_ctx(self, test: ast.expr) -> str:
         """Encode an expression used as a condition; §7.3 truthiness for
         list/str operands."""
+        if isinstance(test, ast.Call):
+            model=regex_strings.call_model(self,test)
+            if model is not None and model[0] in {"PyOpt<VRegexMatch>","PyOpt<VCharsetCapture>"}:return f"({model[1]}).PySome?"
+        if self._infer(test) in {"PyOpt<VRegexMatch>","PyOpt<VCharsetCapture>"}:return f"({self.expr(test)}).PySome?"
+        if checksum_sequences.element(self._infer(test)):
+            return f"|({self.expr(test)}).VChecksumValues| != 0"
         if self._is_seqish(self._infer(test)):
             return f"(|{self.expr(test)}| != 0)"
+        if _is_tuple(self._infer(test)):
+            return f"(var {self._fresh('tuple_truth')} := {self.expr(test)}; true)"
+        if _is_tuple(_opt_inner(self._infer(test))):
+            return f"!({self.expr(test)}).PyNone?"
+        if self._infer(test) in {'PyOpt<string>','PyOpt<bool>'}:
+            value=self.expr(test)
+            inner=f'|({value}).v| != 0' if self._infer(test)=='PyOpt<string>' else f'({value}).v'
+            return f'(({value}).PySome? && {inner})'
         if _opt_inner(self._infer(test)) is not None:
             raise _err(test, (
                 "truthiness on an Optional conflates None with falsy values "
                 "(0, empty) — write `is None` / `is not None` explicitly"
             ))
         t = self._eff_type(test)
+        if t == "int":
+            return f"({self._deopt(test)} != 0)"
         if t is not None and t != "bool":
             raise _err(test, (
                 f"truthiness on a {t}-typed value is outside the fragment — "
@@ -2292,6 +3023,10 @@ class _MethodEncoder:
         catalog's 'narrowing replayed as VCs'."""
         if want is None:
             return self.expr(node)
+        if _is_tuple(want) and isinstance(node,ast.Tuple):
+            elems=_tuple_elems(want)
+            if len(elems)!=len(node.elts):raise _err(node,'tuple arity mismatch')
+            return '('+', '.join(self._coerce(e,t) for e,t in zip(node.elts,elems))+')'
         want_inner = _opt_inner(want)
         if want_inner is not None:
             if isinstance(node, ast.Constant) and node.value is None:
@@ -2301,20 +3036,101 @@ class _MethodEncoder:
                 return self.expr(node)
             return f"PySome({self._coerce(node, want_inner)})"
         got = self._infer(node)
+        if want == "string" and got == "char":
+            return f"[{self.expr(node)}]"
         if _opt_inner(got) == want:
             return f"({self.expr(node)}).v"
         return self.expr(node)
 
+    def _key_sorted(self, node, indent):
+        if not (len(node.args) == 1 and len(node.keywords) == 1 and node.keywords[0].arg == "key"
+                and isinstance(node.args[0], ast.Call) and isinstance(node.args[0].func, ast.Name)
+                and node.args[0].func.id == "range" and len(node.args[0].args) == 1 and not node.args[0].keywords
+                and isinstance(node.keywords[0].value, ast.Lambda)):
+            raise _err(node, "keyed sorting supports range(n) with a pure integer tuple key")
+        key = node.keywords[0].value
+        if len(key.args.args) != 1 or key.args.posonlyargs or key.args.kwonlyargs or key.args.defaults or key.args.vararg or key.args.kwarg or not isinstance(key.body, ast.Tuple) or not key.body.elts:
+            raise _err(node, "sorting key requires one argument and a nonempty tuple")
+        raw = key.args.args[0].arg
+        if raw in self.types or raw in self.name_overrides or _preamble_clash(raw):
+            raise _err(node, "sorting key binder must be fresh")
+        if self._has_helper(node) or any(isinstance(n, ast.NamedExpr) for n in ast.walk(node)):
+            raise _err(node, "sorting keys must be pure and cannot call executable helpers")
+        n = node.args[0].args[0]
+        if self._infer(n) != "int":
+            raise _err(node, "range length must be an integer")
+        count = self._fresh("sort_count")
+        self.emit(f"{indent}var {count} := PyMax(0, {self.expr(n)});", node.lineno)
+        binder = self._fresh("sort_index")
+        self.types[raw] = "int"; self.name_overrides[raw] = binder
+        try:
+            chunks = []
+            for elt in key.body.elts:
+                if isinstance(elt, ast.Starred) and isinstance(elt.value, ast.GeneratorExp):
+                    gen = elt.value
+                    if len(gen.generators) != 1 or not isinstance(gen.generators[0].target, ast.Name) or gen.generators[0].is_async:
+                        raise _err(elt, "key expansion requires one pure integer generator")
+                    chunks.append(self._list_comp(gen, gen.elt, gen.generators[0], require_int_elt=True))
+                elif self._infer(elt) == "int":
+                    chunks.append("["+self.expr(elt)+"]")
+                else:
+                    raise _err(elt, "sorting keys contain only integers and integer generator expansions")
+            # The first component must exist so the proof can expose primary ordering.
+            if isinstance(key.body.elts[0], ast.Starred):
+                raise _err(key.body, "sorting key requires an explicit first integer")
+            primary = self.expr(key.body.elts[0])
+        finally:
+            self.types.pop(raw, None); self.name_overrides.pop(raw, None)
+        keys = self._fresh("sort_keys")
+        self.emit(f"{indent}var {keys}: seq<seq<int>> := seq({count}, {binder} requires 0 <= {binder} < {count} => {' + '.join(chunks)});", node.lineno)
+        self.emit(f"{indent}PySortIndexFacts(0, {keys});", node.lineno)
+        self.emit(f"{indent}PySortIndexPrimary({keys}, seq({count}, {binder} requires 0 <= {binder} < {count} => {primary}));", node.lineno)
+        return f"PySortIndexFrom(0, {keys})"
+
     def stmt(self, stmt: ast.stmt, indent: str) -> None:
+        header = stmt.test if isinstance(stmt, ast.While) else stmt.iter if isinstance(stmt, ast.For) else None
+        if header is not None and self._has_helper(header):
+            raise _err(header, "helper calls in loop headers are outside the fragment")
         for clause in self._proofs_by_stmt.pop(id(stmt), []):
             self._emit_proof(clause, indent)
         match stmt:
+            case ast.Assign(targets=[ast.Name(id=name)], value=ast.Call(func=ast.Name(id="sorted")) as call) if call.keywords:
+                value = self._key_sorted(call, indent)
+                self._assign_name(name, value, indent, stmt, ann="seq<int>")
+                # Use checked contracts after sorting; recursive definitions
+                # otherwise trigger unbounded unfolding in later quantified loops.
+                self.emit(f"{indent}hide PySortIndexFrom, PyInsertIndex, PyLexSeq, PyInsert2;")
+                return
+            case ast.Expr(value=ast.Call(func=ast.Name(id=name), args=[ast.Name(id=target), value], keywords=[])) if self.sequence_imports.get(name) == "insort" and name not in self._shadowed:
+                if target not in self.owned or target in self.frozen or self.types.get(target) != "seq<(int, int)>" or self._infer(value) != "(int, int)":
+                    raise _err(stmt, "insort requires an owned, unaliased integer-pair list outside its iteration")
+                seq, item = self._mangle(target), self.expr(value)
+                self.emit(f"{indent}PyInsert2Facts({item}, {seq});", stmt.lineno)
+                self.emit(f"{indent}{seq} := PyInsert2({item}, {seq});", stmt.lineno)
+                return
+            case ast.Delete(targets=[ast.Subscript(value=ast.Name(id=name), slice=ast.Slice(lower=None, upper=upper, step=None))]) if upper is not None:
+                if name not in self.owned or name in self.frozen or not (self.types.get(name) or "").startswith("seq<") or self._infer(upper) != "int":
+                    raise _err(stmt, "prefix deletion requires an owned list outside its iteration and an integer bound")
+                seq = self._mangle(name)
+                self.emit(f"{indent}{seq} := PySlice({seq}, {self.expr(upper)}, |{seq}|);", stmt.lineno)
+                return
             case ast.Expr(value=ast.Constant(value=str())):
                 return  # docstring
             case ast.Pass():
                 return
             case ast.Expr(value=ast.NamedExpr() as value):
                 self._emit_walruses(value, indent, stmt)
+                return
+            case ast.Expr(value=ast.Call(func=ast.Attribute(value=ast.Name(id=target), attr="sort"), args=[], keywords=[])):
+                if target not in self.owned or target in self.frozen:
+                    raise _err(stmt, "sort requires an owned, unaliased list outside its iteration")
+                dtype = self.types.get(target)
+                arity = {"seq<(int, int)>": 2, "seq<(int, int, int)>": 3}.get(dtype)
+                if arity is None:
+                    raise _err(stmt, "list.sort supports integer pairs/triples without options")
+                name = self._mangle(target)
+                self.emit(f"{indent}PySorted{arity}Facts({name});", stmt.lineno)
+                self.emit(f"{indent}{name} := PySorted{arity}({name});", stmt.lineno)
                 return
             case ast.Expr(value=ast.Call(
                 func=ast.Attribute(value=ast.Name(id=target), attr="append"),
@@ -2342,7 +3158,7 @@ class _MethodEncoder:
                 raise _err(stmt, f"method call .{method}(...) is outside the slice encoder")
             case ast.AnnAssign(target=ast.Name(id=name), annotation=ann, value=value) if value is not None:
                 value = self._emit_walruses(value, indent, stmt)
-                dtype = _dafny_type(ann, stmt)
+                dtype = _dafny_type(ann, stmt, self.records)
                 self._assign_name(name, self._coerce(value, dtype), indent, stmt, rhs_node=value, ann=dtype)
             case ast.Assign(targets=[ast.Name(id=name)], value=value):
                 value = self._emit_walruses(value, indent, stmt)
@@ -2354,10 +3170,28 @@ class _MethodEncoder:
             case ast.Assign(targets=[ast.Tuple(elts=elts)], value=value):
                 value = self._emit_walruses(value, indent, stmt)
                 self._assign_unpack(stmt, elts, value, indent)
+            case ast.AugAssign(target=ast.Subscript(value=ast.Name(id=name), slice=index), op=ast.Mult(), value=value):
+                if name not in self.owned or name in self.frozen or self.types.get(name) != "seq<int>":
+                    raise _err(stmt, "element *= requires a fresh unaliased integer list outside its iteration")
+                if not isinstance(index, (ast.Name, ast.Constant)) or any(isinstance(n, (ast.Call, ast.NamedExpr)) for n in ast.walk(value)):
+                    raise _err(stmt, "element *= requires a simple index and call-free integer RHS")
+                # AugAssign reads its target BEFORE evaluating the RHS, unlike
+                # ordinary assignment. Capture all operands before the write.
+                idx = self._capture_scalar(index, indent, "int")
+                read = ast.copy_location(ast.Subscript(value=ast.Name(id=name, ctx=ast.Load()), slice=idx, ctx=ast.Load()), stmt)
+                old = self._capture_scalar(read, indent, "int")
+                rhs = self._capture_scalar(value, indent, "int")
+                target = self._mangle(name)
+                self.emit(f"{indent}{target} := {target}[PyIndex({self.expr(idx)}, |{target}|) := {self.expr(old)} * {self.expr(rhs)}];", stmt.lineno)
             case ast.AugAssign(target=ast.Name(id=name), op=op, value=value):
                 if name in self.params:
                     raise _err(stmt, "parameter rebinding is outside the fragment (parameters are immutable)")
                 value = self._emit_walruses(value, indent, stmt)
+                if (self.types.get(name) == "int" and isinstance(op, ast.Add)
+                        and isinstance(value, (ast.Name, ast.Constant)) and self._infer(value) == "bool"):
+                    value = ast.copy_location(ast.IfExp(test=value, body=ast.Constant(value=1),
+                                                       orelse=ast.Constant(value=0)), value)
+                    ast.fix_missing_locations(value)
                 if self.types.get(name) != "int" or self._infer(value) != "int":
                     raise _err(stmt, (
                         "augmented assignment on non-int operands is outside the "
@@ -2387,7 +3221,12 @@ class _MethodEncoder:
                 # Executable in CPython, a proof hint in Dafny — the same
                 # dual role #@ specs have.
                 if msg is not None and not isinstance(msg, ast.Constant):
-                    raise _err(stmt, "assert messages must be literals (side effects)")
+                    safe = isinstance(msg,ast.Name) and self._infer(msg) in {"int","bool","string"}
+                    if isinstance(msg,ast.JoinedStr):
+                        safe=all(isinstance(p,ast.Constant) and type(p.value) is str or
+                                 isinstance(p,ast.FormattedValue) and isinstance(p.value,ast.Name) and self._infer(p.value) in {"int","bool","string"} and p.format_spec is None
+                                 for p in msg.values)
+                    if not safe:raise _err(stmt, "assert messages require literals or pure scalar formatting (side effects)")
                 test = self._emit_walruses(test, indent, stmt)
                 self.emit(f"{indent}assert {self._bool_ctx(test)};", stmt.lineno)
             case ast.If(test=test, body=body, orelse=orelse):
@@ -2438,6 +3277,23 @@ class _MethodEncoder:
                     self._for_range(stmt, indent)
                 else:
                     self._for_each(stmt, indent)
+            case ast.Assign(targets=[ast.Subscript(value=ast.Name(id=name), slice=index)], value=value) \
+                    if not isinstance(index, ast.Slice):
+                if any(isinstance(n, ast.NamedExpr) for e in (value, index) for n in ast.walk(e)):
+                    raise _err(stmt, "walrus rebinding in indexed writes is outside the fragment", rule="indexed-assignment")
+                if name not in self.owned or name in self.frozen:
+                    raise _err(stmt, "indexed writes require a fresh, unaliased local list outside its iteration", rule="indexed-assignment")
+                dtype = self.types.get(name)
+                if dtype is None or not dtype.startswith("seq<") or dtype[4:-1] not in {"int", "bool", "string"}:
+                    raise _err(stmt, "indexed writes currently support scalar list elements only", rule="indexed-assignment")
+                # Python evaluates RHS before the target index. Freeze both
+                # values before the sequence update; PyIndex emits bounds VCs.
+                value = self._emit_walruses(value, indent, stmt)
+                rhs = self._capture_scalar(value, indent, dtype[4:-1])
+                index = self._emit_walruses(index, indent, stmt)
+                idx = self._capture_scalar(index, indent, "int")
+                target = self._mangle(name)
+                self.emit(f"{indent}{target} := {target}[PyIndex({self.expr(idx)}, |{target}|) := {self.expr(rhs)}];", stmt.lineno)
             case ast.Assign(targets=[ast.Subscript()]):
                 # Reached only because the supported Assign shapes did not
                 # match. Saying "Assign is unsupported" while listing
@@ -2538,12 +3394,18 @@ class _MethodEncoder:
         if stmt.orelse:
             raise _err(stmt, "for/else is outside the fragment")
         names = self._for_each_names(stmt)
-        it = self._emit_walruses(stmt.iter, indent, stmt)
+        enumerated = (isinstance(stmt.iter, ast.Call) and isinstance(stmt.iter.func, ast.Name)
+                      and stmt.iter.func.id == "enumerate")
+        if enumerated and (len(stmt.iter.args) != 1 or stmt.iter.keywords or len(names) != 2):
+            raise _err(stmt, "enumerate requires one list and an (index, value) target")
+        it = self._emit_walruses(stmt.iter.args[0] if enumerated else stmt.iter, indent, stmt)
         it_type = self._infer(it)
         if not (it_type is not None and it_type.startswith("seq<")):
             raise _err(stmt, "for-each iterables must be list-typed (or use `for i in range(...)`)")
         elem = it_type[4:-1]
-        if len(names) > 1:
+        if enumerated:
+            bind_types = ["int", elem]
+        elif len(names) > 1:
             if not _is_tuple(elem):
                 raise _err(stmt, (
                     "destructuring `for a, b in xs` needs a list of tuples "
@@ -2564,13 +3426,18 @@ class _MethodEncoder:
                 raise _err(stmt, "the loop target may not shadow a parameter (parameters are immutable)")
             if self._declared(var):
                 raise _err(stmt, "the for-each target may not reuse an existing variable")
-        for n in ast.walk(ast.Module(body=stmt.body, type_ignores=[])):
-            if isinstance(n, ast.Name) and n.id in names and isinstance(n.ctx, ast.Store):
-                raise _err(n, "reassigning the loop target is outside the fragment")
+        # The hidden cursor, not a Python target, drives this loop. Rebinding
+        # an element target therefore does not change iteration order/extent.
+        # For enumerate, the index target remains immutable because existing
+        # invariants expose it as the hidden cursor.
+        if enumerated:
+            for n in ast.walk(ast.Module(body=stmt.body, type_ignores=[])):
+                if isinstance(n, ast.Name) and n.id == names[0] and isinstance(n.ctx, ast.Store):
+                    raise _err(n, "reassigning the enumerate index is outside the fragment")
         for clause in self._invariants_by_loop.get(id(stmt), []):
             if clause.desugared:
                 tree = ast.parse(clause.desugared, mode="eval")
-                hit = next((v for v in names
+                hit = next((v for v in (names[1:] if enumerated else names)
                             if any(isinstance(n, ast.Name) and n.id == v
                                    for n in ast.walk(tree))), None)
                 if hit is not None:
@@ -2586,9 +3453,20 @@ class _MethodEncoder:
         self.emit(f"{indent}var {snap} := {self.expr(it)};", stmt.lineno)
         self.emit(f"{indent}var {idx} := 0;", stmt.lineno)
         self.emit(f"{indent}while {idx} < |{snap}|", stmt.lineno)
+        if enumerated:
+            self.types[names[0]] = "int"
+            self.name_overrides[names[0]] = idx
+            self.nonneg.add(names[0])
+        previous_cursor = getattr(self, "iteration_cursor", None)
+        self.iteration_cursor = idx
         self._loop_clauses(stmt, indent, extra=(f"0 <= {idx} <= |{snap}|",))
+        if enumerated:
+            self.name_overrides.pop(names[0])
         self.emit(f"{indent}{{")
-        if len(names) == 1:
+        if enumerated:
+            self.emit(f"{indent}  var {self._mangle(names[0])} := {idx};", stmt.lineno)
+            self.emit(f"{indent}  var {self._mangle(names[1])} := {snap}[{idx}];", stmt.lineno)
+        elif len(names) == 1:
             mv = self._mangle(names[0])
             self.emit(f"{indent}  var {mv} := {snap}[{idx}];", stmt.lineno)
         else:
@@ -2619,12 +3497,15 @@ class _MethodEncoder:
             self._loops.pop()
             self.scopes.pop()
             self.frozen -= frozen_added
+            self.iteration_cursor = previous_cursor
         self.owned &= pre_owned
         self.emit(f"{indent}  {idx} := {idx} + 1;")
         self.emit(f"{indent}}}")
         # The target's post-loop value differs between the languages (last
         # element vs out-of-scope); reject later reads.
         self.retired.update(names)
+        if enumerated:
+            self.nonneg.discard(names[0])
 
     def _for_each_names(self, stmt: ast.For) -> list[str]:
         t = stmt.target
@@ -2657,22 +3538,29 @@ class _MethodEncoder:
     def encode(self) -> None:
         node = self.node
         a = node.args
-        if a.vararg or a.kwarg or a.defaults or any(d is not None for d in a.kw_defaults):
-            # NB: kw_defaults is [None, ...] for defaultless keyword-only
-            # params — those are ordinary fragment parameters, not defaults.
-            raise _err(node, "varargs/defaults are outside the fragment")
+        _checked_defaults(node)
         for p in (*a.posonlyargs, *a.args, *a.kwonlyargs):
-            self.types[p.arg] = _dafny_type(p.annotation, p)
-        self.return_type = _dafny_type(node.returns, node)
+            self.types[p.arg] = _dafny_type(p.annotation, p, self.records)
+        self.return_type = _dafny_type(node.returns, node, self.records)
         self.hoisted = self._hoist_analysis()
         params = ", ".join(
             f"{self._mangle(p.arg)}: {self.types[p.arg]}"
             for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)
         )
-        self.emit(f"method {self._mangle(node.name)}({params}) returns (result: {self.return_type})", node.lineno)
+        # Mutable-list loops combine quantified functional and bounds VCs.
+        # Isolating assertions is a prover scheduling choice, not an assumption
+        # or a change to the generated executable semantics.
+        isolate = "{:isolate_assertions} " if any(
+            (isinstance(n, ast.Assign) and any(isinstance(t, ast.Subscript) for t in n.targets))
+            or (isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "bisect_right")
+            for n in ast.walk(node)) else ""
+        if self.spec.by_kind("ghost_ensures"):isolate = "{:isolate_assertions} "
+        self.emit(f"method {isolate}{self._mangle(node.name)}({params}) returns (result: {self.return_type})", node.lineno)
         for clause in self.spec.by_kind("requires"):
             self.emit(f"  requires {self.spec_expr(clause)}", clause.line)
         for clause in self.spec.by_kind("ensures"):
+            self.emit(f"  ensures {self.spec_expr(clause)}", clause.line)
+        for clause in self.spec.by_kind("ghost_ensures"):
             self.emit(f"  ensures {self.spec_expr(clause)}", clause.line)
         self.emit("{")
         for name, dtype in self.hoisted.items():
@@ -2688,6 +3576,7 @@ class EncodedModule:
     dafny_source: str
     line_map: dict[int, int]  # 1-based dafny line -> python line
     methods: list[str]
+    method_names: dict[str, str] = field(default_factory=dict)
 
 
 def _module_shadow_check(module: ast.Module) -> None:
@@ -2889,6 +3778,39 @@ def _collect_math_imports(
     return math_names, frozenset(aliases), math_other
 
 
+def _sequence_imports(module):
+    result = {}
+    for n in module.body:
+        if isinstance(n, ast.Import) and any(a.name == "sys" for a in n.names):
+            if len(n.names) != 1 or n.names[0].asname:
+                raise _err(n, "sys import must be unaliased")
+            result["sys"] = "sys"
+        elif isinstance(n, ast.ImportFrom) and n.module == "bisect":
+            if n.level or any(a.asname or a.name not in {"bisect_right", "insort"} for a in n.names):
+                raise _err(n, "bisect imports permit only unaliased bisect_right and insort")
+            result.update((a.name,a.name) for a in n.names)
+    if result:
+        for n in module.body:
+            if isinstance(n, (ast.Import, ast.ImportFrom)):
+                for a in n.names:
+                    bound = (a.asname or a.name).split(".")[0]
+                    if a.name == "*":
+                        raise _err(n, "star imports can shadow sequence intrinsics")
+                    expected = (isinstance(n, ast.Import) and a.name == "sys" and not a.asname
+                                or isinstance(n, ast.ImportFrom) and n.module == "bisect"
+                                and n.level == 0 and a.name in {"bisect_right", "insort"} and not a.asname)
+                    if bound in result and not expected:
+                        raise _err(n, "import shadows a sequence intrinsic")
+                continue
+            if isinstance(n, ast.ClassDef) and n.name not in result:
+                continue
+            if isinstance(n, ast.FunctionDef) and n.name not in result:
+                continue
+            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str):
+                continue
+            raise _err(n, "sequence intrinsics require a closed module without rebinding")
+    return result
+
 def encode_module(
     source: str,
     specs: ModuleSpecs,
@@ -2900,6 +3822,14 @@ def encode_module(
         raise EncodeError(f"spec error: {first.error}", first.line)
     module = ast.parse(source)
     _module_shadow_check(module)
+    from veripy.backends.dafny.environment import resolve_for_encoder, EnvironmentError
+    try:
+        environment = resolve_for_encoder(module)
+    except EnvironmentError as exc:
+        raise EncodeError(exc.message, exc.line, "module-environment") from exc
+    module = environment.module
+    from veripy.frontend.fixed_loops import lower_fixed_loops
+    module = lower_fixed_loops(module, specs)
     math_names, math_aliases, math_other = _collect_math_imports(module)
     all_defs = [n for n in ast.walk(module) if isinstance(n, ast.FunctionDef)]
     seen_names: dict[str, int] = {}
@@ -2919,31 +3849,77 @@ def encode_module(
                 f"{spec.name!r} is a nested function — only module-level "
                 f"functions are in the fragment (a closure's environment "
                 f"has no Dafny model)", spec.lineno)
+    try:
+        records = record_schemas(module)
+    except RecordError as exc:
+        raise EncodeError(str(exc), exc.line) from exc
+    if records:
+        specified_names = {s.name for s in specs.functions}
+        for node in module.body:
+            if isinstance(node, ast.FunctionDef) and node.name not in specified_names:
+                raise _err(node, "all functions in a record module must be explicitly specified")
+    helpers = _helper_signatures(module, specs, records)
+    from veripy.backends.dafny import http_lists
+    try:
+        http_models = http_lists.imports(module)
+        percent_models = percent_decoding.imports(module)
+    except ValueError as exc:raise EncodeError(str(exc), None) from exc
     header = [
         f"// Generated by `veripy verify` -- DO NOT EDIT the stub (source: {module_name})",
         "// Proof additions belong below the STUB END marker (additions-only discipline).",
         "",
         *PREAMBLE.splitlines(),
+        *(unicode_strings.preamble().splitlines() if unicode_strings.needed(module) or environment.regex_models else []),
+        *(regex_strings.PREAMBLE.splitlines() if environment.regex_models else []),
+        *(http_lists.PREAMBLE.splitlines() if http_models else []),
+        *(percent_decoding.PREAMBLE.splitlines() if percent_models else []),
         "",
     ]
+    for name, fields in records.items():
+        args = ", ".join(f"{record_field(f)}: {_dafny_type(t, t, records)}" for f, t in fields)
+        header.append(f"datatype {record_type(name)} = {record_constructor(name)}({args})")
     lines: list[str] = list(header)
     line_map: dict[int, int] = {}
     methods: list[str] = []
+    method_names: dict[str, str] = {}
+    reserved_names = frozenset(
+        n.id if isinstance(n, ast.Name) else n.arg if isinstance(n, ast.arg) else n.name
+        for n in ast.walk(module) if isinstance(n, (ast.Name, ast.arg, ast.FunctionDef))
+    )
+    encoders: list[_MethodEncoder] = []
     for spec in specs.functions:
         node = functions.get((spec.name, spec.lineno))
         if node is None:
             raise EncodeError(f"cannot locate function {spec.name!r}", spec.lineno)
+        node, spec = _localize_scalar_parameters(node, spec, reserved_names)
         enc = _MethodEncoder(
             node, spec, proof_lemmas, source_lines=source.split("\n"),
             math_names=math_names, math_aliases=math_aliases,
-            math_other=math_other,
+            math_other=math_other, reserved_names=reserved_names, helpers=helpers, records=records,
+            sequence_imports=_sequence_imports(module), module_values=environment.values, regex_models=environment.regex_models, newtypes=environment.newtypes, casts=environment.casts, exceptions=environment.exceptions,
         )
+        encoders.append(enc)
+    # Callee references and definitions must use the same mapping, including
+    # collisions introduced only by another function's proof annotations.
+    if helpers:
+        all_names = set().union(*(enc.used_names for enc in encoders))
+        for enc in encoders:
+            enc.used_names.update(all_names)
+            enc.mangle_map = enc._build_mangle_map()
+    for enc in encoders:
+        spec = enc.spec
         enc.encode()
+        method_names[spec.name] = enc._mangle(spec.name)
         offset = len(lines)
         lines.extend(enc.lines)
         lines.append("")
         for idx, py_line in enc.line_map.items():
             line_map[offset + idx + 1] = py_line  # 1-based dafny lines
         methods.append(spec.name)
+        for _, declaration, py_line in enc.quantified_functions.values():
+            for declaration_line in declaration:
+                lines.append(declaration_line)
+                line_map[len(lines)] = py_line
+            lines.append("")
     lines.append("// ---- STUB END: proof additions (lemmas, asserts) go below ----")
-    return EncodedModule("\n".join(lines) + "\n", line_map, methods)
+    return EncodedModule("\n".join(lines) + "\n", line_map, methods, method_names)

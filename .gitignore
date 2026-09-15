@@ -11,7 +11,63 @@ docs/PAPER-OUTLINE.md
 
 # Paper prep — private, not for publication.
 docs/PAPER-RELATED-WORK.md
+/paper/
 
 # Local tool state (forall-core workspace), not project source.
 .forall/
 dist/
+
+# Generated outputs and local recovery snapshots.
+output/
+tmp/
+.DS_Store
+*.pyc
+*.pyo
+.mypy_cache/
+.ruff_cache/
+.cache/
+.tox/
+.nox/
+.lake/
+.ipynb_checkpoints/
+node_modules/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Paper build/review snapshots are preserved in the dated research attachments.
+# Keep compact top-level evidence JSON/Markdown and paper figure sources visible.
+/paper/evidence/*/
+
+# LaTeX build intermediates. Source, figures and proof inputs remain visible.
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.synctex
+*.toc
+*.lof
+*.lot
+*.bcf
+*.run.xml
+*.nav
+*.snm
+*.vrb
+*.xdv
+*.dvi
+*.idx
+*.ind
+*.ilg
+*.loa
+*.lol
+*.glo
+*.gls
+*.glg
+*.acn
+*.acr
+*.alg

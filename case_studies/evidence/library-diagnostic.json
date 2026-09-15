@@ -1,0 +1,55 @@
+{
+  "schema": "veripy-public-library-diagnostic-description/1",
+  "primary_packaging": {
+    "reuse": {
+      "trials": 4,
+      "joint_proofs": 4,
+      "responses": 4
+    },
+    "rebuild": {
+      "trials": 4,
+      "joint_proofs": 0,
+      "responses": 12
+    }
+  },
+  "with_public_regex_information": {
+    "reuse": {
+      "trials": 4,
+      "joint_proofs": 4,
+      "responses": 4,
+      "valid_submissions": 4,
+      "statuses": {
+        "proved": 4
+      },
+      "with_old_support_contrast": {
+        "trials": 4,
+        "joint_proofs": 4
+      }
+    },
+    "rebuild": {
+      "trials": 4,
+      "joint_proofs": 4,
+      "responses": 4,
+      "valid_submissions": 4,
+      "statuses": {
+        "proved": 4
+      },
+      "with_old_support_contrast": {
+        "trials": 4,
+        "joint_proofs": 4
+      }
+    }
+  },
+  "model_calls": 9,
+  "usage": {
+    "input_tokens": 124852,
+    "cached_input_tokens": 90112,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 8038,
+    "reasoning_output_tokens": 532
+  },
+  "actual_cost_usd": null,
+  "public_definitions_sha256": "321937883f899f9f9ebe56b8a54cff9284bb857a02ff5563220b9c7aab800e2a",
+  "scope": "Post-hoc follow-up on two previously evaluated transformations of one function. Exact public regex definitions and the substitution lowering are added to both arms. No private old lemma is added to rebuild. Sources, specifications, budgets, model, typing, checker and feedback are unchanged.",
+  "interpretation": "The original Packaging completion gap disappears in this diagnostic. The primary treatment bundled proof material with backend API information. These observations do not isolate a general lemma-reuse effect and are not an unseen cohort or a replacement score."
+}

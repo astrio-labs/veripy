@@ -1,0 +1,104 @@
+{
+  "version": "2026-09-14",
+  "status": "passed",
+  "catalog_sha256": "21a68882e6efd913521458c9408c6370dd1c7a3da2c3dc469be88158dc593966",
+  "archive_verification": {
+    "status": "passed",
+    "version": "2026-09-14",
+    "archives": 3,
+    "file_inventory_checked": true,
+    "members_checked": 41273
+  },
+  "frozen_artifact_integrity": "check_artifact.py passed in Python 3.12.2; source, compiler and Python-boundary checks matched",
+  "recomputed_counts": {
+    "controlled-01": {
+      "reuse": {
+        "trials": 24,
+        "joint_proofs": 14,
+        "first_response_proofs": 12,
+        "responses": 34
+      },
+      "rebuild": {
+        "trials": 24,
+        "joint_proofs": 10,
+        "first_response_proofs": 5,
+        "responses": 46
+      }
+    },
+    "library-diagnostic-01": {
+      "reuse": {
+        "trials": 4,
+        "joint_proofs": 4,
+        "first_response_proofs": 4,
+        "responses": 4
+      },
+      "rebuild": {
+        "trials": 4,
+        "joint_proofs": 4,
+        "first_response_proofs": 4,
+        "responses": 4
+      }
+    },
+    "historical": {
+      "proved-compatible": 4,
+      "inconclusive": 1,
+      "counterexample-found": 1,
+      "unsupported": 4
+    }
+  },
+  "fresh_saved_candidate_replay": {
+    "scope": "Two selected bundles from the 36-bundle frozen replay, one expected success and one expected failure. No new model calls. This is not a rerun of every experiment.",
+    "complete": true,
+    "model_calls": 0,
+    "all_match": true,
+    "rows": [
+      {
+        "bundle": "000",
+        "matches": true,
+        "expected": {
+          "status": "ok",
+          "functional_proved": true,
+          "compatible_proved": true,
+          "compatibility_status": "proved-compatible"
+        },
+        "observed": {
+          "status": "ok",
+          "functional_proved": true,
+          "compatible_proved": true,
+          "compatibility_status": "proved-compatible"
+        }
+      },
+      {
+        "bundle": "001",
+        "matches": true,
+        "expected": {
+          "status": "failed",
+          "functional_proved": false,
+          "compatible_proved": false,
+          "compatibility_status": "inconclusive"
+        },
+        "observed": {
+          "status": "failed",
+          "functional_proved": false,
+          "compatible_proved": false,
+          "compatibility_status": "inconclusive"
+        }
+      }
+    ]
+  },
+  "targeted_tests": {
+    "command": "python -m pytest tests/tools tests/cli -q --tb=short",
+    "passed": 40,
+    "failed": 0
+  },
+  "git_hygiene": {
+    "tracked_ignored_files": 0,
+    "indexed_blobs_over_10_MiB": 0,
+    "visible_untracked_files_over_10_MiB": 0,
+    "ignore_rule_probes": "passed"
+  },
+  "protected_manuscript_submission_files_unchanged": 224,
+  "publication_status": "prepared-locally",
+  "committed": false,
+  "pushed": false
+}

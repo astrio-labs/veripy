@@ -1,0 +1,540 @@
+[
+  {
+    "id": "black",
+    "function": "is_valid_line_range",
+    "domain": "Exact tuple of two exact integers, all values; boolean return.",
+    "before_status": "proved-compatible",
+    "executable_change": true,
+    "old_commit": "bdcad23abeb99dee53af0c511b9fd49b0354b28e",
+    "new_commit": "6409f0a51b7bf081ea60a21b21292cfe572fefdc",
+    "status": "proved-compatible",
+    "backend": "dafny",
+    "functions": [
+      "is_valid_line_range",
+      "is_valid_line_range"
+    ],
+    "scope": "typed value equality and modeled exception class under stable explicit dependencies; equal literal defaults and parameter kinds include omitted arguments; excludes exception messages, identity, resources and whole-repository compatibility",
+    "inputs": {
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/black/execution/old.py": "8b4dc313b8366ca984046cdeca8ec7ba391c3dcaf1f2f6da4e607c3381a2235d",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/black/execution/new.py": "45435a4e23d4711c96ec2c2dd3f39e98c90b4167b380238d3878e320758c3991"
+    },
+    "proof": {
+      "ok": true,
+      "summary": "finished with 125 verified, 0 error",
+      "error": null,
+      "artifact_sha256": "7087cbddb17822c6951470f3194ee30855fc912f67bf4377fdd36ada1ea5c4b1",
+      "prover": "4.11.0"
+    },
+    "environments": [
+      {
+        "constants": {},
+        "dependencies": [],
+        "newtypes": {},
+        "exceptions": {},
+        "regex_models": []
+      },
+      {
+        "constants": {},
+        "dependencies": [],
+        "newtypes": {},
+        "exceptions": {},
+        "regex_models": []
+      }
+    ],
+    "signature": [
+      [
+        [
+          "lines",
+          [
+            "tuple",
+            "int",
+            "int"
+          ],
+          "positional-or-keyword"
+        ]
+      ],
+      "bool",
+      [
+        [],
+        []
+      ]
+    ],
+    "reason": "Both bodies, all sidecars, input admission and observable equality verified together.",
+    "replay": {
+      "admitted_samples": 100,
+      "reason": "bounded replay found no difference; this is not a proof"
+    },
+    "seconds": 12.475899207987823
+  },
+  {
+    "id": "django",
+    "function": "int_to_base36",
+    "domain": "Exact integers on Python 3; base36 strings or ValueError class; unreachable six.PY2 branch removed with structural audit.",
+    "before_status": "proved-compatible",
+    "executable_change": true,
+    "old_commit": "5cba975d26d10ff5d85e123fb2084671a009cc9b",
+    "new_commit": "2508be35ca8bc5440b93d3152cd80ee5f8e159e3",
+    "status": "proved-compatible",
+    "backend": "dafny-outcomes",
+    "functions": [
+      "int_to_base36",
+      "int_to_base36"
+    ],
+    "scope": "typed value equality and modeled exception class under stable explicit dependencies; equal literal defaults and parameter kinds include omitted arguments; excludes exception messages, identity, resources and whole-repository compatibility",
+    "inputs": {
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/django/execution/old.py": "b94ef22f297b2d6cc7a2f9f1fbe2c8228dcbdc42aa0044517527bd60ec662a43",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/django/execution/old.proofs.dfy": "881b1f635f93cd71ca4adc2e5f1051f3136179a80b36c1d572d7f12787a94f97",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/django/execution/new.py": "c435c5fb7f9fffea259a04aa81c0f24b259710244112422970ff62042a124341",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/django/execution/new.proofs.dfy": "a58f2adddf53f1fc33e22b677fe905121f7832e218df6ba096acec6c995b9aef",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/django/execution/relation-input.dfy": "1efcf634ff000b05dd4f4b6886ea8fc8709007cfa426f13f0d59edee145d647b"
+    },
+    "proof": {
+      "ok": true,
+      "summary": "finished with 267 verified, 0 error",
+      "error": null,
+      "artifact_sha256": "7be988d11c72a3f3acd525b6de5efeae893eda85e9736e89429147a596b5bc14",
+      "prover": "4.11.0"
+    },
+    "environments": [
+      {
+        "constants": {},
+        "dependencies": [],
+        "newtypes": {},
+        "exceptions": {},
+        "regex_models": []
+      },
+      {
+        "constants": {},
+        "dependencies": [],
+        "newtypes": {},
+        "exceptions": {},
+        "regex_models": []
+      }
+    ],
+    "signature": [
+      [
+        [
+          "i",
+          "int",
+          "positional-or-keyword"
+        ]
+      ],
+      "str",
+      [
+        [],
+        []
+      ]
+    ],
+    "reason": "Both bodies, all sidecars, input admission and observable equality verified together.",
+    "replay": {
+      "admitted_samples": 11,
+      "reason": "bounded replay found no difference; this is not a proof"
+    },
+    "seconds": 18.277122083934955
+  },
+  {
+    "id": "cpython",
+    "function": "_days_before_year",
+    "domain": "Exact positive integers year >= 1; integer return. Other calendar helpers and round trips are outside this relational verdict.",
+    "before_status": "proved-compatible",
+    "executable_change": false,
+    "old_commit": "60403a5409ff2c3f3b07dd2ca91a7a3e096839c7",
+    "new_commit": "ebf955df7a89ed0c7968f79faec1de49f61ed7cb",
+    "status": "proved-compatible",
+    "backend": "dafny",
+    "functions": [
+      "_days_before_year",
+      "_days_before_year"
+    ],
+    "scope": "typed value equality and modeled exception class under stable explicit dependencies; equal literal defaults and parameter kinds include omitted arguments; excludes exception messages, identity, resources and whole-repository compatibility",
+    "inputs": {
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/cpython/execution/old.py": "37f0e693aab96a99dd2c1bdbdc93447f3b04b2018a843591bfdaf33333de9aed",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/cpython/execution/new.py": "37f0e693aab96a99dd2c1bdbdc93447f3b04b2018a843591bfdaf33333de9aed"
+    },
+    "proof": {
+      "ok": true,
+      "summary": "finished with 127 verified, 0 error",
+      "error": null,
+      "artifact_sha256": "b388fcb93facc0896331abe1b02a9eb3cb6b1cca6443cd8453ab047487cc51bd",
+      "prover": "4.11.0"
+    },
+    "environments": [
+      {
+        "constants": {},
+        "dependencies": [],
+        "newtypes": {},
+        "exceptions": {},
+        "regex_models": []
+      },
+      {
+        "constants": {},
+        "dependencies": [],
+        "newtypes": {},
+        "exceptions": {},
+        "regex_models": []
+      }
+    ],
+    "signature": [
+      [
+        [
+          "year",
+          "int",
+          "positional-or-keyword"
+        ]
+      ],
+      "int",
+      [
+        [],
+        []
+      ]
+    ],
+    "reason": "Both bodies, all sidecars, input admission and observable equality verified together.",
+    "replay": {
+      "admitted_samples": 8,
+      "reason": "bounded replay found no difference; this is not a proof"
+    },
+    "seconds": 12.468382584047504
+  },
+  {
+    "id": "stdnum",
+    "function": "checksum",
+    "domain": "Exact Unicode-scalar strings number and alphabet with len(alphabet)>1, including omitted default alphabet; integer return or exception class.",
+    "before_status": "unsupported",
+    "executable_change": false,
+    "old_commit": "d66998e6c6af5852b2761060c12c1a48a1c167ec",
+    "new_commit": "52d316200c347b4f3d2b61a77ce746f3d28a3815",
+    "status": "inconclusive",
+    "backend": "dafny-outcomes",
+    "functions": [
+      "checksum",
+      "checksum"
+    ],
+    "scope": "typed value equality and modeled exception class under stable explicit dependencies; equal literal defaults and parameter kinds include omitted arguments; excludes exception messages, identity, resources and whole-repository compatibility",
+    "inputs": {
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/stdnum/execution/old.py": "440793a9306425ad6a159a34ececf186155bd6a969e9d7dfd884dfbec18038d7",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/stdnum/execution/new.py": "440793a9306425ad6a159a34ececf186155bd6a969e9d7dfd884dfbec18038d7"
+    },
+    "proof": {
+      "ok": false,
+      "summary": "finished with 144 verified, 2 error",
+      "error": null,
+      "artifact_sha256": "03b9d9312b7ecbb4e8d3e3d02c41f699a8ae7dbef6695f24218ba62d90468dce",
+      "prover": "4.11.0"
+    },
+    "environments": [
+      {
+        "constants": {},
+        "dependencies": [
+          {
+            "module": "stdnum.exceptions",
+            "symbol": "ValidationError",
+            "binding": "ValidationError",
+            "relative_level": 0,
+            "line": 1,
+            "resolution": "encoder-model",
+            "model": "validated ValueError subclass hierarchy",
+            "executed_by_resolver": false
+          },
+          {
+            "module": "stdnum.exceptions",
+            "symbol": "InvalidFormat",
+            "binding": "InvalidFormat",
+            "relative_level": 0,
+            "line": 1,
+            "resolution": "encoder-model",
+            "model": "validated ValueError subclass hierarchy",
+            "executed_by_resolver": false
+          },
+          {
+            "module": "stdnum.exceptions",
+            "symbol": "InvalidChecksum",
+            "binding": "InvalidChecksum",
+            "relative_level": 0,
+            "line": 1,
+            "resolution": "encoder-model",
+            "model": "validated ValueError subclass hierarchy",
+            "executed_by_resolver": false
+          }
+        ],
+        "newtypes": {},
+        "exceptions": {
+          "ValidationError": "ValueError",
+          "InvalidFormat": "ValidationError",
+          "InvalidChecksum": "ValidationError"
+        },
+        "regex_models": []
+      },
+      {
+        "constants": {},
+        "dependencies": [
+          {
+            "module": "stdnum.exceptions",
+            "symbol": "ValidationError",
+            "binding": "ValidationError",
+            "relative_level": 0,
+            "line": 1,
+            "resolution": "encoder-model",
+            "model": "validated ValueError subclass hierarchy",
+            "executed_by_resolver": false
+          },
+          {
+            "module": "stdnum.exceptions",
+            "symbol": "InvalidFormat",
+            "binding": "InvalidFormat",
+            "relative_level": 0,
+            "line": 1,
+            "resolution": "encoder-model",
+            "model": "validated ValueError subclass hierarchy",
+            "executed_by_resolver": false
+          },
+          {
+            "module": "stdnum.exceptions",
+            "symbol": "InvalidChecksum",
+            "binding": "InvalidChecksum",
+            "relative_level": 0,
+            "line": 1,
+            "resolution": "encoder-model",
+            "model": "validated ValueError subclass hierarchy",
+            "executed_by_resolver": false
+          }
+        ],
+        "newtypes": {},
+        "exceptions": {
+          "ValidationError": "ValueError",
+          "InvalidFormat": "ValidationError",
+          "InvalidChecksum": "ValidationError"
+        },
+        "regex_models": []
+      }
+    ],
+    "signature": [
+      [
+        [
+          "number",
+          "str",
+          "positional-or-keyword"
+        ],
+        [
+          "alphabet",
+          "str",
+          "positional-or-keyword"
+        ]
+      ],
+      "int",
+      [
+        [
+          "Constant(value='0123456789')"
+        ],
+        []
+      ]
+    ],
+    "reason": "Product proof failed or exceeded budget; proof failure is not a behavioral difference.",
+    "replay": {
+      "reason": "native replay requires function-only modules"
+    },
+    "seconds": 17.968019084073603
+  },
+  {
+    "id": "werkzeug",
+    "function": "quote_etag",
+    "domain": "Exact Unicode-scalar strings and exact bool weak, including omitted weak=False; string return or ValueError class. Parser and ETags object state excluded.",
+    "before_status": "unsupported",
+    "executable_change": false,
+    "old_commit": "6389612fd1ee1bd93579eed5026e8fd471d04abd",
+    "new_commit": "c1a26b45fb06d5e086b4d6be820c3302f588d815",
+    "status": "proved-compatible",
+    "backend": "dafny-outcomes",
+    "functions": [
+      "quote_etag",
+      "quote_etag"
+    ],
+    "scope": "typed value equality and modeled exception class under stable explicit dependencies; equal literal defaults and parameter kinds include omitted arguments; excludes exception messages, identity, resources and whole-repository compatibility",
+    "inputs": {
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/werkzeug/execution/old.py": "8da4a048bf30c474b6fa35c2e5485d3c24a86fcbd21bd827aef5b1bf73af08aa",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/werkzeug/execution/old.proofs.dfy": "181f85970b997a4bfce3d48e4662d4236b152251b85e53a433037536026a57cf",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/werkzeug/execution/new.py": "8da4a048bf30c474b6fa35c2e5485d3c24a86fcbd21bd827aef5b1bf73af08aa",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/werkzeug/execution/new.proofs.dfy": "181f85970b997a4bfce3d48e4662d4236b152251b85e53a433037536026a57cf",
+      "/Users/naingoolwin/Desktop/veripy/case_studies/compatibility_v2/run-03/werkzeug/execution/relation-input.dfy": "443d43c9923555dd89393148421f2e2ee143a2273304d788dc8e06f29c32c50d"
+    },
+    "proof": {
+      "ok": true,
+      "summary": "finished with 154 verified, 0 error",
+      "error": null,
+      "artifact_sha256": "28fd78b58d26df8f740bdbe73de3a5d7d50ffd0a688b3af35c2a9b77ac6525f6",
+      "prover": "4.11.0"
+    },
+    "environments": [
+      {
+        "constants": {},
+        "dependencies": [],
+        "newtypes": {},
+        "exceptions": {},
+        "regex_models": []
+      },
+      {
+        "constants": {},
+        "dependencies": [],
+        "newtypes": {},
+        "exceptions": {},
+        "regex_models": []
+      }
+    ],
+    "signature": [
+      [
+        [
+          "etag",
+          "str",
+          "positional-or-keyword"
+        ],
+        [
+          "weak",
+          "bool",
+          "positional-or-keyword"
+        ]
+      ],
+      "str",
+      [
+        [
+          "Constant(value=False)"
+        ],
+        []
+      ]
+    ],
+    "reason": "Both bodies, all sidecars, input admission and observable equality verified together.",
+    "replay": {
+      "admitted_samples": 10,
+      "reason": "bounded replay found no difference; this is not a proof"
+    },
+    "seconds": 12.67629366600886
+  },
+  {
+    "id": "packaging",
+    "function": "canonicalize_name",
+    "domain": "Exact Unicode-scalar strings with bool validate, including its keyword-only default; string return or InvalidName class.",
+    "before_status": "counterexample-found",
+    "executable_change": true,
+    "old_commit": "f58537628042c7f29780b9d33f31597e7fc9d664",
+    "new_commit": "3b77a26f5a27473ad3b08194d773f325d018a2d0",
+    "status": "counterexample-found",
+    "witnesses": [
+      {
+        "arguments": {
+          "name": "ΟΣ.Α",
+          "validate": false
+        },
+        "old": {
+          "return": "ος-α"
+        },
+        "new": {
+          "return": "οσ-α"
+        }
+      },
+      {
+        "arguments": {
+          "name": "ΟΣ..Α",
+          "validate": false
+        },
+        "old": {
+          "return": "ος-α"
+        },
+        "new": {
+          "return": "οσ-α"
+        }
+      },
+      {
+        "arguments": {
+          "name": "foo\n",
+          "validate": true
+        },
+        "old": {
+          "return": "foo\n"
+        },
+        "new": {
+          "exception": "InvalidName"
+        }
+      }
+    ],
+    "reason": "Exact pinned dependency closures disagree on returned string or exception class.",
+    "python": "3.12.2"
+  },
+  {
+    "id": "pypng",
+    "function": "undo_filter_paeth",
+    "domain": "Exact equal-length bytearrays, positive integer filter_unit; result may alias scanline, previous distinct from both; None return and all argument buffer poststates.",
+    "before_status": "unsupported",
+    "executable_change": false,
+    "old_commit": "0dfbfda89e59e592a1cb299ee79af3e6e22d72a1",
+    "new_commit": "4632d79ce419299398c2d540f2fe0e09e1480e3f",
+    "status": "unsupported",
+    "backend": "dafny-buffers",
+    "functions": [
+      "undo_filter_paeth",
+      "undo_filter_paeth"
+    ],
+    "scope": "typed value equality and modeled exception class under stable explicit dependencies; equal literal defaults and parameter kinds include omitted arguments; excludes exception messages, identity, resources and whole-repository compatibility",
+    "inputs": {},
+    "proof": {},
+    "reason": "comparison supports dafny and dafny-outcomes only",
+    "seconds": 0.1972217079019174
+  },
+  {
+    "id": "sglang",
+    "function": "page_aligned_decode_alloc_lens",
+    "domain": "Stable nested integer request snapshots; 0<=committed<=allocated, reserve>=0, page_size>0; ordered length lists and total logical increment.",
+    "before_status": "unsupported",
+    "executable_change": false,
+    "old_commit": "6916ffc4cba5f6b97a10d7ab07358e8e21b3129e",
+    "new_commit": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+    "status": "unsupported",
+    "backend": "dafny",
+    "functions": [
+      "page_aligned_decode_alloc_lens",
+      "page_aligned_decode_alloc_lens"
+    ],
+    "scope": "typed value equality and modeled exception class under stable explicit dependencies; equal literal defaults and parameter kinds include omitted arguments; excludes exception messages, identity, resources and whole-repository compatibility",
+    "inputs": {},
+    "proof": {},
+    "reason": "comparison boundaries support int, bool, str, lists and fixed tuples only",
+    "seconds": 0.1511651249602437
+  },
+  {
+    "id": "pytorch",
+    "function": "_check_shard_metadata_pair_overlap",
+    "domain": "Stable ShardMetadata snapshots with equal ranks and positive integer sizes; exact integer offsets; boolean overlap return. No tensors or distributed execution.",
+    "before_status": "unsupported",
+    "executable_change": false,
+    "old_commit": "08187d9e0fba026dc8217405802ab5381dc88d90",
+    "new_commit": "2b3ec34829036a65cd9d1398ea72a0167dc37470",
+    "status": "unsupported",
+    "backend": "dafny",
+    "functions": [
+      "_check_shard_metadata_pair_overlap",
+      "_check_shard_metadata_pair_overlap"
+    ],
+    "scope": "typed value equality and modeled exception class under stable explicit dependencies; equal literal defaults and parameter kinds include omitted arguments; excludes exception messages, identity, resources and whole-repository compatibility",
+    "inputs": {},
+    "proof": {},
+    "reason": "comparison boundaries support int, bool, str, lists and fixed tuples only",
+    "seconds": 0.11972224991768599
+  },
+  {
+    "id": "vllm",
+    "function": "_approximate_gcd",
+    "domain": "Exact integer lists and exact integer-or-None keyword-only lower_bound including its default; integer result or ValueError class; no cache-manager or GPU claim.",
+    "before_status": "unsupported",
+    "executable_change": false,
+    "old_commit": "74c96922ecb9017f413318c76d1af83aa2ab45a5",
+    "new_commit": "98dff2a81d747d1dba01a47f939f48c3526d4206",
+    "status": "unsupported",
+    "backend": "dafny-outcomes",
+    "functions": [
+      "_approximate_gcd",
+      "_approximate_gcd"
+    ],
+    "scope": "typed value equality and modeled exception class under stable explicit dependencies; equal literal defaults and parameter kinds include omitted arguments; excludes exception messages, identity, resources and whole-repository compatibility",
+    "inputs": {},
+    "proof": {},
+    "reason": "comparison boundaries support int, bool, str, lists and fixed tuples only",
+    "seconds": 0.13945904199499637
+  }
+]

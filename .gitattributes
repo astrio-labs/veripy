@@ -1,0 +1,4 @@
+# Provenance-bound case-study inputs retain their original trailing blank lines.
+case_studies/** whitespace=-blank-at-eof
+# Preserve the complete upstream license byte for byte, including whitespace.
+case_studies/stdnum/LICENSE -whitespace

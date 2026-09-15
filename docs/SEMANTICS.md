@@ -1,226 +1,198 @@
-# Fragment Semantics — big-step rules and the simulation statement
+# Component semantics
 
-> **Status: v1 fragment, preamble 0.7.** This is the paper-style companion to
-> the lowering catalog ([ARCHITECTURE.md §7](ARCHITECTURE.md)): a big-step
-> operational semantics for the verified fragment and the statement of the
-> simulation claim the encoder is built to preserve. It is **not mechanized**;
-> the translation-validation harness (§6, `veripy difftest`) is the standing
-> empirical check of exactly this claim, and the per-construct table at the end
-> records which rules it exercises.
+This document describes source-to-model correspondence obligations for the
+maintained fragments. It is an implementation-level argument, not a mechanized
+compiler-correctness theorem. Backend acceptance, runtime correspondence and
+specification adequacy must be assessed separately.
 
-## 1. Values and state
+The [supported-fragment matrix](SUPPORTED-FRAGMENTS.md) identifies evaluated
+inputs. [Architecture](ARCHITECTURE.md) describes the pipeline, and the
+[assurance argument](ASSURANCE-ARGUMENT.md) defines its trust obligations.
 
-The fragment computes over five value sorts:
+## Values, states and observations
 
-| sort | notation | CPython carrier | Dafny model |
-| --- | --- | --- | --- |
-| integers | `n ∈ ℤ` | `int` (arbitrary precision) | `int` |
-| booleans | `b ∈ 𝔹` | `bool` | `bool` |
-| strings | `s ∈ Σ*` | `str` (immutable) | `string` (`seq<char>`) |
-| lists | `[v₁, …, vₖ]` | `list` (mutable) | `seq<T>` (value) |
-| optionals | `None ∣ some v` | `None` / the value | `PyOpt<T>` |
+| Python value | Model interpretation | Boundary |
+| --- | --- | --- |
+| Exact `int` and `bool` | Mathematical integers and booleans | `bool` is not admitted as an arbitrary integer argument |
+| Exact `str` | Sequence of characters or code points | Dafny string scopes use Unicode scalars; Lean represents Python code points including surrogates |
+| Lists and fixed tuples | Value sequences and products | Owned mutation or read-only access under the admitted alias discipline |
+| Optional values | Explicit absence or a value | Absence is distinct from zero, false and empty strings |
+| Closed frozen records | Declared field snapshots | Stable reads and supported nested fields; no arbitrary object behavior |
+| Exact `bytearray` | Mutable byte-valued array in `dafny-buffers` | Explicit disjointness or permitted argument aliasing |
 
-`bool` is **not** a subsort of `int` in the fragment, although it is in
-CPython — the conformance checker types every expression precisely, and the
-boundary guards enforce exactness (`type(x) is int`) at entry, so no fragment
-execution ever observes a `True` flowing into an `int` position.
+A local state maps names to modeled values. Ownership and alias facts are
+additional admission conditions. The value model permits mutation only where
+another live alias cannot observe a different Python state. The buffer model
+instead retains declared identity relationships and compares current and entry
+contents. The two mutation policies are not interchangeable.
 
-A **state** `σ` maps local names to values. Parameters are immutable
-(ownership + copy-in); list-typed locals additionally carry the *ownership
-facts* the encoder tracks (fresh/unaliased/frozen), which are static
-artifacts — they do not appear in σ, but the admission rules below are only
-stated for programs the conformance checker accepts, so every `append`
-target is known unaliased and every iterated list is known frozen.
+The observation boundary includes normal return values, explicitly modeled
+exception classes and declared buffer observations. Object identity, traceback
+identity, unmodeled exception messages, resource use, concurrency and external
+side effects are not implied observations.
 
-## 2. Judgments
+## Core expression and statement rules
 
-Expressions may diverge only through partiality, never loops (they contain
-none), so their judgment is total up to the modeled errors:
+Write `s |- e => v` for expression evaluation and `s |- statement => outcome`
+for a statement. Outcomes distinguish continuation, return, loop control and
+modeled errors. Error propagation and short-circuit evaluation must preserve
+Python order wherever the selected backend admits the expression.
 
-    σ ⊢ e ⇓ v                     (evaluates to value)
-    σ ⊢ e ⇓ err(E)                (raises E ∈ {IndexError, ValueError, TypeError, ZeroDivisionError})
+| Construct | Correspondence requirement |
+| --- | --- |
+| `n // d`, `n % d` | For nonzero `d`, quotient is floor division and remainder is `n - d * floor(n/d)`, including negative divisors. Dafny uses its Python-specific helpers; Lean uses `Int.fdiv` and `Int.fmod`. |
+| Indexing | Negative indices add the sequence length. Access still requires an index in range, or a modeled error where supported. |
+| Slicing | Normalize bounds according to Python. Unit slices clamp bounds; stepped slices are admitted only in the backend's supported forms. |
+| Assignment and unpacking | Evaluate the right side before rebinding targets, preserving tuple simultaneity and target evaluation order. |
+| Indexed augmented assignment | Read and check the target before the right side. This differs from ordinary assignment. |
+| List construction and append | Preserve element order. Value updates model Python mutation only under the ownership rules. |
+| `for` loops | Evaluate iterable/bounds at entry. Snapshot lowering requires that mutation cannot change the observed iteration. |
+| `break` and `continue` | Affect the enclosing loop. A desugared `for` advances its hidden cursor on `continue`. |
+| `while` | Check loop invariants at the modeled heads and exits, with a decreasing measure where required. |
+| Boolean expressions and quantifiers | Preserve lazy evaluation and well-formedness. Logical folding of a generator requires totality on the evaluated domain or explicit safety obligations. |
+| Sorting and search | Only registered element/key forms are admitted. Arbitrary Python callbacks and comparison methods are not modeled. |
+| Walrus assignment | Preserve when the binding occurs. Hoisting across a skipped expression is invalid and rejected in unsupported positions. |
+| `assert` | In the ordinary Dafny fragment, discharge an obligation that the assertion cannot fail on admitted inputs. |
 
-Statements produce an outcome:
+Purity alone does not justify eager evaluation of a partial expression.
+For example, a skipped division must not introduce a spurious Python execution
+or hide a division error. Backends use restricted total forms, checked evaluation
+or rejection to preserve this distinction.
 
-    σ ⊢ st ⇓ σ′                   (falls through)
-    σ ⊢ st ⇓ return v             (function returns)
-    σ ⊢ st ⇓ err(E)               (E as above, plus AssertionError)
+## Safety and modeled exceptions
 
-`err` outcomes propagate through every rule (elided below). The Dafny model
-has no exceptions: each `err` case corresponds to a **proof obligation**
-(the `requires` of a preamble function, an `assert`, or a well-formedness
-VC), so *a verified function is one whose executions from guard-passing
-inputs never take an `err` transition* — that is the content of clause (a)
-of the simulation statement.
+In the ordinary `dafny` fragment, partial operations generate proof obligations.
+A successful proof rules out those encoded error transitions under the contract.
+This statement does not extend to `dafny-outcomes` or Lean functions whose
+contracts deliberately allow exceptions.
 
-## 3. Expression rules (selected)
+`dafny-outcomes` carries explicit exception tags through supported statements and
+helper calls. Declared subclasses and admitted ordered handlers participate in
+that model. `raised()` observes an exceptional outcome; `raised("ClassName")`
+observes the declared class and its subclasses. Lean's imperative model uses
+checked exceptional computations, including the restricted custom hierarchy
+and handler forms exercised by the stdnum validation closure.
 
-The complete rule-per-construct listing coincides with the lowering catalog;
-the rules here are the ones where CPython's semantics diverge from the naïve
-mathematical reading, because these are where an encoder bug would hide.
+Some admitted expression shapes differ between backends. For example, restricted
+`%c` formatting requires a one-character string proof in the Dafny outcome
+encoding, while Lean can preserve the formatting `TypeError`. Exact messages,
+causes, traceback identity and arbitrary exception handling remain outside scope.
+See [Lean](LEAN.md) and [specifications](SPEC-GRAMMAR.md).
 
-**Floor division and modulo** (divisor `d ≠ 0`, else `err(ZeroDivisionError)`):
+## Helper composition and dependencies
 
-    n // d  =  ⌊n / d⌋                       n % d  =  n − d·⌊n / d⌋
+The scalar composition argument begins with a closed, acyclic graph of specified
+functions. Every callee body and contract is checked. For each call, admission
+validates Python parameter binding, evaluates positional and keyword expressions
+in source order into temporaries, and then supplies arguments in formal order.
+Earlier operands must be captured before later calls when evaluation could fail.
+A caller must establish the callee precondition and may use its checked
+postcondition after the call. Spec expressions do not execute arbitrary helpers.
 
-so the result of `%` has the sign of the divisor. Dafny's `/` and `%` are
-Euclidean; the preamble's `PyFloorDiv`/`PyMod` are definitionally equal to
-the equations above (differentially tested across sign combinations).
+For this restricted core, induction over a topological ordering of the call
+graph reduces a caller's obligation to its checked callees and local translation.
+Fresh names must avoid capture, and all implementation bodies and auxiliary
+lemmas must pass before the combined proof is reported as successful. A false
+callee contract cannot be accepted merely because it makes the caller easy to
+prove. Call-site diagnostics identify the original source location.
 
-**Indexing** (`xs` of length k):
+The original scalar argument excluded defaults, records, mutable inputs and
+cross-module linking. Current extensions require additional correspondence
+obligations rather than inheriting that argument automatically.
 
-    σ ⊢ xs[i] ⇓ xs[i]        if 0 ≤ i < k
-    σ ⊢ xs[i] ⇓ xs[k + i]    if −k ≤ i < 0
-    σ ⊢ xs[i] ⇓ err(IndexError)   otherwise
+- The resolver admits bounded module constants and explicit dependency models.
+  It does not run arbitrary imported initialization to learn specifications.
+- Supported immutable literal defaults and keyword-only arguments require exact
+  binding and type checks. Compatibility additionally checks matching defaults.
+- Read-only sequence and record helpers require stable snapshots. Returning a
+  sequence conservatively invalidates caller ownership where it may alias an
+  argument, preventing later mutation justified only by value semantics.
+- Closed record fields and borrowed sequences cannot be mutated as if they were
+  fresh local allocations. The [SGLang](../case_studies/sglang/SEMANTICS.md) and
+  [PyTorch](../case_studies/pytorch/SEMANTICS.md) notes describe the selected boundaries.
+- The admitted lazy `all/any(map(predicate, text))` pattern uses an explicitly
+  specified local predicate with a total literal-membership body and no
+  precondition. It does not permit arbitrary higher-order calls.
 
-`PyIndex(i, k)` carries `requires −k ≤ i < k` — exactly the error condition —
-and the encoder emits the bare index only when nonnegativity is provable
-from the static context (literals and 0-based binders), a trigger-hygiene
-optimization that does not change the modeled semantics.
+Bindings and dependency state must remain stable during execution. Runtime
+checks cover implemented conditions but do not lock the Python import system
+or prevent concurrent mutation of arbitrary external state.
 
-**Slicing** `xs[lo:hi]` (step 1): both bounds clamp to `[0, k]` after
-negative normalization; an inverted range is empty; never an error.
-`PySlice` is definitionally this function.
+## Strings and pinned Python behavior
 
-**Builtins.** `len`, `abs`, 2-arg `min`/`max` are the mathematical
-functions. 1-arg `min`/`max` over a list require nonemptiness
-(`err(ValueError)` otherwise ↔ `PySeqMax.requires`). `sum(xs)` folds left
-over an int list with `sum([]) = 0`; `PySum` is snoc-recursive, which is
-extensionally equal by associativity of `+`. `sum(g(x) for x in xs)`
-evaluates `g` left-to-right over the elements — the fragment's `g` is
-side-effect-free (expressions cannot write σ), so the order is
-unobservable and the `seq(k, i ⇒ …)` model is exact. A filter
-`[e for x in xs if P]` is the same one-pass skip: each `x` is kept as
-`[e]` or dropped as `[]`, then concatenated (`PyFlatten`) so order is
-CPython's and omitted elements leave no hole. `sum(e for x in xs if P)`
-maps skipped elements to `0` (the identity of `+` on `int`). Eager
-`all`/`any` genexps, in specs **and** bodies, lower to `forall`/`exists`
-(pure generators, so short-circuit vs full evaluation is unobservable);
-a filter becomes a conjunct on the domain. `sorted(xs)` on `list[int]`
-is a new list (a pure seq) whose values are a nondecreasing permutation
-of `xs`; `PySorted` is insertion sort, which matches CPython on this
-domain (equal ints are indistinguishable, so stability is free). `key=`,
-`reverse=`, and `list[str]` stay rejected — Dafny seq `<` is prefix
-order, Python str `<` is lexicographic.
+Decimal conversion depends on the host Python Unicode tables and integer-string
+conversion limit. The paired research environment is Python 3.12.2, Unicode
+15.0.0 and a 4,300-digit limit. Changing these can change generated models.
+The supported direct string-to-integer assignment evaluates conversion before
+committing the target, including on failure. The CPython parser's contract
+models its actual acceptance and field values, including signed and Unicode
+conversion, rather than claiming strict ISO-time or clock-range validation.
 
-**Quantifiers in specs.** `forall x in range(a, b) :: P` is bounded
-conjunction (empty domain ⇒ true), evaluated in the *enclosing* σ — binder
-shadowing of any live name is rejected at admission (a captured binder
-would silently change which σ the domain reads; see the binder-capture
-guards in the encoder).
+Dafny's registered Unicode and regex models cover selected languages and
+operations, not an arbitrary regex interpreter. Regex match objects do not gain
+Python structural equality through the encoding. Selected prefix/suffix calls
+support positional integer bounds and literal affix tuples. Positive starts
+are not clamped, so an empty affix can fail beyond the string's end. Explicit
+`None` bounds, keyword bounds and arbitrary tuple expressions remain unsupported
+in that extension.
 
-**Truthiness** (§7.3) is admitted only for list/str operands in condition
-position (`⟦xs⟧ ≠ []`), for `bool`-typed expressions, and rejected
-otherwise — CPython's full truthiness lattice is deliberately outside the
-fragment.
+The percent-decoding extension models ASCII input to a closed
+`urllib.parse.unquote` dependency using ASCII, US-ASCII, UTF-8 or ISO-8859-1
+replacement decoding. Registered charset captures establish facts needed by
+subsequent calls. Guards check implemented transitive dependency conditions.
+Arbitrary codecs, custom error handlers and concurrent dependency mutation are
+outside scope. The full legacy dictionary-header parser remains unresolved.
 
-## 4. Statement rules (selected)
+## Loops and buffer mutation
 
-**Assignment** rebinds a local: `σ ⊢ x = e ⇓ σ[x ↦ v]` where `σ ⊢ e ⇓ v`.
-Optional-typed targets inject/project through `PyOpt` (`_coerce`); tuple
-assignment evaluates the right side fully before binding (Python's
-simultaneous semantics — the gcd `a, b = b, a % b` case). Unpacking a
-tuple-typed name `a, b = p` projects as `a, b := p.0, p.1` (Dafny does
-not unpack a single tuple-typed RHS); arity mismatches are encode-time
-errors, matching Python's `ValueError`. Tuple index `p[k]` is a constant
-(negative wrap like Python) lowered to a Dafny destructor `p.k` — not
-`PyIndex`, which is sequence indexing. Tuple concatenation (`t + u`) is
-rejected: Dafny tuples are product types, not sequences.
+The CPython parser extension admits restricted exact unrolling of small literal
+`range` loops and a separately checked first-iteration peeling pattern. In the
+latter, annotations apply to the remaining loop. These are restrictions on
+admitted source shapes, not arbitrary bounds on input values. Early breaks and
+final cursor values remain part of the correspondence obligation.
 
-**append** on an owned-fresh list: `σ ⊢ xs.append(e) ⇓ σ[xs ↦ σ(xs) ⧺ [v]]`.
-Admission guarantees no alias observes the mutation, so the Dafny value
-update `xs := xs + [v]` simulates it.
+`dafny-buffers` requires a declared alias policy for exact bytearray arguments.
+`disjoint_buffers()` requires distinct arguments. An explicit permitted pair
+may alias or be distinct, while other pairs remain distinct. Guards check the
+original identities before mutation. Specifications observe current contents
+through `buffer("name")` and entry contents through `old_buffer("name")`.
+A proof under this policy is not a compatibility theorem for arbitrary shared
+buffers. The historical PyPNG product boundary remains unsupported.
 
-**for i in range(a, b)** executes the body with `i = a, a+1, …, b−1`; the
-loop variable may not be reassigned (admission). The encoder's
-`while i < i_hi` with hoisted bounds is the standard unrolling; hoisting is
-sound because the bound expressions are pure and their free names are not
-written by the body (admission checks this).
+## Conditional preservation argument
 
-**for x in xs** iterates a **snapshot**: CPython iterates the list object
-with a hidden index, and the fragment freezes every name in the iterable
-expression for the loop's extent, so no mutation can be observed mid-loop;
-the encoder's snapshot + hidden index is then exact. `for a, b in pairs`
-over `list[tuple[T, U]]` unpacks each element the same way assignment
-does (`snap[i].0`, `snap[i].1`), with an arity check at encode time.
+Let `P` be an admitted component, `E(P)` its encoded model, `D` the declared
+input domain and `R` the relation between their initial states. The intended
+argument requires that initialization establishes `R`, each admitted transition
+preserves the appropriate state/observation relation, source specifications
+match the checked formulas, and the backend checks all obligations.
 
-**assert e**: `err(AssertionError)` if false, no-op if true — lowered to a
-Dafny `assert`, so a verified function's asserts are proved never to fire,
-while CPython still executes them (they are the proof-hint idiom).
+Under these conditions, a proof of the model's contract implies the corresponding
+Python observations satisfy the source contract on `D`. A termination claim
+additionally depends on the discharged termination obligations and excludes the
+recorded resource and asynchronous failures. This correspondence is not proved
+end to end for the implementation. A generated guard or a passing finite replay
+does not by itself establish it.
 
-**x := e** (walrus) evaluates `e`, binds `x` in the enclosing function
-scope, and yields the value — admitted only where the assignment always
-runs (if/while tests, return, assignment RHS, assert, call arguments).
-The encoder emits the assignment then the bound name. A while-test
-walrus is re-emitted at `continue` and at loop-end so each head check
-sees the new binding (Dafny's `while` condition cannot assign). Under
-`and`/`or`, a later chained-comparison operand, a skipped if-expression
-branch, a comprehension, or a spec clause it is rejected: hoisting
-would ignore short-circuit.
+Compatibility adds a relational obligation. The new version must admit every
+old-domain input and preserve the selected return and exception observations.
+Record products relate matching schemas by value snapshots. Buffer aliasing and
+other unmodeled observations cannot be inferred from snapshot equality. See
+[callable compatibility](CALLABLE-COMPATIBILITY.md).
 
-**while / if / return** are standard; loop `#@ invariant` clauses are
-proof annotations with no runtime content (loop-head, exit-inclusive).
+## Evidence and remaining obligations
 
-## 5. The simulation statement
+| Area | Maintained controls |
+| --- | --- |
+| Admission, source extraction and binding | [Frontend tests](../tests/frontend) |
+| Arithmetic, strings, regex, evaluation order and buffers | [Fragment tests](../tests/fragments) |
+| Dafny translation and proof driver | [Dafny tests](../tests/dafny) |
+| Lean translation, exceptions, execution and axiom audit | [Lean tests](../tests/lean) |
+| Helper, record and relational domain preservation | [Compatibility tests](../tests/compatibility) |
+| Guard generation and runtime checks | [Guard tests](../tests/guards), [runtime tests](../tests/runtime) |
+| Pinned component and native evidence | [Case studies](../case_studies/README.md), [evaluation](EVALUATION.md) |
 
-Write `G(f)` for the guard predicate of `f` (deep exact types + executable
-requires), `⟦·⟧` for the value translation of §1, and `f_D` for the encoded
-Dafny method with its proof obligations discharged.
-
-> **Claim (simulation).** Let `f` be a function the conformance checker
-> admits, with `f_D` verified. For every argument vector `a̅` with `G(f)(a̅)`,
-> the CPython execution of `f(a̅)` under the island assumptions A1–A7:
->
-> **(a)** never raises `IndexError`, `ValueError`, `TypeError`,
-> `ZeroDivisionError`, or `AssertionError` from fragment constructs — each
-> such transition maps to a discharged proof obligation;
->
-> **(b)** terminates — the `decreases` obligations map onto a well-founded
-> measure of the big-step derivation;
->
-> **(c)** returns a value `v` with `⟦v⟧ = f_D(⟦a̅⟧)`-adjacent in the sense
-> that every `ensures` clause, interpreted by the rules of §3 over `v` and
-> `a̅`, holds — and `old(x)` refers to the copied-in entry value of `x`.
->
-> *Proof sketch.* Induction on the big-step derivation, with one lemma per
-> catalog row relating the CPython rule to its lowering (the §3/§4
-> selections are the non-trivial lemmas; the preamble functions are
-> definitionally the partial-operation rules). Loops use the invariant as
-> the induction hypothesis at the Dafny side's loop-head placement. Not
-> mechanized; asserted per-construct and checked empirically below.
-
-The guarantee consumed by users is this claim *conjoined with* the guard
-theorem (guards decide `G(f)` exactly) and the island assumptions (§5) —
-that composition is the "precise, honest guarantee" sentence of the README.
-
-## 6. Validation status per construct
-
-Every row is exercised by the differential harness on the corpus
-(`veripy difftest`, Hypothesis-driven, CPython vs the Dafny-to-Python
-translation of the *same* stub the prover saw).
-
-| construct | rule | lowering | differential coverage |
-| --- | --- | --- | --- |
-| `//`, `%` | §3 floor | `PyFloorDiv`/`PyMod` | sign matrix, corpus (gcd, is_prime) |
-| negative index | §3 index | `PyIndex` | corpus (is_palindrome) + unit |
-| slices | §3 slice | `PySlice` | corpus (rolling_max, below_zero) |
-| 1-arg min/max | §3 builtins | `PySeqMax/Min` (requires) | corpus (max_element, rolling_max) |
-| `sum`, genexp folds | §3 builtins | `PySum` (+ `seq` map; filter → `else 0`) | corpus (below_zero, sum_squares) + unit |
-| `sorted` on `list[int]` | §3 builtins | `PySorted` (insertion sort; permutation + order) | unit (Hypothesis) |
-| filtered list comps | §3 comps | `PyFlatten` of 0/1-element seqs | unit |
-| eager `all`/`any` genexp | §3 folds | Dafny `forall`/`exists` (body and spec) | unit |
-| Optionals | §1/§4 assign | `PyOpt` + coercions | corpus (rolling_max) |
-| list build | §4 append | `⧺` under ownership | corpus (incr_list, intersperse) |
-| for-range / for-each | §4 loops | hoisted while / snapshot; `for a, b in pairs` projects tuple elements | corpus-wide + unit (unpack) |
-| `break` / `continue` | §4 loops | Dafny `break`/`continue`; for-desugar steps the hidden index before `continue` | unit (while cap, range-for skip) |
-| tuples / unpack / multi-return | §4 assign | Dafny `(T, U)` products; `p.k` / `a, b := p.0, p.1`; arity checked at encode time | unit (pair return, unpack, Hypothesis) |
-| f-strings | §3 concat | `"a" + s + "b"`; str interpolations only | unit (greet, Hypothesis) |
-| `str(int)` / `int(str)` | §3 builtins | `PyIntToStr` / `PyStrToInt` (requires `PyIsIntStr`) | unit (roundtrip, Hypothesis) |
-| str methods | §3 curated | `PyStrJoin`/`Split`/`Find`/`StartsWith`/`EndsWith`/`Replace`/`Strip`; chars/sep required | unit (Hypothesis) |
-| walrus `:=` | §4 assign | assignment then the bound name; while-test re-emitted at continue / loop-end | unit (return/if/while, Hypothesis) |
-| assert | §4 | Dafny `assert` | corpus (rolling_max, below_zero) + unit |
-| truthiness §7.3 | §3 | `\|xs\| != 0` | unit |
-| `math.gcd` / `factorial` / `isqrt` | §3 math | `PyGcd`/`PyFact`/`PyIsqrt` (imported; two-int gcd; `n >= 0` VCs) | unit (Hypothesis; factorial ≤ 12, isqrt ≤ 10⁶) |
-
-Constructs outside this table are outside the fragment — the conformance
-checker rejects them by construction, which is what keeps this note short.
+These controls include rejection tests, counterexamples, finite comparisons and
+backend proofs. They are not interchangeable evidence or a mechanized simulation
+proof. The archived earlier scalar argument and rule catalog remain available
+in the [documentation history](RESEARCH-ARCHIVES.md#documentation-history).

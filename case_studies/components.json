@@ -1,0 +1,152 @@
+[
+  {
+    "component": "black-mapping",
+    "lean_source": "case_studies/black/mapping.py",
+    "dafny_source": "case_studies/black/mapping.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "black-normalizer",
+    "lean_source": "case_studies/black/normalize.py",
+    "dafny_source": "case_studies/black/normalize.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "black-parser",
+    "lean_source": "case_studies/black/parser.py",
+    "dafny_source": "case_studies/black/parser.py",
+    "dafny_backend": "dafny-outcomes"
+  },
+  {
+    "component": "django-base36",
+    "lean_source": "case_studies/django/base36.py",
+    "dafny_source": "case_studies/django/base36.py",
+    "dafny_backend": "dafny-outcomes"
+  },
+  {
+    "component": "pytorch-pair",
+    "lean_source": "case_studies/pytorch/pair.py",
+    "dafny_source": "case_studies/pytorch/pair.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "pytorch-search1d",
+    "lean_source": "case_studies/pytorch/search1d.py",
+    "dafny_source": "case_studies/pytorch/search1d.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "pytorch-searchnd",
+    "lean_source": "case_studies/pytorch/searchnd.py",
+    "dafny_source": "case_studies/pytorch/searchnd.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "pytorch-validation",
+    "lean_source": "case_studies/pytorch/validation.py",
+    "dafny_source": "case_studies/pytorch/validation.py",
+    "dafny_backend": "dafny-outcomes"
+  },
+  {
+    "component": "sglang-live",
+    "lean_source": "case_studies/sglang/live_planner.py",
+    "dafny_source": "case_studies/sglang/live_planner.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "01-pytorch-sharding",
+    "lean_source": "case_studies/pytorch/sharding.py",
+    "dafny_source": "case_studies/pytorch/sharding.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "02-vllm-alignment",
+    "lean_source": "case_studies/vllm/alignment.py",
+    "dafny_source": "case_studies/vllm/alignment.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "03-sglang-prefill-budget",
+    "lean_source": "case_studies/sglang/prefill.py",
+    "dafny_source": "case_studies/sglang/prefill.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "04-cpython-rounding",
+    "lean_source": "case_studies/cpython/rounding.py",
+    "dafny_source": "case_studies/cpython/rounding.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "05-cpython-calendar",
+    "lean_source": "case_studies/cpython/calendar_helpers.py",
+    "dafny_source": "case_studies/cpython/calendar_helpers.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "06-sglang-first-milestone",
+    "lean_source": "case_studies/sglang/alignment.py",
+    "dafny_source": "case_studies/sglang/alignment.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "sglang-aligned",
+    "lean_source": "case_studies/sglang/planner.py",
+    "dafny_source": "case_studies/sglang/planner.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "pytorch-tensor",
+    "lean_source": "case_studies/pytorch/tensor.py",
+    "dafny_source": "case_studies/pytorch/tensor.py",
+    "dafny_backend": "dafny-outcomes"
+  },
+  {
+    "component": "black-adjusted",
+    "lean_source": "case_studies/black/adjusted.py",
+    "dafny_source": "case_studies/black/adjusted.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "black-consumer",
+    "lean_source": "case_studies/black/consumer.py",
+    "dafny_source": "case_studies/black/consumer.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "black-composition",
+    "lean_source": "case_studies/black/composition.py",
+    "dafny_source": "case_studies/black/composition.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "vllm-padding",
+    "lean_source": "case_studies/vllm/optimizer.py",
+    "dafny_source": "case_studies/vllm/optimizer.py",
+    "dafny_backend": "dafny-outcomes"
+  },
+  {
+    "component": "luhn-exact",
+    "lean_source": "case_studies/stdnum/checksum.py",
+    "dafny_source": "case_studies/stdnum/checksum.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "luhn-roundtrip",
+    "lean_source": "case_studies/stdnum/roundtrip.py",
+    "dafny_source": "case_studies/stdnum/roundtrip.py",
+    "dafny_backend": "dafny"
+  },
+  {
+    "component": "luhn-validation",
+    "lean_source": "case_studies/stdnum/validation.py",
+    "dafny_source": "case_studies/stdnum/validation.py",
+    "dafny_backend": "dafny-outcomes"
+  },
+  {
+    "component": "cpython-time-parser",
+    "lean_source": "case_studies/cpython/time_parser.py",
+    "dafny_source": "case_studies/cpython/time_parser.py",
+    "dafny_backend": "dafny-outcomes"
+  }
+]

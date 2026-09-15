@@ -57,6 +57,8 @@ class PostconditionError(GuardError):
 
 def describe(desc: Descriptor) -> str:
     kind = desc[0]
+    if kind == "record":
+        return desc[1]
     if kind == "list":
         return f"list[{describe(desc[1])}]"
     if kind == "opt":
@@ -66,13 +68,20 @@ def describe(desc: Descriptor) -> str:
     return kind
 
 
-def check_value(value: object, desc: Descriptor, *, function: str, path: str) -> None:
+def check_value(value: object, desc: Descriptor, *, function: str, path: str, record_types=None) -> None:
     """Deep exact-type check; raises TypeGuardError naming the value path."""
     kind = desc[0]
+    if kind == "record":
+        cls = (record_types or {}).get(desc[1])
+        if cls is None or type(value) is not cls:
+            raise TypeGuardError(function, f"{path}: expected exact frozen record {desc[1]}")
+        for field, inner in desc[2]:
+            check_value(getattr(value, field), inner, function=function, path=f"{path}.{field}", record_types=record_types)
+        return
     if kind == "opt":
         if value is None:
             return
-        check_value(value, desc[1], function=function, path=path)
+        check_value(value, desc[1], function=function, path=path, record_types=record_types)
         return
     if kind == "list":
         if type(value) is not list:
@@ -81,7 +90,7 @@ def check_value(value: object, desc: Descriptor, *, function: str, path: str) ->
                 f"{path}: expected {describe(desc)}, got {type(value).__name__}",
             )
         for i, element in enumerate(value):
-            check_value(element, desc[1], function=function, path=f"{path}[{i}]")
+            check_value(element, desc[1], function=function, path=f"{path}[{i}]", record_types=record_types)
         return
     if kind == "tuple":
         if type(value) is not tuple:
@@ -97,7 +106,7 @@ def check_value(value: object, desc: Descriptor, *, function: str, path: str) ->
                 f"got tuple of length {len(value)}",  # type: ignore[arg-type]
             )
         for i, (element, inner) in enumerate(zip(value, inners)):  # type: ignore[arg-type]
-            check_value(element, inner, function=function, path=f"{path}[{i}]")
+            check_value(element, inner, function=function, path=f"{path}[{i}]", record_types=record_types)
         return
     expected = {"int": int, "bool": bool, "str": str}[kind]
     if type(value) is not expected:
@@ -117,23 +126,27 @@ def check_value(value: object, desc: Descriptor, *, function: str, path: str) ->
                 )
 
 
-def copy_value(value: object, desc: Descriptor) -> object:
+def copy_value(value: object, desc: Descriptor, *, record_types=None) -> object:
     """Descriptor-driven copy-in: fresh list objects at every depth;
     immutable leaves pass through."""
     kind = desc[0]
+    if kind == "record":
+        cls = record_types[desc[1]]
+        return cls(**{field: copy_value(getattr(value, field), inner, record_types=record_types)
+                      for field, inner in desc[2]})
     if kind == "list":
-        return [copy_value(e, desc[1]) for e in value]  # type: ignore[union-attr]
+        return [copy_value(e, desc[1], record_types=record_types) for e in value]  # type: ignore[union-attr]
     if kind == "tuple":
-        return tuple(copy_value(e, d) for e, d in zip(value, desc[1:]))  # type: ignore[arg-type]
+        return tuple(copy_value(e, d, record_types=record_types) for e, d in zip(value, desc[1:]))  # type: ignore[arg-type]
     if kind == "opt" and value is not None:
-        return copy_value(value, desc[1])
+        return copy_value(value, desc[1], record_types=record_types)
     return value
 
 
-def guard_value(value: object, desc: Descriptor, *, function: str, param: str) -> object:
+def guard_value(value: object, desc: Descriptor, *, function: str, param: str, record_types=None) -> object:
     """Check then copy — the argument the island actually receives."""
-    check_value(value, desc, function=function, path=param)
-    return copy_value(value, desc)
+    check_value(value, desc, function=function, path=param, record_types=record_types)
+    return copy_value(value, desc, record_types=record_types)
 
 
 class IslandIntegrityError(GuardError):

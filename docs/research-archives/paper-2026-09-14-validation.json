@@ -1,0 +1,48 @@
+{
+  "version": "paper-2026-09-14",
+  "status": "passed",
+  "catalog_sha256": "01e8514f331c49a8fdd8c19ed6cc4e34f0a8b391819bb756783c063d3e5b70da",
+  "before": {
+    "files": 601,
+    "bytes": 64040713
+  },
+  "after": {
+    "files": 71,
+    "bytes": 1095271
+  },
+  "removed_from_active_tree": 535,
+  "archive_verification": {
+    "archives": 1,
+    "file_inventory_checked": true,
+    "members_checked": 601,
+    "status": "passed",
+    "version": "paper-2026-09-14"
+  },
+  "preserved_manuscript_section_listing_style_files": 31,
+  "pdf": {
+    "path": "output/paper/veripy-workshop-paper.pdf",
+    "sha256": "de64faf8905bdc0bb093dc09b069c6a3f9639bfc4372628d0e35966367f6ba5e",
+    "pages": 31,
+    "references": 17,
+    "main_text_pages": 9,
+    "page_text_identical": true,
+    "pixel_identical_pages_at_72_dpi": 31,
+    "figure_1_page": 2,
+    "figure_2_page": 4,
+    "unresolved_references_or_citations": 0,
+    "overfull_boxes": 0
+  },
+  "figures": {
+    "tikz_rebuild": "passed",
+    "unchanged_retained_plot_datasets": 2,
+    "removed_unused_component_plot": true,
+    "external_output_pdf_dependencies": 0
+  },
+  "protected_submission_files_unchanged": 4966,
+  "targeted_tests_passed": 9,
+  "git_hygiene": "passed",
+  "publication_status": "prepared-locally",
+  "committed": false,
+  "pushed": false,
+  "cleanup_diff_check": "passed; excludes pre-existing trailing whitespace in the byte-unchanged official checklist blocks"
+}

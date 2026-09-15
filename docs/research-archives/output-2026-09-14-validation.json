@@ -1,0 +1,53 @@
+{
+  "active_source_files_unchanged": true,
+  "after": {
+    "bytes": 1279275795,
+    "files": 20504
+  },
+  "archive_sets_verified_after_cleanup": [
+    {
+      "archives": 3,
+      "file_inventory_checked": false,
+      "members_checked": 0,
+      "status": "passed",
+      "version": "2026-09-14"
+    },
+    {
+      "archives": 1,
+      "file_inventory_checked": false,
+      "members_checked": 0,
+      "status": "passed",
+      "version": "paper-2026-09-14"
+    },
+    {
+      "archives": 1,
+      "file_inventory_checked": false,
+      "members_checked": 0,
+      "status": "passed",
+      "version": "output-2026-09-14"
+    }
+  ],
+  "archived_file_coverage": "Every consolidated regular file maps to identical checksummed archived bytes, verified before deletion. Directory symlinks were recorded and not followed.",
+  "before": {
+    "bytes": 2193980538,
+    "files": 37896
+  },
+  "committed": false,
+  "compact_records_retained": 128,
+  "current_paper_unchanged": true,
+  "environment_retained_in_place": true,
+  "git_hygiene": "passed",
+  "protected_submission_files_unchanged": 4966,
+  "publication_status": "prepared-locally",
+  "pushed": false,
+  "python_environment_smoke": "Python 3.12.2; veripy.api resolves to current repository source",
+  "regular_files_accounted_for": 17540,
+  "status": "passed",
+  "symlinks_recorded": 13,
+  "targeted_tests": {
+    "command": "output/reproduction-checks-20260914/venv/bin/python -m pytest tests/tools -q --tb=short",
+    "passed": 10
+  },
+  "unique_file_contents_newly_archived": 878,
+  "version": "output-2026-09-14"
+}

@@ -1,0 +1,92 @@
+{
+  "archives": [
+    {
+      "bytes": 166279569,
+      "file": "veripy-case-studies-2026-09-14.tar.gz",
+      "members": 35664,
+      "scope": "Complete original case_studies tree. All outcomes, reviews, pilots and frozen compilers are retained.",
+      "sha256": "192556857b84fd1f0efc6a008e3b5c780054e252446220aa4e3b0ffc2e3783fd",
+      "source": "output/case-study-cleanup-20260914/case-studies-history.tar.gz"
+    },
+    {
+      "bytes": 23147830,
+      "file": "veripy-paper-artifact-2026-09-14.zip",
+      "members": 4172,
+      "scope": "Exact frozen submission artifact, including both maintenance arms and unsuccessful outcomes. This is the starting point for paper reproduction.",
+      "sha256": "43978bb6c22a2ece81a2dadb1969ff1003e1db13d648585c29ee404380d9d241",
+      "source": "output/submission-final-20260914/veripy-anonymous-review.zip"
+    },
+    {
+      "bytes": 240848766,
+      "file": "veripy-experiment-records-2026-09-14.tar.gz",
+      "members": 1437,
+      "scope": "All selected research bundles, packaging/replay receipts and paper evidence, without outcome-based filtering.",
+      "sha256": "dc642f45b36a6323e2faff0870673d5acbd16557d508bbc5702ec21cbe41ae5c",
+      "source": "record_selection"
+    }
+  ],
+  "inventory": {
+    "bytes": 1473980,
+    "file": "veripy-file-inventory-2026-09-14.json.gz",
+    "sha256": "1561cd302fcb7cc938c5ff6b759a9f5b9643ff0421b12cdca779ea9084ddf153"
+  },
+  "publication_status": "prepared-locally",
+  "record_selection": {
+    "always_excluded": [
+      "__pycache__ directories",
+      ".DS_Store"
+    ],
+    "exclude": [
+      "output/reproduction-checks-20260914/venv",
+      "output/reproduction-checks-20260914/extracted",
+      "output/reproduction-checks-20260914/final-upload-extraction"
+    ],
+    "include": [
+      "output/research",
+      "output/research-agent-evidence-final-validation.json",
+      "output/research-agent-evidence-package-first-attempt.json",
+      "output/research-agent-evidence-package.json",
+      "output/research-agent-evidence-replay.json",
+      "output/research-delegated-final-paper-validation.json",
+      "output/research-delegated-paper-source-replay.json",
+      "output/research-dependency-preparation-failed-attempt-replay.json",
+      "output/research-dependency-preparation-package.json",
+      "output/research-dependency-preparation-replay.json",
+      "output/research-dictionary-dependencies-package.json",
+      "output/research-dictionary-dependencies-replay.json",
+      "output/research-dictionary-dependencies-replay.log",
+      "output/research-interface-preparation-frozen-audit.json",
+      "output/research-interface-preparation-package.json",
+      "output/research-interface-preparation-replay.json",
+      "output/research-interface-preparation-replay.log",
+      "output/research-larger-families-20260913-archive.json",
+      "output/research-larger-families-20260913-extraction.json",
+      "output/research-maintenance-evaluation-v2-replay.json",
+      "output/research-maintenance-evaluation-v2-report-replay.json",
+      "output/research-maintenance-package-final.json",
+      "output/research-maintenance-package.json",
+      "output/research-maintenance-v2-environment.txt",
+      "output/research-maintenance-v2-extraction.json",
+      "output/research-maintenance-v2-install.log",
+      "output/research-maintenance-v2-package.json",
+      "output/research-maintenance-v2-paper-source-replay.json",
+      "output/research-maintenance-v2-replay.json",
+      "output/research-old-proof-preparation-package.json",
+      "output/research-old-proof-preparation-replay.json",
+      "output/research-percent-decoding-package.json",
+      "output/research-percent-decoding-replay.json",
+      "output/research-percent-decoding-replay.log",
+      "output/research-postfreeze-paper-source-replay.json",
+      "output/research-shared-policy-evaluation-package.json",
+      "output/research-shared-policy-evaluation-replay.json",
+      "output/research-shared-policy-review-ready-package.json",
+      "output/research-shared-policy-review-ready-replay.json",
+      "paper/evidence",
+      "output/reproduction-checks-20260914"
+    ],
+    "selection_rule": "Preserve every selected file regardless of result. Exclusions remove installed environments and duplicate extraction trees, not failed runs."
+  },
+  "release_url": null,
+  "schema": 1,
+  "version": "2026-09-14"
+}

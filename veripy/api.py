@@ -1,6 +1,6 @@
 """The embedding surface: what a host program calls.
 
-`import veripy` gives a host four operations and one provenance query.
+`from veripy import api` gives a host four operations and one provenance query.
 Everything else in the package is internal and may be reshaped.
 
 The CLI is *a client of this module*, not the other way round. That
@@ -30,12 +30,12 @@ from pathlib import Path
 from tokenize import TokenError
 from typing import Any
 
-from .agentio import verify_structured
-from .backends.dafny.driver import dafny_version
-from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
-from .backends.dafny.preamble import PREAMBLE_VERSION
-from .failures import FAILURE_KINDS, TAXONOMY_VERSION
-from .frontend.extract import parse_source
+from veripy.verification.runner import verify_structured
+from veripy.backends.dafny.driver import dafny_version
+from veripy.backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
+from veripy.backends.dafny.preamble import PREAMBLE_VERSION
+from veripy.verification.failures import FAILURE_KINDS, TAXONOMY_VERSION
+from veripy.frontend.extract import parse_source
 
 __all__ = [
     "conformance",
@@ -122,8 +122,7 @@ def verify(path: Path | str, workdir: Path | str, *, time_limit: int = 30,
     `status`, per-failure records with a published `kind` and both
     coordinate systems, the sidecar's state, and `toolchain` provenance.
     Every outcome is a payload — prover crashes and unreadable files
-    included. `backend` selects the proof backend (`dafny` today; the
-    ROADMAP's Lean track lands behind the same name-based seam).
+    included. `backend` selects the proof backend through the registered Dafny and Lean implementations.
     """
     return verify_structured(Path(path), Path(workdir),
                              time_limit=time_limit,
@@ -144,7 +143,7 @@ def repair(path: Path | str, workdir: Path | str, *, engine: str = "claude",
     (The per-call engine wall is a separate change in flight; once it
     lands this grows an `engine_wall` argument rather than changing shape.)
     """
-    from .repair import make_engine, repair_file
+    from veripy.proofs.repair import make_engine, repair_file
 
     path = Path(path)
     try:
@@ -178,13 +177,13 @@ def repair(path: Path | str, workdir: Path | str, *, engine: str = "claude",
             "reason": outcome.reason, "sidecar_text": outcome.sidecar_text}
 
 
-def guard(path: Path | str, *, check_ensures: bool = False) -> dict[str, Any]:
+def guard(path: Path | str, *, check_ensures: bool = False, backend: str = "dafny") -> dict[str, Any]:
     """Generate the boundary-guard module source for a verified module.
 
     Returned as TEXT rather than written to disk: where a host puts
     generated code is the host's decision, not this library's.
     """
-    from .guards.emitter import GuardGenError, emit_guarded
+    from veripy.guards.emitter import GuardGenError, emit_guarded
 
     path = Path(path)
     try:
@@ -208,9 +207,25 @@ def guard(path: Path | str, *, check_ensures: bool = False) -> dict[str, Any]:
     if specs.errors or specs.orphans:
         return {"ok": False, "source": None,
                 "reason": "spec errors; call conformance() first"}
+    from veripy.backends.dafny.encoder import EncodeError
     try:
-        text = emit_guarded(source, specs, src_name=path.name,
-                            check_ensures=check_ensures)
-    except GuardGenError as exc:
+        emitter = emit_guarded
+        lemmas = frozenset()
+        if backend != "dafny":
+            from veripy.backends.base import get_backend
+            if backend == "dafny-outcomes":
+                from veripy.guards.outcomes import emit_outcome_guarded
+                emitter = emit_outcome_guarded
+            elif backend == "dafny-buffers":
+                from veripy.guards.buffers import emit_buffer_guarded
+                emitter = emit_buffer_guarded
+            else:
+                return {"ok": False, "source": None, "reason": f"no guard emitter for backend {backend!r}"}
+            lemmas = get_backend(backend).load_sidecar(path).lemmas
+        if backend == "dafny":
+            text = emitter(source, specs, src_name=path.name, check_ensures=check_ensures)
+        else:
+            text = emitter(source, specs, src_name=path.name, check_ensures=check_ensures, proof_lemmas=lemmas)
+    except (GuardGenError, EncodeError) as exc:
         return {"ok": False, "source": None, "reason": exc.message}
     return {"ok": True, "source": text, "reason": "generated"}

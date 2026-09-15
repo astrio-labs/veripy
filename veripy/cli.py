@@ -1,24 +1,22 @@
-"""VeriPy CLI: check, emit, hunt, verify, guard, repair, benchmark, lsp."""
+"""VeriPy CLI: check, emit, hunt, verify, guard, repair, lsp."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-from .frontend.conformance import RULES, aggregate, survey_paths
-from .repair import ENGINE_EFFORT_LEVELS
-from .frontend.extract import parse_source
-from .frontend.typegate import run_type_gate
-from .agentio import atomic_write_text, stub_dir_for
-from .backends.dafny.driver import verify_dafny_file
-from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
-from .backends.runtime.emit import emit_checked
-from .hints import proof_hint
+from veripy.frontend.conformance import RULES, aggregate, survey_paths
+from veripy.frontend.extract import parse_source
+from veripy.frontend.typegate import run_type_gate
+from veripy.verification.runner import atomic_write_text, stub_dir_for
+from veripy.backends.dafny.driver import verify_dafny_file
+from veripy.backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
+from veripy.backends.runtime.emit import emit_checked
+from veripy.backends.runtime.hunt import _find_crosshair
+from veripy.proofs.hints import proof_hint
 
 def _engine_wall(value: str) -> int:
     """argparse type for --engine-wall: a positive number of seconds.
@@ -45,7 +43,7 @@ def _effort(args) -> str | None:
 
 def _wall(args) -> int:
     """The engine wall for this invocation (unset -> the default)."""
-    from .repair import DEFAULT_ENGINE_WALL_S
+    from veripy.proofs.repair import DEFAULT_ENGINE_WALL_S
 
     wall = getattr(args, "engine_wall", None)
     # `is None`, not `or`: an explicit value must never be defaulted away.
@@ -99,8 +97,8 @@ def _fragment_candidates(path: Path) -> list[str]:
     say which ones qualify rather than leaving them to guess."""
     import ast as _ast
 
-    from .backends.dafny.encoder import EncodeError, encode_module
-    from .frontend.parse import Clause, FunctionSpec, ModuleSpecs
+    from veripy.backends.dafny.encoder import EncodeError, encode_module
+    from veripy.frontend.parse import Clause, FunctionSpec, ModuleSpecs
 
     try:
         source = path.read_text()
@@ -147,7 +145,7 @@ def _fragment_check(path: Path) -> int:
     """Dry-run the Dafny encoder on each spec'd function — the encoder is
     the single conformance authority, so `check` reports exactly what
     `verify` would reject, without needing Dafny installed."""
-    from .backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
+    from veripy.backends.dafny.encoder import EncodeError, encode_module, load_proof_sidecar
 
     source = path.read_text()
     specs = parse_source(source, filename=str(path))
@@ -293,12 +291,6 @@ def cmd_survey(paths: list[Path], top: int, json_out: Path | None) -> int:
     return 0
 
 
-def _find_crosshair() -> str | None:
-    exe = shutil.which("crosshair")
-    if exe:
-        return exe
-    candidate = Path(sys.executable).parent / "crosshair"
-    return str(candidate) if candidate.exists() else None
 
 
 def cmd_hunt(paths: list[Path], outdir: Path, per_condition_timeout: int) -> int:
@@ -345,8 +337,8 @@ def cmd_hunt(paths: list[Path], outdir: Path, per_condition_timeout: int) -> int
 def cmd_verify(paths: list[Path], outdir: Path, time_limit: int, types: bool = True,
                report: Path | None = None) -> int:
     """Encode to Dafny and verify: the M1 pipeline (clean-bucket fragment)."""
-    from .backends.dafny.driver import dafny_version
-    from .report import build_report, function_report, render_report_text
+    from veripy.backends.dafny.driver import dafny_version
+    from veripy.verification.report import build_report, function_report, render_report_text
 
     outdir.mkdir(parents=True, exist_ok=True)
     failed = 0
@@ -537,7 +529,7 @@ def _difftest_targets(paths: list[Path]) -> list[Path]:
 def cmd_difftest(paths: list[Path], outdir: Path, examples: int,
                  report: Path | None = None, min_functions: int = 1) -> int:
     """Translation validation (§6): original Python vs Dafny-compiled model."""
-    from .difftest.harness import difftest_file
+    from veripy.difftest.harness import difftest_file
 
     diverged = 0
     trouble = 0
@@ -628,82 +620,10 @@ def cmd_difftest(paths: list[Path], outdir: Path, examples: int,
     return 2 if trouble else 0
 
 
-def cmd_screen(tasks: Path, time_limit: int = 60,
-               backend: str = "dafny") -> int:
-    """Report whether each task's proof pack is load-bearing — the gate a
-    candidate must clear before joining the exam roster (of the NAMED
-    backend: each prover's roster is its own sidecars)."""
-    from .benchmark.exam import exam_tasks, render_screen_report, screen_sidecar
-
-    results = [screen_sidecar(d, time_limit=time_limit, backend=backend)
-               for d in exam_tasks(tasks, backend)]
-    print(render_screen_report(results))
-    if not results:
-        print(f"no sidecar-bearing tasks under {tasks}", file=sys.stderr)
-        return 2
-    return 0 if all(r.adoptable for r in results) else 1
 
 
-def _backend_choices() -> list[str]:
-    from .backends.base import available_backends
-    return available_backends()
-
-
-def cmd_benchmark(tasks: Path, outdir: Path, report: Path | None,
-                 mutant_cap: int, quick: bool,
-                 backend: str = "dafny") -> int:
-    from .backends.base import available_backends
-    from .benchmark.runner import (ERROR, FAIL, render_cross_report,
-                                   render_report, run_benchmark,
-                                   scores_to_json)
-
-    kwargs = dict(mutant_cap=mutant_cap, hunt_timeout=5,
-                  dafny_time_limit=60, difftest_examples=60)
-    if quick:
-        kwargs.update(mutant_cap=min(mutant_cap, 4), difftest_examples=20)
-    if backend == "all":
-        # TRIPLE ADJUDICATION: one ladder per registered backend, and
-        # the cross report reads the same source three ways — runtime
-        # rungs, then one prove column per prover.
-        by_backend = {
-            b: run_benchmark(tasks, outdir / b, backend=b, **kwargs)
-            for b in available_backends()}
-        scores = [sc for group in by_backend.values() for sc in group]
-        if not scores:
-            print(f"no tasks found under {tasks}", file=sys.stderr)
-            return 2
-        print(render_cross_report(by_backend))
-        if report is not None:
-            report.parent.mkdir(parents=True, exist_ok=True)
-            report.write_text(json.dumps(
-                {b: scores_to_json(g) for b, g in by_backend.items()},
-                indent=1))
-            print(f"\nreport -> {report}")
-    else:
-        scores = run_benchmark(tasks, outdir, backend=backend, **kwargs)
-        if not scores:
-            print(f"no tasks found under {tasks}", file=sys.stderr)
-            return 2
-        print(render_report(scores))
-        if report is not None:
-            report.parent.mkdir(parents=True, exist_ok=True)
-            report.write_text(json.dumps(scores_to_json(scores), indent=1))
-            print(f"\nreport -> {report}")
-    # Exit status mirrors the scorecard so CI can gate on it: 2 for an
-    # incomplete run (tool errors), 1 for a regression (failed rungs).
-    # Triple mode is a MEASUREMENT, not a gate: a task outside one
-    # prover's fragment is expected data there (the Dafny single-run
-    # stays the CI gate), so only tool errors fail it.
-    if any(r.status == ERROR for s in scores for r in s.rungs):
-        return 2
-    if backend != "all" \
-            and any(r.status == FAIL for s in scores for r in s.rungs):
-        return 1
-    return 0
-
-
-def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False) -> int:
-    from .guards.emitter import GuardGenError, emit_guarded
+def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False, backend: str = "dafny") -> int:
+    from veripy.guards.emitter import GuardGenError, emit_guarded
 
     by_stem: dict[str, list[Path]] = {}
     for path in paths:
@@ -723,8 +643,13 @@ def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False) -> i
             status = 1
             continue
         try:
-            guarded = emit_guarded(source, specs, src_name=path.name,
-                                   check_ensures=check_ensures)
+            if backend == "dafny":
+                guarded = emit_guarded(source, specs, src_name=path.name, check_ensures=check_ensures)
+            else:
+                from veripy.api import guard
+                report = guard(path, check_ensures=check_ensures, backend=backend)
+                if not report["ok"]:raise GuardGenError(report["reason"])
+                guarded = report["source"]
         except GuardGenError as e:
             loc = f"{path}:{e.line}" if e.line else str(path)
             print(f"{loc}: cannot guard: {e.message}", file=sys.stderr)
@@ -747,7 +672,7 @@ def cmd_guard(paths: list[Path], outdir: Path, check_ensures: bool = False) -> i
 def cmd_repair(path: Path, outdir: Path, engine_spec: str, max_iterations: int,
                time_limit: int, apply: bool, engine_wall: int | None = None,
                engine_effort: str | None = None) -> int:
-    from .repair import DEFAULT_ENGINE_WALL_S, make_engine, repair_file
+    from veripy.proofs.repair import DEFAULT_ENGINE_WALL_S, make_engine, repair_file
 
     wall = DEFAULT_ENGINE_WALL_S if engine_wall is None else engine_wall
     try:
@@ -770,8 +695,7 @@ def cmd_repair(path: Path, outdir: Path, engine_spec: str, max_iterations: int,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="veripy",
-        description="Verify a typed Python fragment (#@ specs). "
-                    "M0: runtime contracts + CrossHair counterexamples.",
+        description="Verify annotated Python components with Dafny or Lean.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -802,6 +726,7 @@ def main(argv: list[str] | None = None) -> int:
              "executable requires at the boundary (ARCHITECTURE §4)",
     )
     p_guard.add_argument("files", nargs="+", type=Path)
+    p_guard.add_argument("--backend", choices=["dafny", "dafny-outcomes", "dafny-buffers"], default="dafny")
     p_guard.add_argument("-o", "--outdir", type=Path, default=Path("build/guarded"))
     p_guard.add_argument(
         "--check-ensures",
@@ -819,7 +744,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_verify = sub.add_parser(
         "verify",
-        help="encode the fragment to Dafny and verify (M1 clean-bucket slice)",
+        help="verify the admitted fragment with the selected proof backend",
     )
     p_verify.add_argument("files", nargs="+", type=Path)
     p_verify.add_argument("-o", "--outdir", type=Path, default=Path("build/dafny"))
@@ -840,7 +765,7 @@ def main(argv: list[str] | None = None) -> int:
         help="with --json: run CrossHair on failing modules to attach a "
              "concrete counterexample when one exists",
     )
-    from .backends.base import available_backends
+    from veripy.backends.base import available_backends
 
     p_verify.add_argument(
         "--backend", choices=available_backends(), default="dafny",
@@ -862,101 +787,6 @@ def main(argv: list[str] | None = None) -> int:
                             help="fail unless at least N functions were "
                                  "actually compared (default 1: a sweep that "
                                  "compared nothing has not passed)")
-
-    p_benchmark = sub.add_parser(
-        "benchmark",
-        help="run veripy-benchmark: assurance-ladder scoring over annotated-Python tasks",
-    )
-    p_benchmark.add_argument("--tasks", type=Path, default=Path("benchmark/tasks"))
-    p_benchmark.add_argument("-o", "--outdir", type=Path, default=Path("build/benchmark"))
-    p_benchmark.add_argument("--report", type=Path, default=None)
-    p_benchmark.add_argument("--mutant-cap", type=int, default=12)
-    p_benchmark.add_argument(
-        "--backend", dest="proof_backend", default="dafny",
-        choices=_backend_choices() + ["all"],
-        help="prover backend for the ladder's encode/prove rungs and "
-             "the exams (R0-R2 and fidelity are prover-independent). "
-             "The proof-repair roster follows the backend: only tasks "
-             "with THAT prover's sidecar sit its exam")
-    p_benchmark.add_argument(
-        "--exam", choices=["proof-repair", "spec-writing"], default=None,
-        help="run an exam instead of the ladder: 'proof-repair' strips the "
-             "proof additions and scores restoration under frozen specs; "
-             "'spec-writing' strips the SPECS and scores the strength of "
-             "the ones the engine writes (mutant kill rate vs golden)",
-    )
-    p_benchmark.add_argument(
-        "--engine-effort", choices=list(ENGINE_EFFORT_LEVELS), default=None,
-        help="claude-CLI reasoning effort for engine calls; omitted = the "
-             "CLI default, recorded as such")
-    parser.add_argument(
-        "--engine-wall", type=_engine_wall, default=None,
-        help="seconds a single engine call may take (default 600); raise it "
-             "to tell 'could not prove it' apart from 'did not answer'",
-    )
-    p_benchmark.add_argument(
-        "--engine", default="claude",
-        help="engine for --exam (claude | claude:<model> | "
-             "api:<provider>/<model> | file:<dir>)",
-    )
-    p_benchmark.add_argument(
-        "--retries", type=int, default=2,
-        help="with --exam spec-writing: retries allowed for a MECHANICALLY "
-             "invalid answer (unparseable, freeze violation, bad clause)",
-    )
-    p_benchmark.add_argument(
-        "--screen", action="store_true",
-        help="report whether each task's proof pack is LOAD-BEARING (the "
-             "gate for joining the exam roster) instead of running the "
-             "ladder; exits 1 if any pack is vacuous or unscreenable")
-    p_benchmark.add_argument("--quick", action="store_true",
-                            help="small mutant panels and example counts (CI mode)")
-    p_benchmark.add_argument("--max-iterations", type=int, default=4,
-                             help="with --exam: repair-loop iteration budget")
-    p_benchmark.add_argument("--time-limit", type=int, default=60,
-                             help="with --exam: prover time limit per attempt (s)")
-
-    p_experiment = sub.add_parser(
-        "experiment",
-        help="run an exam as a (task x engine x arm x trial) matrix with an "
-             "append-only JSONL ledger; resumable",
-    )
-    p_experiment.add_argument("--tasks", type=Path, default=Path("benchmark/tasks"))
-    p_experiment.add_argument("-o", "--outdir", type=Path,
-                              default=Path("build/experiment"))
-    p_experiment.add_argument("--engines", nargs="+", default=["claude"],
-                              help="engine specs: claude | claude:<model> | "
-                                   "api:<provider>/<model> | file:<dir>")
-    p_experiment.add_argument("--exam", choices=["proof-repair", "spec-writing"],
-                              default="proof-repair")
-    p_experiment.add_argument("--arms", nargs="+", default=["full", "one-shot"],
-                              help="full | one-shot | ablated "
-                                   "(spec-writing supports one-shot only)")
-    p_experiment.add_argument("--retries", type=int, default=2,
-                              help="with --exam spec-writing: retries for a "
-                                   "mechanically invalid answer")
-    p_experiment.add_argument("--mutant-cap", type=int, default=12)
-    p_experiment.add_argument("--trials", type=int, default=3)
-    p_experiment.add_argument("--ledger", type=Path, default=None,
-                              help="JSONL ledger path (default: <outdir>/ledger.jsonl)")
-    p_experiment.add_argument("--max-iterations", type=int, default=4)
-    p_experiment.add_argument("--time-limit", type=int, default=60)
-    p_experiment.add_argument("--engine-wall", type=_engine_wall, default=None,
-                              help="wall-clock seconds per ENGINE call before "
-                                   "the harness gives up on it (default 600). "
-                                   "Part of the invocation, not a tuning knob: "
-                                   "exceeding it yields an UNMEASURED task, so "
-                                   "runs differing in it are not comparable")
-    p_experiment.add_argument("--task", action="append", default=None,
-                              dest="only_tasks", metavar="TASK",
-                              help="restrict to this task (repeatable)")
-    p_experiment.add_argument("--no-resume", action="store_true",
-                              help="re-run cells already in the ledger "
-                                   "(appends; the newest row wins)")
-    p_experiment.add_argument("--summarize", type=Path, default=None,
-                              metavar="LEDGER",
-                              help="print the summary table for an existing "
-                                   "ledger and exit (no cells are run)")
 
     p_repair = sub.add_parser(
         "repair",
@@ -999,12 +829,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "emit":
         return cmd_emit(args.files, args.outdir)
     if args.command == "guard":
-        return cmd_guard(args.files, args.outdir, check_ensures=args.check_ensures)
+        return cmd_guard(args.files, args.outdir, check_ensures=args.check_ensures, backend=args.backend)
     if args.command == "hunt":
         return cmd_hunt(args.files, args.outdir, args.per_condition_timeout)
     if args.command == "verify":
         if args.json_out is not None:
-            from .agentio import dump, verify_structured_many
+            from veripy.verification.runner import dump, verify_structured_many
 
             if not args.no_types:
                 gate = run_type_gate(args.files)
@@ -1024,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
                             by_file.setdefault(key, []).append(
                                 {"kind": "type", "py_line": d.line,
                                  "message": d.message})
-                    from .agentio import new_payload
+                    from veripy.verification.runner import new_payload
 
                     payloads = []
                     for f, fails in by_file.items():
@@ -1075,7 +905,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_verify(args.files, args.outdir, args.time_limit,
                           types=not args.no_types, report=args.report)
     if args.command == "lsp":
-        from .lsp import main as lsp_main
+        from veripy.editor.server import main as lsp_main
 
         return lsp_main()
     if args.command == "repair":
@@ -1087,135 +917,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_difftest(args.files, args.outdir, args.examples,
                             report=args.report,
                             min_functions=args.min_functions)
-    if args.command == "benchmark":
-        if args.screen:
-            if args.proof_backend == "all":
-                print("--screen screens ONE backend's sidecars; name it",
-                      file=sys.stderr)
-                return 2
-            return cmd_screen(args.tasks, time_limit=args.time_limit,
-                              backend=args.proof_backend)
-        if args.exam == "proof-repair":
-            from .benchmark.exam import render_exam_report, run_repair_exam
-            from .repair import make_engine
-
-            try:
-                make_engine(args.engine, _wall(args), effort=_effort(args))  # validate the spec up front
-            except ValueError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-            try:
-                scores = run_repair_exam(args.tasks, args.outdir / "exam",
-                                         lambda: make_engine(args.engine, _wall(args), effort=_effort(args)),
-                                         max_iterations=args.max_iterations,
-                                         time_limit=args.time_limit,
-                                         backend=args.proof_backend)
-            except ValueError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-            print(render_exam_report(scores))
-            return 0 if scores and all(s.restored for s in scores) else 1
-        if args.exam == "spec-writing":
-            from .benchmark.specexam import (
-                render_spec_exam_report,
-                run_spec_exam,
-                spec_scores_to_json,
-            )
-            from .repair import make_engine
-
-            try:
-                make_engine(args.engine, _wall(args), effort=_effort(args))  # validate the spec up front
-            except ValueError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-            ladder = dict(mutant_cap=args.mutant_cap, hunt_timeout=5,
-                          dafny_time_limit=args.time_limit,
-                          difftest_examples=60,
-                          backend=args.proof_backend)
-            if args.quick:
-                ladder.update(mutant_cap=min(args.mutant_cap, 3),
-                              difftest_examples=20)
-            try:
-                scores = run_spec_exam(args.tasks, args.outdir / "spec-exam",
-                                       lambda: make_engine(args.engine, _wall(args), effort=_effort(args)),
-                                       retries=args.retries, **ladder)
-            except ValueError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-            print(render_spec_exam_report(scores))
-            if args.report is not None:
-                args.report.parent.mkdir(parents=True, exist_ok=True)
-                args.report.write_text(
-                    json.dumps(spec_scores_to_json(scores), indent=1))
-                print(f"\nreport -> {args.report}")
-            # Exit status reports EXAM VALIDITY, never spec quality: a weak
-            # spec is a measurement, not a failure.
-            return 0 if scores and all(s.valid for s in scores) else 1
-        return cmd_benchmark(args.tasks, args.outdir, args.report,
-                             args.mutant_cap, args.quick,
-                             backend=args.proof_backend)
-    if args.command == "experiment":
-        from .benchmark.experiment import (
-            exam_roster,
-            matrix_rows,
-            run_experiment,
-            summarize_ledger,
-        )
-
-        if args.summarize is not None:
-            if not args.summarize.exists():
-                print(f"no ledger at {args.summarize}", file=sys.stderr)
-                return 2
-            print(summarize_ledger(args.summarize))
-            return 0
-        ledger = args.ledger or (args.outdir / "ledger.jsonl")
-        arms = args.arms
-        if args.exam == "spec-writing" and arms == ["full", "one-shot"]:
-            arms = ["one-shot"]  # the default is proof-repair's; don't error
-        try:
-            written = run_experiment(
-                args.tasks, args.outdir / "cells", args.engines, arms,
-                args.trials, ledger, max_iterations=args.max_iterations,
-                time_limit=args.time_limit,
-                engine_wall=args.engine_wall,
-                only_tasks=set(args.only_tasks) if args.only_tasks else None,
-                resume=not args.no_resume, exam=args.exam,
-                retries=args.retries, engine_effort=_effort(args),
-                ladder=dict(mutant_cap=args.mutant_cap, hunt_timeout=5,
-                            dafny_time_limit=args.time_limit,
-                            difftest_examples=60),
-                progress=print)
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        # Exit status covers the WHOLE requested matrix, read back from the
-        # ledger — not just the rows this invocation wrote. On resume the
-        # completed cells are skipped and never re-emitted, so judging by
-        # `written` would report success while the ledger still holds
-        # failed trials from an earlier run.
-        # Scope to the roster this run actually covered. A ledger is
-        # append-only and outlives corpus changes, so a task since renamed
-        # or removed keeps its old rows — and an unsuccessful one would
-        # fail a matrix that no longer contains it.
-        covered = set(args.only_tasks) if args.only_tasks \
-            else set(exam_roster(args.tasks, args.exam))
-        matrix = matrix_rows(ledger, exam=args.exam, engines=args.engines,
-                             arms=arms, trials=args.trials, tasks=covered)
-        resumed = len(matrix) - len(written)
-        print(f"\n{len(written)} cell-task row(s) appended -> {ledger}"
-              + (f" ({resumed} resumed from earlier runs)" if resumed > 0 else "")
-              + "\n")
-        print(summarize_ledger(ledger))
-        if not matrix:
-            print("no trials recorded for the requested matrix",
-                  file=sys.stderr)
-            return 2
-        failed = [r for r in matrix if not r["restored"]]
-        if failed:
-            print(f"\n{len(failed)}/{len(matrix)} trial(s) in this matrix did "
-                  f"not succeed", file=sys.stderr)
-            return 1
-        return 0
     if args.command == "survey":
         return cmd_survey(args.paths, args.top, args.json)
     return 2

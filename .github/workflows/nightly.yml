@@ -56,11 +56,9 @@ jobs:
       # would otherwise compare fewer and fewer functions while still
       # exiting 0. A nightly that has silently stopped testing is worse
       # than no nightly, because it keeps reporting green.
-      # Swept: benchmark/tasks, the corpus every task of which MUST encode
-      # and MUST agree with its Dafny model. NOT examples/contact — that is
-      # the grammar-contact corpus, whose files are deliberately outside the
-      # fragment; a nightly red every night for a documented rejection would
-      # train everyone to ignore this job.
+      # Sweep the admitted examples listed in tests/fixtures/difftest.txt.
+      # Other contact examples intentionally exercise unsupported syntax.
+      # The fixture list and coverage floor are checked by the CLI tests.
       # The dispatch input reaches the shell through `env`, never through
       # `${{ }}` inside `run`: an expression is substituted into the script
       # text before a shell exists, so whatever the box contained would be
@@ -71,11 +69,12 @@ jobs:
         env:
           EXAMPLES: ${{ github.event.inputs.examples || 5000 }}
         run: |
-          veripy difftest benchmark/tasks \
+          mapfile -t SOURCES < tests/fixtures/difftest.txt
+          veripy difftest "${SOURCES[@]}" \
             -n "$EXAMPLES" \
             -o build/nightly \
             --report build/nightly/difftest-report.json \
-            --min-functions 14
+            --min-functions 16
 
       - name: Upload the divergence report
         if: always()

@@ -1,0 +1,135 @@
+{
+  "utc": "2026-09-12T10:52:02.100312+00:00",
+  "scope": "Two previously known unchanged-body snapshot boundaries; not new algorithm rewrites or unseen transfer.",
+  "counting_script_sha256": "e2539cd2ae5f1ef455e22e50a5ca70a8ab28a421c8e2f97fe55415811b66eeef",
+  "rows": [
+    {
+      "project": "sglang",
+      "baseline": "unsupported",
+      "after": "proved-compatible",
+      "unchanged_body_control": true,
+      "counts_per_version": {
+        "python_loc": 27,
+        "spec_loc": 12,
+        "hint_loc": 14
+      },
+      "existing_support_loc_per_version": {
+        "dafny": 79,
+        "lean": 125
+      },
+      "new_relation_support_loc": 13,
+      "comparison_wall_seconds": 8.708389749997878,
+      "replay": {
+        "admitted_samples": 288,
+        "reason": "bounded replay found no difference; this is not a proof"
+      },
+      "functional": {
+        "dafny": {
+          "status": "ok",
+          "wall_seconds": 7.708545792003861
+        },
+        "lean": {
+          "status": "ok",
+          "wall_seconds": 25.856106917002762
+        }
+      },
+      "attempts": [
+        {
+          "attempt": "attempt-001",
+          "status": "inconclusive",
+          "seconds": 9.977240874999552
+        },
+        {
+          "attempt": "attempt-002",
+          "status": "inconclusive",
+          "seconds": 13.8984486249974
+        },
+        {
+          "attempt": "attempt-003",
+          "status": "inconclusive",
+          "seconds": 9.135329584001738
+        },
+        {
+          "attempt": "attempt-004",
+          "status": "proved-compatible",
+          "seconds": 13.387362708999717
+        },
+        {
+          "attempt": "attempt-005",
+          "status": "proved-compatible",
+          "seconds": 11.66255000000092
+        },
+        {
+          "attempt": "attempt-006",
+          "status": "proved-compatible",
+          "seconds": 8.708389749997878
+        }
+      ],
+      "compiler_changed_for_reuse": null,
+      "new_source_contract_hint_loc": 0,
+      "active_human_seconds": null,
+      "agent_tokens": null,
+      "dollars": null
+    },
+    {
+      "project": "pytorch",
+      "baseline": "unsupported",
+      "after": "proved-compatible",
+      "unchanged_body_control": true,
+      "counts_per_version": {
+        "python_loc": 13,
+        "spec_loc": 2,
+        "hint_loc": 1
+      },
+      "existing_support_loc_per_version": {
+        "dafny": 0,
+        "lean": 35
+      },
+      "new_relation_support_loc": 0,
+      "comparison_wall_seconds": 8.857749167000293,
+      "replay": {
+        "admitted_samples": 126,
+        "reason": "bounded replay found no difference; this is not a proof"
+      },
+      "functional": {
+        "dafny": {
+          "status": "ok",
+          "wall_seconds": 4.750043915999413
+        },
+        "lean": {
+          "status": "ok",
+          "wall_seconds": 5.560610958003963
+        }
+      },
+      "attempts": [
+        {
+          "attempt": "attempt-001",
+          "status": "proved-compatible",
+          "seconds": 8.857749167000293
+        }
+      ],
+      "compiler_changed_for_reuse": false,
+      "new_source_contract_hint_loc": 0,
+      "active_human_seconds": null,
+      "agent_tokens": null,
+      "dollars": null
+    }
+  ],
+  "compiler_changes": [
+    {
+      "file": "veripy/compatibility.py",
+      "added_lines": 160,
+      "removed_lines": 26
+    }
+  ],
+  "controls": {
+    "behavioral_mutants": 2,
+    "native_witnesses": 2,
+    "admission_controls": 6,
+    "rejected": 6
+  },
+  "timing_caveat": "One local invocation per reported final attempt with concurrent jobs. Includes startup; no speedup claim.",
+  "frozen_compiler_unchanged": true,
+  "historical_aggregate_rewritten": false,
+  "paper_artifact_updated": false
+}
