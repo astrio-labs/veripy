@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import ast
 
-from ...frontend.parse import ModuleSpecs, rewrite_old
+from veripy.frontend.parse import ModuleSpecs, rewrite_old
 
 _IMPORTS = ("import copy", "import icontract")
 

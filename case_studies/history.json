@@ -1,0 +1,15 @@
+{
+  "archive": "output/research-archives/2026-09-14/veripy-case-studies-2026-09-14.tar.gz",
+  "version": "2026-09-14",
+  "catalog": "docs/research-archives/2026-09-14.json",
+  "reproduction_instructions": "docs/RESEARCH-ARCHIVES.md",
+  "sha256": "192556857b84fd1f0efc6a008e3b5c780054e252446220aa4e3b0ffc2e3783fd",
+  "scope": "Complete pre-cleanup case_studies tree, including failed runs, frozen compiler snapshots and review provenance. Original paths in evidence records refer to members of this archive.",
+  "publication_status": "Prepared locally as a versioned research attachment, not uploaded. The catalog records all companion archives and checksums.",
+  "public_view": {
+    "version": "research-2026-09-15",
+    "catalog": "docs/research-archives/research-2026-09-15.json",
+    "release_url": "https://github.com/astrio-labs/veripy/releases/tag/research-2026-09-15",
+    "scope": "Research-only view of the original archives with manuscript, editorial and environment material excluded. All selected outcome records, requirement decisions and frozen compiler inputs are retained. Original complete archive and its hash above remain private and unchanged."
+  }
+}

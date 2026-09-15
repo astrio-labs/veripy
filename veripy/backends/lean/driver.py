@@ -18,7 +18,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..dafny.driver import _map_line
+from veripy.backends.dafny.driver import _map_line
 
 # Message text -> published taxonomy kind. Checked in order; first hit
 # wins. Every value must be a member of veripy/failures.py's taxonomy —
@@ -36,6 +36,7 @@ _KINDS: tuple[tuple[str, str], ...] = (
     ("could not prove the goal", "postcondition"),
     ("omega could not prove", "postcondition"),
     ("maximum recursion depth", "timeout"),
+    ("wall time limit", "timeout"),
     ("maxheartbeats", "timeout"),
     ("deterministic timeout", "timeout"),
     # The endgame combinator (`first | omega | trivial`) reports its last
@@ -46,6 +47,7 @@ _KINDS: tuple[tuple[str, str], ...] = (
     # goal is the spec theorem failing, whatever tactic reported it.
     ("tactic `assumption` failed", "postcondition"),
     ("depends on disallowed axioms", "axiom-footprint"),
+    ("missing axiom audit", "axiom-footprint"),
     ("⊢", "postcondition"),
 )
 
@@ -56,7 +58,7 @@ _KINDS: tuple[tuple[str, str], ...] = (
 # and `admit` introduce — means the "proof" was never checked.
 ALLOWED_AXIOMS = frozenset({"propext", "Quot.sound", "Classical.choice"})
 
-_AXIOM_LINE = re.compile(r"'([^']+)' depends on axioms: \[([^\]]*)\]")
+_AXIOM_LINE = re.compile(r"^'(.+)' depends on axioms: \[([^\]]*)\]")
 
 
 def axiom_violations(messages: list[str]) -> list[tuple[str, list[str]]]:
@@ -110,6 +112,8 @@ class LeanVerifyResult:
     summary: str = ""
     raw: str = ""
     error: str | None = None  # tool-level failure (lean missing/crashed)
+    log_path: str | None = None
+    audit_path: str | None = None
 
 
 def find_lean() -> str | None:
@@ -167,12 +171,20 @@ def verify_lean_file(path: Path, line_map: dict[int, int],
     if exe is None:
         return LeanVerifyResult(ok=False, error="lean not found on PATH")
     try:
-        # Lean's own budget is heartbeats, not seconds; the wall guards a
-        # hung process, generously (same shape as the Dafny driver's).
+        # This public budget is a wall limit in seconds. subprocess.run kills
+        # and waits for Lean on expiry; Lean's tactic heartbeats are separate.
         proc = subprocess.run([exe, "--json", str(path)],
                               capture_output=True, text=True,
-                              timeout=time_limit * 20 + 120)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+                              timeout=time_limit)
+    except subprocess.TimeoutExpired as exc:
+        def decoded(value):
+            return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else (value or "")
+        return LeanVerifyResult(
+            ok=False, raw=decoded(exc.stdout) + decoded(exc.stderr),
+            diagnostics=[LeanDiagnostic(0, None, "error",
+                f"Lean wall time limit of {time_limit} seconds exceeded; proof inconclusive")],
+            summary="Lean wall time limit exceeded")
+    except OSError as exc:
         return LeanVerifyResult(ok=False, error=f"lean failed to run: {exc}")
     output = proc.stdout + proc.stderr
     diagnostics: list[LeanDiagnostic] = []
@@ -206,6 +218,17 @@ def verify_lean_file(path: Path, line_map: dict[int, int],
     # never verified — `sorryAx` above all, which is what both `sorry`
     # and `admit` leave behind. A syntactic whitelist has to enumerate
     # the ways a proof might cheat; this reports what it actually used.
+    if ok and path.exists():
+        requested = re.findall(r"^\s*#print\s+axioms\s+(?:«([^»]+)»|([^\s]+))", path.read_text(), re.M)
+        messages = [d.message for d in diagnostics]
+        for quoted, plain in requested:
+            name = quoted or plain
+            if not any(msg.startswith(f"'{name}' depends on axioms:") or
+                       msg.startswith(f"'{name}' does not depend on any axioms") for msg in messages):
+                diagnostics.append(LeanDiagnostic(0, None, "error",
+                    f"theorem {name!r} has missing axiom audit output"))
+                ok = False
+        errors = [d for d in diagnostics if d.severity == "error"]
     if ok:
         violations = axiom_violations([d.message for d in diagnostics])
         for thm, bad in violations:

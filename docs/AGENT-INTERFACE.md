@@ -19,7 +19,11 @@ if api.conformance(path)["conformant"]:          # cheap gate, no prover
         api.repair(path, workdir, engine="claude")   # sidecar edits only
 ```
 
-Three properties, each pinned by a test in `tests/test_api.py`:
+This example uses the default Dafny conformance path. API proof operations do
+not implicitly run the CLI typing gate. Hosts must request and record any
+separate typing and backend-specific admission checks they require.
+
+Three properties, each pinned by a test in `tests/api/test_api.py`:
 
 1. **It never prints.** Diagnostics are returned, not written to stdout.
 2. **It never exits.** No `sys.exit` reaches the host process.
@@ -34,7 +38,7 @@ writing a file, because where generated code lands is the host's decision.
 host should compare across runs.
 
 Note the root package deliberately does **not** re-export these:
-`veripy.repair` is already a submodule, so a root-level `repair` function
+`veripy.proofs.repair` is already a submodule, so a root-level `repair` function
 would resolve to the function or the module depending on import order.
 
 ## Getting a structured outcome
@@ -46,8 +50,10 @@ veripy verify path/to/module.py --json failures.json
 or, in process:
 
 ```python
-from veripy.agentio import verify_structured
-payload = verify_structured(Path("module.py"), Path("build/out"))
+from pathlib import Path
+from veripy import api
+
+payload = api.verify(Path("module.py"), Path("build/out"))
 ```
 
 **Every outcome is a payload.** Spec errors, conformance rejections,
@@ -56,6 +62,9 @@ never a traceback. Exit codes mirror it: `0` verified, `1` failed, `2` a
 tool or input error.
 
 ## Payload shape
+
+The version fields below are illustrative. Read the actual toolchain identity
+from each run rather than treating these values as installation pins.
 
 ```json
 {
@@ -155,12 +164,15 @@ translation.
 | `syntax` | The file is not parseable Python (or the spec-comment tokenizer failed on it). |
 | `type` | The basedpyright strict type gate rejected the file. |
 
-### Harness and exam failures — say nothing about the program
+### Harness failures — say nothing about the program
 
 | kind | what it means, and what to do |
 | --- | --- |
 | `engine` | A repair/spec engine call failed (unavailable CLI, API error, wall exceeded). Says nothing about the program. |
 | `freeze` | An exam's frozen region was modified — the attempt is invalid, not wrong. |
+
+`freeze` remains reserved in taxonomy version 1 for reading historical records.
+The removed benchmark harness emitted it. Current proof-sidecar repair does not.
 
 ### Unclassified — origin undetermined
 
@@ -222,7 +234,7 @@ never a path that no longer exists.
 
 - Fields are **added**, never repurposed; `schema` bumps if one is removed
   or its meaning changes.
-- The `kind` set is closed and published in `veripy/failures.py`. A kind
+- The `kind` set is closed and published in `veripy/verification/failures.py`. A kind
   reaching a caller without appearing there is a bug — a test scans the
   package for kind literals and fails on an undocumented one.
 - Adding a kind bumps `taxonomy_version` and updates this file.

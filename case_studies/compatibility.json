@@ -1,0 +1,212 @@
+[
+  {
+    "id": "black",
+    "repo": "psf/black",
+    "path": "src/black/ranges.py",
+    "old_commit": "bdcad23abeb99dee53af0c511b9fd49b0354b28e",
+    "new_commit": "6409f0a51b7bf081ea60a21b21292cfe572fefdc",
+    "function": "is_valid_line_range",
+    "backend": "dafny",
+    "domain": "Exact tuple of two exact integers, all values; boolean return.",
+    "executable_change": true,
+    "recorded_status": "proved-compatible",
+    "mode": "product",
+    "old": "case_studies/black/compatibility/old.py",
+    "old_sha256": "8b4dc313b8366ca984046cdeca8ec7ba391c3dcaf1f2f6da4e607c3381a2235d",
+    "new": "case_studies/black/compatibility/new.py",
+    "new_sha256": "45435a4e23d4711c96ec2c2dd3f39e98c90b4167b380238d3878e320758c3991"
+  },
+  {
+    "id": "django",
+    "repo": "django/django",
+    "path": "django/utils/http.py",
+    "old_commit": "5cba975d26d10ff5d85e123fb2084671a009cc9b",
+    "new_commit": "2508be35ca8bc5440b93d3152cd80ee5f8e159e3",
+    "function": "int_to_base36",
+    "backend": "dafny-outcomes",
+    "domain": "Exact integers on Python 3; base36 strings or ValueError class; unreachable six.PY2 branch removed with structural audit.",
+    "executable_change": true,
+    "recorded_status": "proved-compatible",
+    "mode": "product",
+    "old": "case_studies/django/compatibility/old.py",
+    "old_sha256": "b94ef22f297b2d6cc7a2f9f1fbe2c8228dcbdc42aa0044517527bd60ec662a43",
+    "new": "case_studies/django/compatibility/new.py",
+    "new_sha256": "c435c5fb7f9fffea259a04aa81c0f24b259710244112422970ff62042a124341",
+    "relation": "case_studies/django/compatibility/relation.dfy"
+  },
+  {
+    "id": "cpython",
+    "repo": "python/cpython",
+    "path": "Lib/_pydatetime.py",
+    "old_commit": "60403a5409ff2c3f3b07dd2ca91a7a3e096839c7",
+    "new_commit": "ebf955df7a89ed0c7968f79faec1de49f61ed7cb",
+    "function": "_days_before_year",
+    "backend": "dafny",
+    "domain": "Exact positive integers year >= 1; integer return. Other calendar helpers and round trips are outside this relational verdict.",
+    "executable_change": false,
+    "recorded_status": "proved-compatible",
+    "mode": "product",
+    "old": "case_studies/cpython/compatibility/old.py",
+    "old_sha256": "37f0e693aab96a99dd2c1bdbdc93447f3b04b2018a843591bfdaf33333de9aed",
+    "new": "case_studies/cpython/compatibility/new.py",
+    "new_sha256": "37f0e693aab96a99dd2c1bdbdc93447f3b04b2018a843591bfdaf33333de9aed"
+  },
+  {
+    "id": "stdnum",
+    "repo": "arthurdejong/python-stdnum",
+    "path": "stdnum/luhn.py",
+    "old_commit": "d66998e6c6af5852b2761060c12c1a48a1c167ec",
+    "new_commit": "52d316200c347b4f3d2b61a77ce746f3d28a3815",
+    "function": "checksum",
+    "backend": "dafny-outcomes",
+    "domain": "Exact Unicode-scalar strings number and alphabet with len(alphabet)>1, including omitted default alphabet; integer return or exception class.",
+    "executable_change": false,
+    "recorded_status": "inconclusive",
+    "mode": "product",
+    "old": "case_studies/stdnum/compatibility/old.py",
+    "old_sha256": "440793a9306425ad6a159a34ececf186155bd6a969e9d7dfd884dfbec18038d7",
+    "new": "case_studies/stdnum/compatibility/new.py",
+    "new_sha256": "440793a9306425ad6a159a34ececf186155bd6a969e9d7dfd884dfbec18038d7"
+  },
+  {
+    "id": "werkzeug",
+    "repo": "pallets/werkzeug",
+    "path": "src/werkzeug/http.py",
+    "old_commit": "6389612fd1ee1bd93579eed5026e8fd471d04abd",
+    "new_commit": "c1a26b45fb06d5e086b4d6be820c3302f588d815",
+    "function": "quote_etag",
+    "backend": "dafny-outcomes",
+    "domain": "Exact Unicode-scalar strings and exact bool weak, including omitted weak=False; string return or ValueError class. Parser and ETags object state excluded.",
+    "executable_change": false,
+    "recorded_status": "proved-compatible",
+    "mode": "product",
+    "old": "case_studies/werkzeug/compatibility/old.py",
+    "old_sha256": "8da4a048bf30c474b6fa35c2e5485d3c24a86fcbd21bd827aef5b1bf73af08aa",
+    "new": "case_studies/werkzeug/compatibility/new.py",
+    "new_sha256": "8da4a048bf30c474b6fa35c2e5485d3c24a86fcbd21bd827aef5b1bf73af08aa",
+    "relation": "case_studies/werkzeug/compatibility/relation.dfy"
+  },
+  {
+    "id": "packaging",
+    "repo": "pypa/packaging",
+    "path": "src/packaging/utils.py",
+    "old_commit": "f58537628042c7f29780b9d33f31597e7fc9d664",
+    "new_commit": "3b77a26f5a27473ad3b08194d773f325d018a2d0",
+    "function": "canonicalize_name",
+    "backend": "dafny-outcomes",
+    "domain": "Exact Unicode-scalar strings with bool validate, including its keyword-only default; string return or InvalidName class.",
+    "executable_change": true,
+    "recorded_status": "counterexample-found",
+    "mode": "native-witness",
+    "old": "case_studies/packaging/compatibility/old.py",
+    "old_sha256": "f4b74219b2cb0f7bc20724d59d9607d0f9be415c5882dc92f416b30d6dd23f7f",
+    "new": "case_studies/packaging/compatibility/new.py",
+    "new_sha256": "602fae246127e167449a02f487442fbe92d6a4728d93939757c50289598094a9",
+    "witnesses": [
+      {
+        "arguments": {
+          "name": "\u039f\u03a3.\u0391",
+          "validate": false
+        },
+        "old": {
+          "return": "\u03bf\u03c2-\u03b1"
+        },
+        "new": {
+          "return": "\u03bf\u03c3-\u03b1"
+        }
+      },
+      {
+        "arguments": {
+          "name": "\u039f\u03a3..\u0391",
+          "validate": false
+        },
+        "old": {
+          "return": "\u03bf\u03c2-\u03b1"
+        },
+        "new": {
+          "return": "\u03bf\u03c3-\u03b1"
+        }
+      },
+      {
+        "arguments": {
+          "name": "foo\n",
+          "validate": true
+        },
+        "old": {
+          "return": "foo\n"
+        },
+        "new": {
+          "exception": "InvalidName"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pypng",
+    "repo": "drj11/pypng",
+    "path": "code/png.py",
+    "old_commit": "0dfbfda89e59e592a1cb299ee79af3e6e22d72a1",
+    "new_commit": "4632d79ce419299398c2d540f2fe0e09e1480e3f",
+    "function": "undo_filter_paeth",
+    "backend": "dafny-buffers",
+    "domain": "Exact equal-length bytearrays, positive integer filter_unit; result may alias scanline, previous distinct from both; None return and all argument buffer poststates.",
+    "executable_change": false,
+    "recorded_status": "unsupported",
+    "mode": "product",
+    "old": "case_studies/pypng/compatibility/old.py",
+    "old_sha256": "153ef3ca362990b67212dfbfd305bbae012b6713802d8babd8f825554ae1c756",
+    "new": "case_studies/pypng/compatibility/new.py",
+    "new_sha256": "153ef3ca362990b67212dfbfd305bbae012b6713802d8babd8f825554ae1c756"
+  },
+  {
+    "id": "sglang",
+    "repo": "sgl-project/sglang",
+    "path": "python/sglang/srt/mem_cache/allocation_sizing.py",
+    "old_commit": "6916ffc4cba5f6b97a10d7ab07358e8e21b3129e",
+    "new_commit": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+    "function": "page_aligned_decode_alloc_lens",
+    "backend": "dafny",
+    "domain": "Stable nested integer request snapshots; 0<=committed<=allocated, reserve>=0, page_size>0; ordered length lists and total logical increment.",
+    "executable_change": false,
+    "recorded_status": "unsupported",
+    "mode": "product",
+    "old": "case_studies/sglang/compatibility/old.py",
+    "old_sha256": "c0bc0c20f7391d1f57922ecdfd7ef880fcaddbb89c9f806418f62dd86a8e197b",
+    "new": "case_studies/sglang/compatibility/new.py",
+    "new_sha256": "c0bc0c20f7391d1f57922ecdfd7ef880fcaddbb89c9f806418f62dd86a8e197b"
+  },
+  {
+    "id": "pytorch",
+    "repo": "pytorch/pytorch",
+    "path": "torch/distributed/_shard/sharding_spec/_internals.py",
+    "old_commit": "08187d9e0fba026dc8217405802ab5381dc88d90",
+    "new_commit": "2b3ec34829036a65cd9d1398ea72a0167dc37470",
+    "function": "_check_shard_metadata_pair_overlap",
+    "backend": "dafny",
+    "domain": "Stable ShardMetadata snapshots with equal ranks and positive integer sizes; exact integer offsets; boolean overlap return. No tensors or distributed execution.",
+    "executable_change": false,
+    "recorded_status": "unsupported",
+    "mode": "product",
+    "old": "case_studies/pytorch/compatibility/old.py",
+    "old_sha256": "4918c512a8a830f04661664fdb5ed418b052b06f55184736a69494195782785f",
+    "new": "case_studies/pytorch/compatibility/new.py",
+    "new_sha256": "4918c512a8a830f04661664fdb5ed418b052b06f55184736a69494195782785f"
+  },
+  {
+    "id": "vllm",
+    "repo": "vllm-project/vllm",
+    "path": "vllm/v1/core/kv_cache_utils.py",
+    "old_commit": "74c96922ecb9017f413318c76d1af83aa2ab45a5",
+    "new_commit": "98dff2a81d747d1dba01a47f939f48c3526d4206",
+    "function": "_approximate_gcd",
+    "backend": "dafny-outcomes",
+    "domain": "Exact integer lists and exact integer-or-None keyword-only lower_bound including its default; integer result or ValueError class; no cache-manager or GPU claim.",
+    "executable_change": false,
+    "recorded_status": "unsupported",
+    "mode": "product",
+    "old": "case_studies/vllm/compatibility/old.py",
+    "old_sha256": "4ae2da0de93efc0867664abfb539fb06999f3ed93e895737b52e54b11025086e",
+    "new": "case_studies/vllm/compatibility/new.py",
+    "new_sha256": "4ae2da0de93efc0867664abfb539fb06999f3ed93e895737b52e54b11025086e"
+  }
+]

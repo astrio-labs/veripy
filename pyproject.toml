@@ -8,12 +8,12 @@ name = "veripy"
 # The PyPI name `veripy` is already taken by an unrelated 2016 project, so
 # a later publish will need a distinct distribution name or a transfer.
 version = "0.1.0a1"
-description = "Verify a typed Python fragment: #@ specs compile to runtime contracts and translate to Dafny for SMT proofs."
+description = "Source-preserving verification and compatibility checking for annotated Python components."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
-keywords = ["verification", "dafny", "contracts", "smt", "formal-methods", "crosshair"]
+keywords = ["verification", "dafny", "contracts", "smt", "formal-methods", "crosshair", "lean", "compatibility"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -29,9 +29,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nolanlwin/veripy"
-Repository = "https://github.com/nolanlwin/veripy"
-Issues = "https://github.com/nolanlwin/veripy/issues"
+Homepage = "https://github.com/astrio-labs/veripy"
+Repository = "https://github.com/astrio-labs/veripy"
+Issues = "https://github.com/astrio-labs/veripy/issues"
 
 [project.optional-dependencies]
 types = [
@@ -43,6 +43,9 @@ dev = [
     "basedpyright>=1.39",
     "hypothesis>=6",
     "DafnyRuntimePython>=4.11",
+    # Newer macOS ARM Z3 wheels have inconsistent filename/metadata tags.
+    # Pin this platform until a replacement passes installation checks.
+    "z3-solver==4.15.1.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [project.scripts]
@@ -50,3 +53,11 @@ veripy = "veripy.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["veripy*"]
+
+[tool.setuptools.package-data]
+"veripy.backends.lean" = ["library/*.lean"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["requires_prover(*backends): integration check requiring installed provers, or the parametrized backend"]
+pythonpath = ["."]

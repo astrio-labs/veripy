@@ -1,0 +1,22 @@
+{
+  "archives": [
+    {
+      "bytes": 56895128,
+      "file": "veripy-paper-history-2026-09-14.tar.gz",
+      "members": 601,
+      "scope": "Complete paper directory before cleanup, including all drafts, review decisions, build failures, evidence, original templates and manuscript sources. No outcome-based filtering.",
+      "sha256": "940eeccbddda632eab6981288443422a3ccd9d87e5d5eb4bd78640cabbead247",
+      "source": "paper/"
+    }
+  ],
+  "inventory": {
+    "bytes": 27488,
+    "file": "veripy-paper-file-inventory-2026-09-14.json.gz",
+    "sha256": "326a2f90876f3f5376c25232e6da10153c44d1be17cc6e0afa9f63b7be04ea5b"
+  },
+  "publication_status": "prepared-locally",
+  "release_url": null,
+  "reproduction_instructions": "The current source and build instructions remain in paper/README.md. Original paper paths resolve after extracting this archive into a separate directory. The frozen research artifact is cataloged by docs/research-archives/2026-09-14.json.",
+  "schema": 1,
+  "version": "paper-2026-09-14"
+}

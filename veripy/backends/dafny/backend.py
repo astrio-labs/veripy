@@ -12,10 +12,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..base import register_backend
-from .driver import dafny_version, verify_dafny_file
-from .encoder import encode_module, load_proof_sidecar, validate_sidecar_text
-from .preamble import PREAMBLE_VERSION
+from veripy.backends.base import register_backend
+from veripy.backends.dafny.driver import dafny_version, verify_dafny_file
+from veripy.backends.dafny.encoder import encode_module, load_proof_sidecar, validate_sidecar_text
+from veripy.backends.dafny.preamble import PREAMBLE_VERSION
 
 
 class DafnyBackend:
@@ -32,7 +32,7 @@ class DafnyBackend:
         return load_proof_sidecar(source_path)
 
     def validate_sidecar(self, text: str) -> None:
-        validate_sidecar_text(text)
+        validate_sidecar_text(text, "proof sidecar")
 
     def encode(self, source: str, specs: Any, *, module_name: str,
                proof_lemmas: Any) -> Any:

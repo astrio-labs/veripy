@@ -35,7 +35,7 @@ import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .parse import SAFE_BUILTINS
+from veripy.frontend.parse import SAFE_BUILTINS
 
 # --------------------------------------------------------------------------
 # Rules. `ref` points at the design source: ARCHITECTURE.md section or
@@ -640,9 +640,9 @@ def _str_method_still_outside(node: ast.Call) -> bool:
     """True for str-method calls the encoder still rejects.
 
     Survey is optimistic-by-name for list/dict/set methods. For the
-    str surface, admitted forms (`s.split(sep)`, `sep.join(xs)`, …)
-    do not fire; no-arg strip/split, Unicode-table methods, tuple
-    startswith, replace-with-count, and a visible empty sep/old do."""
+    str surface, admitted call shapes do not fire. Unsupported arities,
+    keyword arguments, nonliteral affix tuples, no-arg split, replacement
+    counts, and a visible empty separator or replacement pattern do."""
     func = node.func
     if not isinstance(func, ast.Attribute):
         return False
@@ -661,7 +661,7 @@ def _str_method_still_outside(node: ast.Call) -> bool:
         return False
     admitted = {
         "join", "split", "find", "startswith", "endswith", "replace",
-        "strip", "lstrip", "rstrip",
+        "strip", "lstrip", "rstrip", "lower",
     }
     if name not in admitted:
         return True
@@ -677,15 +677,17 @@ def _str_method_still_outside(node: ast.Call) -> bool:
     if name == "find":
         return len(args) != 1
     if name in ("startswith", "endswith"):
-        if len(args) != 1:
+        if not 1 <= len(args) <= 3:
             return True
-        return isinstance(args[0], ast.Tuple)
+        return isinstance(args[0], ast.Tuple) and any(not isinstance(a, ast.Constant) or type(a.value) is not str for a in args[0].elts)
     if name == "replace":
         if len(args) != 2:
             return True
         return _empty_str_const(args[0])
+    if name == "lower":
+        return len(args) != 0
     if name in ("strip", "lstrip", "rstrip"):
-        return len(args) != 1
+        return len(args) > 1
     return True
 
 

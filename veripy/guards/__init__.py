@@ -1,8 +1,8 @@
 """Boundary guards (ARCHITECTURE §4): generated wrappers that keep verified
 guarantees when untyped Python calls in."""
 
-from .emitter import GuardGenError, emit_guarded
-from .runtime import (
+from veripy.guards.emitter import GuardGenError, emit_guarded
+from veripy.guards.runtime import (
     GuardError,
     PostconditionError,
     PreconditionError,

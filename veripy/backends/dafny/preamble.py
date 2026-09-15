@@ -10,10 +10,10 @@ times out without it) is designated future preamble work — see ROADMAP.
 
 import re
 
-PREAMBLE_VERSION = "0.7"
+PREAMBLE_VERSION = "0.11"
 
 PREAMBLE = """\
-// VeriPy Dafny preamble v0.7 -- Python-exact arithmetic, indexing,
+// VeriPy Dafny preamble v0.8 -- Python-exact arithmetic, indexing,
 // slicing, Optionals, folds, powers, gcd/factorial/isqrt, int/str parse,
 // outcomes, filtered comprehensions, sorted and ASCII-faithful str methods (ARCHITECTURE §7.1, §7 catalog).
 // PyMod/PyFloorDiv: Python floor-based // and % on Dafny's Euclidean ops.
@@ -37,7 +37,10 @@ function PyAbs(a: int): int { if a >= 0 then a else -a }
 // The requires clause is exactly Python's IndexError condition.
 function PyIndex(i: int, n: int): int
   requires -n <= i < n
+  ensures 0 <= PyIndex(i,n) < n
+  ensures i >= 0 ==> PyIndex(i,n) == i
 {
+
   if i < 0 then i + n else i
 }
 
@@ -87,6 +90,17 @@ function PyFlatten<T>(parts: seq<seq<T>>): seq<T>
   decreases |parts|
 {
   if |parts| == 0 then [] else PyFlatten(parts[..|parts|-1]) + parts[|parts|-1]
+}
+
+// Unlimited non-overlapping str.count(sub); the empty substring occurs at
+// all |s|+1 boundaries. No start/end or implicit Unicode normalization.
+function PyStrCount(s: string, sub: string): nat
+  decreases |s|
+{
+  if |sub| == 0 then |s| + 1
+  else if |s| < |sub| then 0
+  else if s[..|sub|] == sub then 1 + PyStrCount(s[|sub|..], sub)
+  else PyStrCount(s[1..], sub)
 }
 
 // x ** e for ints; Python yields a float for negative exponents, so the
@@ -274,6 +288,22 @@ function PyStrEndsWith(s: string, suffix: string): bool
   |suffix| <= |s| && s[|s| - |suffix|..] == suffix
 }
 
+// Unlike slicing, affix matching must not clamp a positive start to |s|.
+// An empty affix fails when start exceeds the string or the normalized end.
+function PyStrStartsWithRange(s: string, prefix: string, start: int, end: int): bool
+{
+  var lo := if start < 0 then PyMax(0, |s| + start) else start;
+  var hi := if end < 0 then PyMax(0, |s| + end) else PyMin(end, |s|);
+  lo <= hi && PyStrStartsWith(PySlice(s, lo, hi), prefix)
+}
+
+function PyStrEndsWithRange(s: string, suffix: string, start: int, end: int): bool
+{
+  var lo := if start < 0 then PyMax(0, |s| + start) else start;
+  var hi := if end < 0 then PyMax(0, |s| + end) else PyMin(end, |s|);
+  lo <= hi && PyStrEndsWith(PySlice(s, lo, hi), suffix)
+}
+
 // Non-overlapping left-to-right replace. Empty `pat` is Python's
 // insert-between-chars (rejected by the encoder); the requires is that
 // domain condition for a non-literal old. Parameter names avoid Dafny
@@ -343,4 +373,19 @@ def _top_level_names(text: str) -> frozenset[str]:
     return frozenset(names)
 
 
+PREAMBLE_NAMES = _top_level_names(PREAMBLE)
+
+# Integer product in Python's left-to-right fold order; the empty product is 1.
+PREAMBLE += """
+function PyProd(s: seq<int>): int
+  decreases |s|
+{ if |s| == 0 then 1 else PyProd(s[..|s|-1]) * s[|s|-1] }
+"""
+
+from veripy.backends.dafny.sequences import PREAMBLE as SEQUENCE_PREAMBLE
+PREAMBLE += SEQUENCE_PREAMBLE
+PREAMBLE_NAMES = _top_level_names(PREAMBLE)
+
+from veripy.backends.dafny.checksum_sequences import PREAMBLE as CHECKSUM_PREAMBLE
+PREAMBLE += CHECKSUM_PREAMBLE
 PREAMBLE_NAMES = _top_level_names(PREAMBLE)

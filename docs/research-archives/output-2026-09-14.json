@@ -1,0 +1,36 @@
+{
+  "archives": [
+    {
+      "bytes": 48624408,
+      "file": "veripy-output-history-2026-09-14.tar.gz",
+      "members": 878,
+      "scope": "Unique contents from retired output working directories and the obsolete September 12 one-off packaging collector. Covers failed runs, old packaging attempts, cleanup backups and validation artifacts without filtering by success.",
+      "sha256": "1e05fa953e29693fbce76f2f21c572e86241d33859f3132e251ff2cf00e54766"
+    }
+  ],
+  "attachments": [
+    {
+      "bytes": 899659,
+      "file": "RECOVERY.json.gz",
+      "sha256": "cb56018317123647b7fddb1c8688b2ad09a4178f80262d9302f255f76eea7ace"
+    }
+  ],
+  "coverage": {
+    "deduplication": "RECOVERY.json.gz maps every original file to an exact archived member or a retained archive file. All required archive hashes are bound in the recovery map.",
+    "original_regular_files": 17540,
+    "original_symlinks": 13
+  },
+  "inventory": {
+    "bytes": 47000,
+    "file": "veripy-output-file-inventory-2026-09-14.json.gz",
+    "sha256": "46f4cd126cdfa30b8aa32144929e3b423a9ffdb3d27192992c26fc8dddd1d4e6"
+  },
+  "publication_status": "prepared-locally",
+  "release_url": null,
+  "required_catalogs": [
+    "docs/research-archives/2026-09-14.json",
+    "docs/research-archives/paper-2026-09-14.json"
+  ],
+  "schema": 1,
+  "version": "output-2026-09-14"
+}

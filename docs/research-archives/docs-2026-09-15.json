@@ -1,0 +1,22 @@
+{
+  "archives": [
+    {
+      "bytes": 550904,
+      "file": "veripy-documentation-history-2026-09-15.tar.gz",
+      "members": 35,
+      "scope": "Complete docs directory, root README and software citation before documentation consolidation. Includes original design proposals, discovery records, probes, current guides and previous archive catalogs without outcome filtering.",
+      "sha256": "c2b42977c754f7c3c4347dbfd995cb34696784dcbad9fb3d6d36126bdf9d08a1",
+      "source": "docs/, README.md, CITATION.cff"
+    }
+  ],
+  "inventory": {
+    "bytes": 2087,
+    "file": "veripy-documentation-inventory-2026-09-15.json.gz",
+    "sha256": "1b747fafeb3f2f94efe14e72f1b5158329cdca2bf705388b4a81dfa401ea96b2"
+  },
+  "publication_status": "prepared-locally",
+  "release_url": null,
+  "reproduction_instructions": "Verify with the repository archive verifier or the bundled verify_archives.py. Extract into a separate empty directory to inspect original paths. Historical proposals are not current feature claims. Do not overlay the archive on a development checkout.",
+  "schema": 1,
+  "version": "docs-2026-09-15"
+}

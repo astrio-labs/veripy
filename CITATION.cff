@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use VeriPy in research, please cite this software and record the commit used in your experiments."
+type: software
+title: "VeriPy: Source-Preserving Verification and Compatibility Checking for Python Components"
+authors:
+  - given-names: "Naing Oo Lwin"
+  - name: "VeriPy contributors"
+version: 0.1.0a1
+repository-code: "https://github.com/astrio-labs/veripy"
+url: "https://github.com/astrio-labs/veripy"
+license: MIT
+keywords:
+  - Python
+  - formal verification
+  - backward compatibility
+  - agent-assisted verification
+  - Dafny
+  - Lean
