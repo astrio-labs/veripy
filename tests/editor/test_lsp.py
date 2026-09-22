@@ -619,3 +619,63 @@ def test_an_edit_cannot_land_between_the_check_and_the_reply(monkeypatch):
     assert order == ["reply", "edit"], (
         "an edit completed between the sequence check and the reply, so the "
         "client was sent a verdict for text it had already changed")
+
+
+SIDECAR_SOURCE = """#@ ensures result == x
+def identity(x: int) -> int:
+    #@ proof Identity(x)
+    return x
+"""
+SIDECAR_LEMMA = "lemma Identity(x: int) ensures x == x {}\n"
+
+
+def _sidecar_component(tmp_path):
+    src = tmp_path / "identity.py"
+    src.write_text(SIDECAR_SOURCE)
+    sidecar = tmp_path / "identity.proofs.dfy"
+    sidecar.write_text(SIDECAR_LEMMA)
+    return src, sidecar
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_prove_stages_sidecar_and_preserves_user_paths(tmp_path):
+    src, sidecar = _sidecar_component(tmp_path)
+    payload = prove(src.read_text(), str(src), time_limit=30)
+    assert payload["status"] == "ok", payload
+    assert payload["file"] == str(src)
+    assert payload["sidecar"]["path"] == str(sidecar)
+    assert src.exists() and sidecar.exists()
+
+
+def test_prove_missing_sidecar_rejects_unknown_lemma(tmp_path):
+    src, sidecar = _sidecar_component(tmp_path)
+    sidecar.unlink()
+    payload = prove(src.read_text(), str(src), time_limit=5)
+    assert payload["status"] == "encode-error", payload
+    assert "unknown lemma" in payload["failures"][0]["message"]
+
+
+def test_uncopyable_sidecar_is_environment_failure(tmp_path, monkeypatch):
+    src, _ = _sidecar_component(tmp_path)
+    def denied(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr("veripy.editor.server.shutil.copyfile", denied)
+    payload = prove(src.read_text(), str(src), time_limit=5)
+    assert payload["status"] == "tool-error", payload
+    assert "unreadable proof sidecar" in payload["error"]
+    assert payload["failures"] == []
+    diags, view = proof_view(payload)
+    assert view == {}
+    assert diags[0]["severity"] == 3
+
+
+@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
+def test_sidecar_component_false_contract_is_proof_failure(tmp_path):
+    src, _ = _sidecar_component(tmp_path)
+    text = src.read_text().replace("result == x", "result == x + 1")
+    src.write_text(text)
+    payload = prove(text, str(src), time_limit=30)
+    assert payload["status"] == "failed", payload
+    diags, view = proof_view(payload)
+    assert view == {"identity": "failed"}
+    assert diags and diags[0]["range"]["start"]["line"] > 0

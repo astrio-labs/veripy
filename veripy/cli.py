@@ -500,9 +500,8 @@ def _swept(root: Path, file: Path) -> bool:
 def _difftest_targets(paths: list[Path]) -> list[Path]:
     """Expand directories to the `.py` files under them.
 
-    A nightly sweep is pointed at a corpus, not at a hand-written file
-    list — a list goes stale silently the moment a task is added, which is
-    the failure mode this whole command exists to prevent.
+    Directory expansion includes newly added components without maintaining
+    a separate file list.
 
     Pruning applies to directory expansion only: a file named on the command
     line is swept wherever it lives, because naming it is the intent.
@@ -592,7 +591,7 @@ def cmd_difftest(paths: list[Path], outdir: Path, examples: int,
             report.parent.mkdir(parents=True, exist_ok=True)
             # ATOMIC: `write_text` truncates first, so a failure part-way
             # through leaves invalid JSON at the final path — and the
-            # nightly's upload step runs `if: always()`, so it would
+            # a CI artifact upload could
             # publish that unusable file in place of the reproducer. The
             # report either appears whole or does not appear.
             atomic_write_text(report, json.dumps(payload, indent=1))
@@ -782,7 +781,7 @@ def main(argv: list[str] | None = None) -> int:
     p_difftest.add_argument("-n", "--examples", type=int, default=100)
     p_difftest.add_argument("--report", type=Path,
                             help="write a machine-readable divergence report "
-                                 "(JSON) — what a nightly sweep uploads")
+                                 "(JSON)")
     p_difftest.add_argument("--min-functions", type=int, default=1,
                             help="fail unless at least N functions were "
                                  "actually compared (default 1: a sweep that "

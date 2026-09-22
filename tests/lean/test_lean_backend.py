@@ -3785,3 +3785,82 @@ def test_sidecar_priority_does_not_admit_arbitrary_attributes(attribute):
     from veripy.backends.dafny.encoder import EncodeError
     with pytest.raises(EncodeError):
         validate_sidecar_text(f'@[{attribute}]\ntheorem Checked : True := trivial', 'priority')
+
+
+def test_early_return_loops_desugar_to_bool_accumulators():
+    # The early-return search-loop shape: `if TEST: return False` inside
+    # the loop desugars to the and-accumulator over not-TEST (return
+    # True on hit is the or-accumulator over TEST). Result-faithful:
+    # Python short-circuits, the fold runs on, and Bool and/or are
+    # monotone over a pure body. The accumulator is synthesized fresh,
+    # and the user's accumulator-free invariant becomes its iff-body.
+    enc = _encode(EARLY_BT)
+    assert "Nat → Int → Bool → Bool" in enc.lean_source
+    assert "(«b» && (decide (¬(" in enc.lean_source     # not-TEST step
+    assert "((«b» = true) ↔ (∀ «k» : Int," in enc.lean_source
+    # The omega leaves bridge `l[i] >= t` against the invariant's
+    # `l[k] < t` — same linear fact, different spelling.
+    assert "first | exact hpi | omega" in enc.lean_source
+
+    hit_true = ("#@ ensures result == "
+                "any(l[k] == v for k in range(len(l)))\n"
+                "def has(l: list[int], v: int) -> bool:\n"
+                "    for i in range(len(l)):\n"
+                "        #@ invariant all(l[k] != v for k in range(i))\n"
+                "        if l[i] == v:\n"
+                "            return True\n"
+                "    return False\n")
+    enc2 = _encode(hit_true)
+    assert "(«b» || (decide ((" in enc2.lean_source     # TEST step
+
+    # Non-literal returns and agreeing literals stay out.
+    with pytest.raises(EncodeError, match="bool literals"):
+        _encode(EARLY_BT.replace("return False", "return t > 0"))
+    with pytest.raises(EncodeError, match="must differ"):
+        _encode(EARLY_BT.replace("return True", "return False"))
+
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_early_return_loops_verify(tmp_path):
+    from veripy.verification.runner import verify_structured
+
+    # Check the inline loop and a deliberately false invariant.
+    src = tmp_path / "bt.py"
+    src.write_text(EARLY_BT)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The invariant states the wrong prefix property: fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(EARLY_BT.replace("l[k] < t for k in range(i)",
+                                    "l[k] > t for k in range(i)"))
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_max_element_verifies(tmp_path):
+    from veripy.verification.runner import verify_structured
+
+    src = tmp_path / "max_element.py"
+    src.write_text(MAX_ELEMENT)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The min dual (mirrored guard) rides the same machinery.
+    mn = tmp_path / "min_element.py"
+    mn.write_text(MAX_ELEMENT
+                  .replace("max_element", "min_element")
+                  .replace("l[i] <= result", "l[i] >= result")
+                  .replace("l[k] <= m", "l[k] >= m")
+                  .replace("if l[i] > m:", "if l[i] < m:"))
+    assert verify_structured(mn, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # Flipping the guard against the invariant fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(MAX_ELEMENT.replace("if l[i] > m:", "if l[i] < m:"))
+    assert verify_structured(bad, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"

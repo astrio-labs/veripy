@@ -20,9 +20,9 @@ frozen experiments, copied repositories or output archives.
 | `editor` | Language-server protocol and concurrency |
 | `integration` | Repository components and retained proof fixtures |
 | `tools` | Research archive integrity and repository hygiene |
-| `fixtures` | Shared inputs and lists of maintained examples |
+| `fixtures` | Shared component inputs |
 
-Examples and case-study inputs are shared fixtures. Their source paths are
+Component inputs are shared fixtures. Their source paths are
 resolved relative to the repository root. Keep these files when preparing a clean
 checkout. Backend tests require installed Dafny or Lean, and typing tests need
 basedpyright. Proof integration tests skip explicitly when their required provers are absent.

@@ -1,7 +1,7 @@
 """`veripy difftest` as a SWEEP: what it covers, and how it says so.
 
 The harness itself is tested in test_difftest.py. These are about the
-command a nightly job runs unattended, where the dangerous outcome is not
+command an automated job runs unattended, where the dangerous outcome is not
 a crash but a green run that quietly stopped testing anything.
 """
 
@@ -106,7 +106,7 @@ def test_file_with_nothing_to_compare_is_reported_not_silent(
     assert "nothing to compare" in out and "1 with nothing to compare" in out
 
 
-# -- the report a nightly uploads --------------------------------------------
+# -- the report an automated job uploads --------------------------------------------
 
 def test_report_carries_the_reproducer(tmp_path, monkeypatch):
     src = _write(tmp_path / "a.py")
@@ -139,7 +139,7 @@ def test_unwritable_report_does_not_swallow_the_verdict(
                         report=blocker / "report.json") == 2
     err = capsys.readouterr().err
     assert "could not write the difftest report" in err
-    # and it is not green either: the record the nightly uploads never landed.
+    # and it is not green either: the uploaded record never landed.
 
 
 def test_divergence_survives_an_unwritable_report(tmp_path, monkeypatch):
@@ -190,10 +190,8 @@ def _run_script_lines(text: str):
 
 
 def test_no_workflow_interpolates_an_expression_into_a_shell_script():
-    # The sweep takes an `examples` count from workflow_dispatch. Interpolated
-    # into `run:` it is whatever the person dispatching typed, pasted into the
-    # script before the shell parses it; through `env:` it is one string that
-    # argparse either accepts as an int or rejects.
+    # Workflow inputs must reach commands through environment variables,
+    # rather than being interpolated into executable shell text.
     offenders = [
         f"{path.name}:{number}: {line.strip()}"
         for path in sorted((REPO / ".github" / "workflows").glob("*.yml"))
@@ -208,7 +206,7 @@ def test_no_workflow_interpolates_an_expression_into_a_shell_script():
 def test_a_failed_report_write_leaves_no_partial_artifact(
         tmp_path, monkeypatch, capsys):
     # `write_text` truncates before it writes, so a failure part-way through
-    # left invalid JSON at the final path -- and the nightly uploads the
+    # left invalid JSON at the final path -- and CI uploads the
     # report with `if: always()`, so it would publish that unusable file in
     # place of the reproducer. The write is atomic now: whole, or absent.
     import os
