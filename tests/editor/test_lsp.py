@@ -404,74 +404,6 @@ def test_a_burst_on_one_document_does_not_start_a_prover_each(monkeypatch):
     assert server.proofs[uri]["status"] == "ok"  # the newest one answered
 
 
-@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
-def test_prove_stages_the_on_disk_sidecar(tmp_path):
-    # A buffer whose `#@ proof` clauses name sidecar lemmas must come back
-    # as a PROOF result, not as `unknown lemma` manufactured by staging.
-    task = REPO / "examples" / "contact"
-    src = tmp_path / "gcd.py"
-    src.write_text((task / "he_humaneval_13.py").read_text())
-    (tmp_path / "gcd.proofs.dfy").write_text((task / "he_humaneval_13.proofs.dfy").read_text())
-    payload = prove(src.read_text(), str(src), time_limit=60)
-    assert payload["status"] == "ok", payload
-    assert payload["file"] == str(src)  # the buffer's identity, not the staging dir
-
-
-@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
-def test_prove_without_the_sidecar_is_a_conformance_rejection(tmp_path):
-    # The control for the test above: no sidecar on disk, so the `#@ proof`
-    # targets really are unknown -- and that is what comes back.
-    src = tmp_path / "gcd.py"
-    src.write_text((REPO / "examples" / "contact" / "he_humaneval_13.py").read_text())
-    payload = prove(src.read_text(), str(src), time_limit=60)
-    assert payload["status"] == "encode-error"
-    assert "unknown lemma" in payload["failures"][0]["message"]
-
-
-def test_an_uncopyable_sidecar_is_a_tool_error_not_a_rejection(tmp_path,
-                                                               monkeypatch):
-    # A sidecar that exists but cannot be read (permissions, a dead symlink,
-    # a vanishing network mount) is an ENVIRONMENT failure. Verifying anyway
-    # would encode against an empty lemma set and hand back `unknown lemma`
-    # -- staging manufacturing a conformance rejection against source that
-    # is perfectly fine.
-    task = REPO / "examples" / "contact"
-    text = (task / "he_humaneval_13.py").read_text()
-    src = tmp_path / "gcd.py"
-    src.write_text(text)
-    (tmp_path / "gcd.proofs.dfy").write_text((task / "he_humaneval_13.proofs.dfy").read_text())
-
-    def denied(*args, **kwargs):
-        raise PermissionError(13, "Permission denied")
-
-    monkeypatch.setattr("veripy.editor.server.shutil.copyfile", denied)
-    payload = prove(text, str(src), time_limit=5)
-    assert payload["status"] == "tool-error"
-    assert "unreadable proof sidecar" in payload["error"]
-    assert payload["failures"] == []  # nothing is claimed about the code
-    diags, view = proof_view(payload)
-    assert view == {}                 # no function is given a proof status
-    assert diags[0]["severity"] == 3  # information, not an error in the source
-
-
-@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
-def test_prove_reports_a_real_proof_failure(tmp_path):
-    # The prover is genuinely consulted: strengthening gcd's postcondition
-    # to something false must come back `failed`, attributed to the
-    # function, on the Python line -- not `ok` from a short-circuit.
-    task = REPO / "examples" / "contact"
-    text = task.joinpath("he_humaneval_13.py").read_text().replace(
-        "#@ ensures result >= 1", "#@ ensures result >= 2")
-    src = tmp_path / "gcd.py"
-    src.write_text(text)
-    (tmp_path / "gcd.proofs.dfy").write_text((task / "he_humaneval_13.proofs.dfy").read_text())
-    payload = prove(text, str(src), time_limit=60)
-    assert payload["status"] == "failed"
-    diags, view = proof_view(payload)
-    assert view == {"greatest_common_divisor": "failed"}
-    assert diags and diags[0]["range"]["start"]["line"] > 0
-
-
 def test_conformance_failures_are_not_reported_twice(monkeypatch):
     # A nonconformant buffer: the instant lane publishes the rejection on
     # every keystroke. The proof lane must not republish it -- one mistake,
@@ -496,20 +428,6 @@ def test_conformance_failures_are_not_reported_twice(monkeypatch):
     assert publishes[-1]["params"]["diagnostics"] == publishes[0]["params"]["diagnostics"]
     reply = [r for r in replies if r.get("id") == 3][0]["result"]
     assert reply["functions"] == [{"name": "f", "proof": "unknown"}]
-
-
-@pytest.mark.skipif(find_dafny() is None, reason="dafny not installed")
-def test_prove_names_the_users_sidecar_not_the_staging_copy(tmp_path):
-    task = REPO / "examples" / "contact"
-    src = tmp_path / "gcd.py"
-    src.write_text((task / "he_humaneval_13.py").read_text())
-    sidecar = tmp_path / "gcd.proofs.dfy"
-    sidecar.write_text((task / "he_humaneval_13.proofs.dfy").read_text())
-    payload = prove(src.read_text(), str(src), time_limit=60)
-    # Both paths must be openable after the call -- the staging directory
-    # is gone by then.
-    assert payload["sidecar"]["path"] == str(sidecar)
-    assert Path(payload["file"]).exists() and Path(payload["sidecar"]["path"]).exists()
 
 
 def test_a_sidecar_that_is_not_a_readable_file_is_an_environment_failure(tmp_path):

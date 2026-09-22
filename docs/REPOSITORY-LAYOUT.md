@@ -20,7 +20,6 @@ is `from veripy import api`. Commands are available through `veripy` or
 | `veripy/guards/` | Boundary generation and runtime policies |
 | `veripy/difftest/` | Compiled-model execution comparisons |
 | `veripy/editor/` | Language-server interface |
-| `examples/` | Small annotated programs and shared regression inputs |
 | `tests/` | Tests grouped by subsystem |
 | `case_studies/` | Ten project folders, proof support, provenance and compact evidence |
 | `docs/` | User guides, semantics, evaluation and archive catalogs |

@@ -32,8 +32,13 @@ generated semantic models and must be reported separately.
 From the repository root, with the development environment active.
 
 ```sh
-veripy check examples/isqrt.py
-veripy verify examples/isqrt.py --time-limit 30 --outdir build/isqrt-dafny
+cat > component.py <<'PYTHON'
+#@ ensures result == x + 1
+def increment(x: int) -> int:
+    return x + 1
+PYTHON
+veripy check component.py
+veripy verify component.py --time-limit 30 --outdir build/component-dafny
 ```
 
 The default CLI runs basedpyright before proof verification. `--no-types`
@@ -89,7 +94,7 @@ Generate a wrapper with exact-type checks, supported preconditions and optional
 runtime postconditions.
 
 ```sh
-veripy guard examples/isqrt.py --check-ensures --outdir build/isqrt-guard
+veripy guard component.py --check-ensures --outdir build/component-guard
 ```
 
 The guard backend must match the admitted source and observation policy.

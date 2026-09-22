@@ -67,12 +67,16 @@ python -m pip install -e '.[dev]'
 ```
 
 Follow the [Dafny setup guide](docs/DAFNY.md#setup) to install Dafny 4.11.0 and
-make `dafny` available on `PATH`. Then check and verify the integer square-root
-example.
+make `dafny` available on `PATH`. Then create and verify a small annotated component.
 
 ```sh
-veripy check examples/isqrt.py
-veripy verify examples/isqrt.py --time-limit 30
+cat > component.py <<'PYTHON'
+#@ ensures result == x + 1
+def increment(x: int) -> int:
+    return x + 1
+PYTHON
+veripy check component.py
+veripy verify component.py --time-limit 30
 ```
 
 The CLI uses basedpyright for its static typing gate. Dafny and Lean provide the

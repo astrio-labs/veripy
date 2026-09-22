@@ -30,7 +30,5 @@ Use `pytest -rs` to see why each check skipped. A passing subset without provers
 is not a full proof run. New backend tests should declare `requires_prover` so
 encoding-only tests continue to run without external tools.
 
-`fixtures/difftest.txt` lists sixteen admitted examples for the nightly
-differential sweep and guard-import checks. Editor tests share the checked GCD
-example and its sidecar. No test depends on the removed benchmark harness or
-external benchmark downloads.
+The retired benchmark corpus and its dedicated sweep have been removed.
+Component regression tests use local fixtures and retained case studies.

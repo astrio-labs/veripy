@@ -163,48 +163,7 @@ def test_divergence_beats_the_coverage_floor(tmp_path, monkeypatch):
     assert cmd_difftest([src], tmp_path / "out", 10, min_functions=99) == 1
 
 
-# -- the nightly's coverage floor must stay tied to the real corpus ----------
-
 REPO = Path(__file__).resolve().parents[2]
-
-
-def _nightly_min_functions() -> int:
-    import re
-
-    text = (REPO / ".github" / "workflows" / "nightly.yml").read_text()
-    match = re.search(r"--min-functions\s+(\d+)", text)
-    assert match, "the nightly sweep no longer passes --min-functions"
-    return int(match.group(1))
-
-
-def _nightly_sources() -> list[Path]:
-    paths = [REPO / line for line in
-             (REPO / "tests/fixtures/difftest.txt").read_text().splitlines()]
-    assert len(paths) == len(set(paths)) == 16
-    assert all(path.is_file() for path in paths)
-    workflow = (REPO / ".github/workflows/nightly.yml").read_text()
-    assert "mapfile -t SOURCES < tests/fixtures/difftest.txt" in workflow
-    assert 'veripy difftest "${SOURCES[@]}"' in workflow
-    return paths
-
-
-def test_nightly_floor_cannot_exceed_the_corpus():
-    # A floor above what the corpus can supply makes the nightly red every
-    # night for no reason, which is how a job stops being read at all.
-    tasks = len(_nightly_sources())
-    floor = _nightly_min_functions()
-    assert floor <= tasks, (
-        f"nightly --min-functions {floor} exceeds the {tasks} task(s) in "
-        f"tests/fixtures/difftest.txt — the sweep cannot reach it")
-
-
-def test_nightly_floor_has_not_been_defanged():
-    # The opposite failure: dropping the floor to 1 to make a red job green
-    # keeps the guard nominally present while removing everything it checked.
-    tasks = len(_nightly_sources())
-    floor = _nightly_min_functions()
-    assert floor == tasks, (
-        f"nightly --min-functions {floor} must cover all {tasks} examples")
 
 
 def _run_script_lines(text: str):

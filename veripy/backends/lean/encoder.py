@@ -1655,7 +1655,7 @@ class _LoopShape:
 
 @dataclass(frozen=True)
 class _OptMaxShape:
-    """The OptionalMax class (rolling_max / he_9): an `int | None`
+    """The OptionalMax class (rolling maximum): an `int | None`
     running accumulator beside a list builder."""
     lst: str
     index: str
@@ -2488,7 +2488,7 @@ def _emit_sqrt_search(ss: _SqrtSearchShape, fn: ast.FunctionDef,
 
 @dataclass(frozen=True)
 class _FreqDictShape:
-    """The frequency-dict class (mbpp_97): a dict[int, int] counter
+    """The frequency-dict class (frequency-count): a dict[int, int] counter
     built over a flattened list[list[int]]."""
     lst: str          # the list-of-lists parameter
     flat: str         # the flattened local
@@ -2559,7 +2559,7 @@ def _freq_dict_shape(fn: ast.FunctionDef,
             raise _reject(
                 f"the frequency-dict class (a dict[int, int] counter "
                 f"over a flattened list[list[int]]) admits exactly "
-                f"the mbpp_97 pattern; its {what} must be `{source}`",
+                f"the frequency-count pattern; its {what} must be `{source}`",
                 line)
 
     ann = fn.args.args[0].annotation
@@ -2802,7 +2802,7 @@ def _emit_freq_dict(fd: _FreqDictShape, fn: ast.FunctionDef,
 
 @dataclass(frozen=True)
 class _IsoDictShape:
-    """The isomorphism class (mbpp_885): two position-class dicts over
+    """The isomorphism class (string-isomorphism): two position-class dicts over
     code-point strings, compared by sorted values."""
     s1: str
     s2: str
@@ -2878,7 +2878,7 @@ def _iso_dict_shape(fn: ast.FunctionDef,
             raise _reject(
                 f"the isomorphism class (two position-class dicts "
                 f"over strings, compared by sorted values) admits "
-                f"exactly the mbpp_885 pattern; its {what} must be "
+                f"exactly the string-isomorphism pattern; its {what} must be "
                 f"`{source}`", line)
 
     expect(s0.annotation, "dict[str, list[int]]",
@@ -3723,7 +3723,7 @@ _SORTED_UNIQUE_USED: list[bool] = []
 def _early_return_loop(stmts: list[ast.stmt], fn: ast.FunctionDef,
                        spec_fn: FunctionSpec) -> _LoopShape | None:
     """Match `for i in range(N): if TEST: return V; return W` (V, W
-    complementary bool literals) — the search-loop shape HumanEval
+    complementary bool literals) — the search-loop shape early-return
     favors (below_threshold, contains-style membership).
 
     Python short-circuits at the first hit; the fold model runs every

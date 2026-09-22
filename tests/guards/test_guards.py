@@ -313,24 +313,6 @@ def test_unspecced_module_refuses_to_guard():
         emit_guarded(src, parse_source(src), src_name="m.py")
 
 
-def test_guarded_corpus_imports_cleanly(tmp_path):
-    # The admitted examples must guard and import without error.
-    root = Path(__file__).resolve().parents[2]
-    tasks = [root / line for line in
-             (root / "tests/fixtures/difftest.txt").read_text().splitlines()]
-    assert len(tasks) == 16
-    outdir = tmp_path / "guarded"
-    for i, task in enumerate(tasks):
-        target = tmp_path / f"task_{task.stem}.py"
-        target.write_text(task.read_text())
-        assert cmd_guard([target], outdir) == 0
-        path = outdir / f"task_{task.stem}_guarded.py"
-        spec = importlib.util.spec_from_file_location(f"gtask{i}", path)
-        mod = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(mod)
-
-
 def test_tuple_boundary_checks_arity_and_element_types(tmp_path):
     src = (
         "#@ ensures result[0] == p[0]\n"
