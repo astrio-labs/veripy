@@ -1,7 +1,7 @@
 """`veripy difftest` as a SWEEP: what it covers, and how it says so.
 
 The harness itself is tested in test_difftest.py. These are about the
-command a nightly job runs unattended, where the dangerous outcome is not
+command an automated job runs unattended, where the dangerous outcome is not
 a crash but a green run that quietly stopped testing anything.
 """
 
@@ -106,7 +106,7 @@ def test_file_with_nothing_to_compare_is_reported_not_silent(
     assert "nothing to compare" in out and "1 with nothing to compare" in out
 
 
-# -- the report a nightly uploads --------------------------------------------
+# -- the report an automated job uploads --------------------------------------------
 
 def test_report_carries_the_reproducer(tmp_path, monkeypatch):
     src = _write(tmp_path / "a.py")
@@ -139,7 +139,7 @@ def test_unwritable_report_does_not_swallow_the_verdict(
                         report=blocker / "report.json") == 2
     err = capsys.readouterr().err
     assert "could not write the difftest report" in err
-    # and it is not green either: the record the nightly uploads never landed.
+    # and it is not green either: the uploaded record never landed.
 
 
 def test_divergence_survives_an_unwritable_report(tmp_path, monkeypatch):
@@ -163,48 +163,7 @@ def test_divergence_beats_the_coverage_floor(tmp_path, monkeypatch):
     assert cmd_difftest([src], tmp_path / "out", 10, min_functions=99) == 1
 
 
-# -- the nightly's coverage floor must stay tied to the real corpus ----------
-
 REPO = Path(__file__).resolve().parents[2]
-
-
-def _nightly_min_functions() -> int:
-    import re
-
-    text = (REPO / ".github" / "workflows" / "nightly.yml").read_text()
-    match = re.search(r"--min-functions\s+(\d+)", text)
-    assert match, "the nightly sweep no longer passes --min-functions"
-    return int(match.group(1))
-
-
-def _nightly_sources() -> list[Path]:
-    paths = [REPO / line for line in
-             (REPO / "tests/fixtures/difftest.txt").read_text().splitlines()]
-    assert len(paths) == len(set(paths)) == 16
-    assert all(path.is_file() for path in paths)
-    workflow = (REPO / ".github/workflows/nightly.yml").read_text()
-    assert "mapfile -t SOURCES < tests/fixtures/difftest.txt" in workflow
-    assert 'veripy difftest "${SOURCES[@]}"' in workflow
-    return paths
-
-
-def test_nightly_floor_cannot_exceed_the_corpus():
-    # A floor above what the corpus can supply makes the nightly red every
-    # night for no reason, which is how a job stops being read at all.
-    tasks = len(_nightly_sources())
-    floor = _nightly_min_functions()
-    assert floor <= tasks, (
-        f"nightly --min-functions {floor} exceeds the {tasks} task(s) in "
-        f"tests/fixtures/difftest.txt — the sweep cannot reach it")
-
-
-def test_nightly_floor_has_not_been_defanged():
-    # The opposite failure: dropping the floor to 1 to make a red job green
-    # keeps the guard nominally present while removing everything it checked.
-    tasks = len(_nightly_sources())
-    floor = _nightly_min_functions()
-    assert floor == tasks, (
-        f"nightly --min-functions {floor} must cover all {tasks} examples")
 
 
 def _run_script_lines(text: str):
@@ -231,10 +190,8 @@ def _run_script_lines(text: str):
 
 
 def test_no_workflow_interpolates_an_expression_into_a_shell_script():
-    # The sweep takes an `examples` count from workflow_dispatch. Interpolated
-    # into `run:` it is whatever the person dispatching typed, pasted into the
-    # script before the shell parses it; through `env:` it is one string that
-    # argparse either accepts as an int or rejects.
+    # Workflow inputs must reach commands through environment variables,
+    # rather than being interpolated into executable shell text.
     offenders = [
         f"{path.name}:{number}: {line.strip()}"
         for path in sorted((REPO / ".github" / "workflows").glob("*.yml"))
@@ -249,7 +206,7 @@ def test_no_workflow_interpolates_an_expression_into_a_shell_script():
 def test_a_failed_report_write_leaves_no_partial_artifact(
         tmp_path, monkeypatch, capsys):
     # `write_text` truncates before it writes, so a failure part-way through
-    # left invalid JSON at the final path -- and the nightly uploads the
+    # left invalid JSON at the final path -- and CI uploads the
     # report with `if: always()`, so it would publish that unusable file in
     # place of the reproducer. The write is atomic now: whole, or absent.
     import os

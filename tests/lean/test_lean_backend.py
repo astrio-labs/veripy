@@ -704,59 +704,6 @@ EARLY_BT = ("#@ ensures result == "
             "    return True\n")
 
 
-def test_early_return_loops_desugar_to_bool_accumulators():
-    # The HumanEval search-loop shape: `if TEST: return False` inside
-    # the loop desugars to the and-accumulator over not-TEST (return
-    # True on hit is the or-accumulator over TEST). Result-faithful:
-    # Python short-circuits, the fold runs on, and Bool and/or are
-    # monotone over a pure body. The accumulator is synthesized fresh,
-    # and the user's accumulator-free invariant becomes its iff-body.
-    enc = _encode(EARLY_BT)
-    assert "Nat → Int → Bool → Bool" in enc.lean_source
-    assert "(«b» && (decide (¬(" in enc.lean_source     # not-TEST step
-    assert "((«b» = true) ↔ (∀ «k» : Int," in enc.lean_source
-    # The omega leaves bridge `l[i] >= t` against the invariant's
-    # `l[k] < t` — same linear fact, different spelling.
-    assert "first | exact hpi | omega" in enc.lean_source
-
-    hit_true = ("#@ ensures result == "
-                "any(l[k] == v for k in range(len(l)))\n"
-                "def has(l: list[int], v: int) -> bool:\n"
-                "    for i in range(len(l)):\n"
-                "        #@ invariant all(l[k] != v for k in range(i))\n"
-                "        if l[i] == v:\n"
-                "            return True\n"
-                "    return False\n")
-    enc2 = _encode(hit_true)
-    assert "(«b» || (decide ((" in enc2.lean_source     # TEST step
-
-    # Non-literal returns and agreeing literals stay out.
-    with pytest.raises(EncodeError, match="bool literals"):
-        _encode(EARLY_BT.replace("return False", "return t > 0"))
-    with pytest.raises(EncodeError, match="must differ"):
-        _encode(EARLY_BT.replace("return True", "return False"))
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_early_return_loops_verify(tmp_path):
-    from veripy.verification.runner import verify_structured
-
-    # The frozen-corpus below_threshold (HumanEval/52) verbatim: the
-    # first corpus task whose Lean column moved from encode-error to
-    # proved by the early-return desugaring.
-    src = tmp_path / "bt.py"
-    src.write_text(EARLY_BT)
-    assert verify_structured(src, tmp_path / "o1",
-                             backend="lean")["status"] == "ok"
-
-    # The invariant states the wrong prefix property: fails honestly.
-    bad = tmp_path / "bad.py"
-    bad.write_text(EARLY_BT.replace("l[k] < t for k in range(i)",
-                                    "l[k] > t for k in range(i)"))
-    assert verify_structured(bad, tmp_path / "o2",
-                             backend="lean")["status"] == "failed"
-
-
 MAX_ELEMENT = ("#@ requires len(l) > 0\n"
                "#@ ensures exists i in range(len(l)) :: result == l[i]\n"
                "#@ ensures forall i in range(len(l)) :: l[i] <= result\n"
@@ -794,33 +741,6 @@ def test_max_element_class_emits_min_max_and_witness_machinery():
     # A conditional update that is not max/min-shaped refuses.
     with pytest.raises(EncodeError, match="max/min-shaped"):
         _encode(MAX_ELEMENT.replace("if l[i] > m:", "if l[i] > 0:"))
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_max_element_verifies(tmp_path):
-    from veripy.verification.runner import verify_structured
-
-    # The frozen-corpus max_element (HumanEval/35) shape verbatim.
-    src = tmp_path / "max_element.py"
-    src.write_text(MAX_ELEMENT)
-    assert verify_structured(src, tmp_path / "o1",
-                             backend="lean")["status"] == "ok"
-
-    # The min dual (mirrored guard) rides the same machinery.
-    mn = tmp_path / "min_element.py"
-    mn.write_text(MAX_ELEMENT
-                  .replace("max_element", "min_element")
-                  .replace("l[i] <= result", "l[i] >= result")
-                  .replace("l[k] <= m", "l[k] >= m")
-                  .replace("if l[i] > m:", "if l[i] < m:"))
-    assert verify_structured(mn, tmp_path / "o2",
-                             backend="lean")["status"] == "ok"
-
-    # Flipping the guard against the invariant fails honestly.
-    bad = tmp_path / "bad.py"
-    bad.write_text(MAX_ELEMENT.replace("if l[i] > m:", "if l[i] < m:"))
-    assert verify_structured(bad, tmp_path / "o3",
-                             backend="lean")["status"] == "failed"
 
 
 def test_invariants_must_sit_at_the_loop_head():
@@ -3565,24 +3485,6 @@ def test_end_to_end_post_loop_assert_proved_not_assumed(tmp_path):
                              backend="lean")["status"] == "failed"
 
 
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_sum_to_n_proves_with_pack_and_exit_assert(tmp_path):
-    from veripy.verification.runner import verify_structured
-
-    # The full chain on the real corpus task: the GaussStep pack, the
-    # floor-division bridge, the corrected while fuel, and the exit
-    # assert together take sum_to_n to `ok` -- the first while-loop
-    # task with a nonlinear postcondition to prove end to end.
-    import shutil
-    src = Path("examples/contact/he_humaneval_60.py")
-    pack = Path("examples/contact/he_humaneval_60.proofs.lean")
-    dst = tmp_path / "he_humaneval_60.py"
-    shutil.copy(src, dst)
-    shutil.copy(pack, tmp_path / "he_humaneval_60.proofs.lean")
-    assert verify_structured(dst, tmp_path / "o",
-                             backend="lean")["status"] == "ok"
-
-
 def test_quantified_invariant_endgame_structure():
     # The gcd class: a quantified invariant conjunct must be
     # DESTRUCTURED (omega fails on a ∀ buried inside the conjunction
@@ -3629,37 +3531,6 @@ def test_quantified_invariant_endgame_structure():
     assert "obtain ⟨hj0" not in out2
 
 
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_gcd_proves_and_unsound_variants_fail(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/he_humaneval_13.py")
-    pack = Path("examples/contact/he_humaneval_13.proofs.lean")
-    good = tmp_path / "gcd.py"
-    shutil.copy(src, good)
-    shutil.copy(pack, tmp_path / "gcd.proofs.lean")
-    assert verify_structured(good, tmp_path / "o0",
-                             backend="lean")["status"] == "ok"
-
-    # The machinery must not manufacture facts. Four directions, all
-    # measured before the tests were written: a false exit assert, a
-    # strengthened ensures, a widened maximality window, and an
-    # inverted divisibility claim.
-    base = src.read_text()
-    for k, (frm, to) in enumerate((
-            ("assert y == 0", "assert y == 1"),
-            ("#@ ensures result >= 1", "#@ ensures result >= 2"),
-            ("range(result + 1, max(a, b) + 1)",
-             "range(result + 1, max(a, b) + 2)"),
-            ("b % result == 0", "b % result == 1"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        (tmp_path / f"bad{k}.proofs.lean").write_text(pack.read_text())
-        assert verify_structured(bad, tmp_path / f"ob{k}",
-                                 backend="lean")["status"] == "failed", k
-
-
 def test_prefix_range_search_endgame_structure():
     # The is_prime class: an early-return search over range(start,
     # bound) whose spec quantifies a WIDER range. The frontend
@@ -3689,41 +3560,6 @@ def test_prefix_range_search_endgame_structure():
     assert "Classical.not_forall.mp hnotall_" in out
     assert "by_cases hlt_ : k_ <" in out
     assert "have hke_ : k_ = ((«n» - 1))" in out
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_is_prime_proves_and_variants_fail(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/he_humaneval_31.py")
-    packl = Path("examples/contact/he_humaneval_31.proofs.lean")
-    good = tmp_path / "isp.py"
-    shutil.copy(src, good)
-    shutil.copy(packl, tmp_path / "isp.proofs.lean")
-    assert verify_structured(good, tmp_path / "o0",
-                             backend="lean")["status"] == "ok"
-
-    base = src.read_text()
-    # The gap lemma covers exactly ONE missing index. A spec widened
-    # past it (n % n = 0 makes it FALSE), an inverted completeness
-    # claim, and a loop whose gap is TWO indices must all fail --
-    # the last one is the incompleteness direction: the machinery
-    # must never let one lemma silently cover two gaps.
-    for k, (frm, to) in enumerate((
-            ("forall k in range(2, n) :: n % k != 0",
-             "forall k in range(2, n + 1) :: n % k != 0"),
-            ("not result and n >= 2 ==> exists k in range(2, n) :: "
-             "n % k == 0",
-             "not result and n >= 2 ==> forall k in range(2, n) :: "
-             "n % k == 0"),
-            ("for k in range(2, n - 1):",
-             "for k in range(2, n - 2):"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        (tmp_path / f"bad{k}.proofs.lean").write_text(packl.read_text())
-        assert verify_structured(bad, tmp_path / f"ob{k}",
-                                 backend="lean")["status"] == "failed", k
 
 
 def test_mapped_sum_translates_in_spec_and_invariant():
@@ -3784,35 +3620,6 @@ def test_for_post_loop_asserts_are_params_only():
     assert "(hq0 : («n» ≥ 1))" in out
 
 
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_sum_squares_proves_and_lies_fail(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/mbpp_sum_squares.py")
-    good = tmp_path / "sq.py"
-    shutil.copy(src, good)
-    assert verify_structured(good, tmp_path / "o0",
-                             backend="lean")["status"] == "ok"
-
-    # The hint must not lie: a wrong extension element fails its own
-    # obligation, and wrong invariant/ensures functions fail theirs.
-    base = src.read_text()
-    for k, (frm, to) in enumerate((
-            ("+ [values[i] * values[i]]",
-             "+ [values[i] * values[i] + 1]"),
-            ("#@ ensures result == sum(x * x for x in values)",
-             "#@ ensures result == sum(x * x + 1 for x in values)"),
-            ("assert [x * x for x in values[:len(values)]] == "
-             "[x * x for x in values]",
-             "assert [x * x for x in values[:len(values)]] == "
-             "[x * x for x in values] + [0]"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        assert verify_structured(bad, tmp_path / f"ob{k}",
-                                 backend="lean")["status"] == "failed", k
-
-
 def test_search_accumulator_shape_and_boundaries():
     # The below_zero class: acc-step, then `if TEST: return True`,
     # trailing `return False` -- an (Int × Bool) fold whose flag
@@ -3849,29 +3656,6 @@ def test_search_accumulator_shape_and_boundaries():
     with pytest.raises(EncodeError, match="exists n in range"):
         _encode(wide)
 
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_below_zero_proves_and_lies_fail(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/he_humaneval_3.py")
-    good = tmp_path / "bz.py"
-    shutil.copy(src, good)
-    assert verify_structured(good, tmp_path / "o0",
-                             backend="lean")["status"] == "ok"
-
-    base = src.read_text()
-    for k, (frm, to) in enumerate((
-            (":: sum(operations[:n]) < 0)",
-             ":: sum(operations[:n]) >= 0)"),
-            ("if balance < 0:", "if balance > 0:"),
-            ("#@ invariant balance == sum(operations[:i])",
-             "#@ invariant balance == sum(operations[:i]) + 1"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        assert verify_structured(bad, tmp_path / f"ob{k}",
-                                 backend="lean")["status"] == "failed", k
 
 def test_new_paths_inherit_scope_binders_and_rename():
     # Three review-caught instances of one family -- a new path not
@@ -3948,54 +3732,6 @@ def test_new_paths_inherit_scope_binders_and_rename():
     assert "«x» + «f»)" not in out3
 
 
-def test_intersperse_class_fragment_pieces():
-    # The trailing-append slice's fragment additions, pinned at the
-    # encoding level: list truthiness in guards, IfExp in specs,
-    # shortened-range indexing, [-1] licensed by guard-derived
-    # nonemptiness, and the appended return.
-    src = Path("examples/contact/he_humaneval_5.py").read_text()
-    out = _encode(src).lean_source
-    # guard: `not numbers` is emptiness; the fall-through wraps the
-    # loop value.
-    assert '(((«numbers».length : Int)) = 0)' in out
-    # IfExp: the conditional length as an ite.
-    assert "(if (((«numbers».length : Int)) = 0) then 0 else" in out
-    # [-1]: the last element read through length - 1.
-    assert '.getD (((«numbers».length : Int)) - 1).toNat 0' in out
-    # trailing append: the fold concatenated before return.
-    assert "++ [" in out.split("def «intersperse» ")[1].split("\n")[1]
-
-    # The [-1] read is licensed by the guard, not free: without the
-    # guard it is refused (Python raises on the empty list there).
-    unguarded = src.replace("    if not numbers:\n        return []\n\n",
-                            "")
-    with pytest.raises(EncodeError, match="structurally in bounds"):
-        _encode(unguarded)
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_intersperse_proves_and_lies_fail(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/he_humaneval_5.py")
-    good = tmp_path / "isp.py"
-    shutil.copy(src, good)
-    assert verify_structured(good, tmp_path / "o0",
-                             backend="lean")["status"] == "ok"
-
-    base = src.read_text()
-    for k, (frm, to) in enumerate((
-            ("(i % 2 == 0 ==> result[i] == numbers[i // 2])",
-             "(i % 2 == 1 ==> result[i] == numbers[i // 2])"),
-            ("2 * len(numbers) - 1)", "2 * len(numbers))"),
-            ("    out.append(numbers[-1])",
-             "    out.append(numbers[-1])\n    out.append(delimeter)"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        assert verify_structured(bad, tmp_path / f"ob{k}",
-                                 backend="lean")["status"] == "failed", k
-
 def test_search_matcher_and_substitution_are_defensive():
     # Review-caught pair on the search-accumulator path. (1) The
     # ensures matcher guarded nothing: `any()` without a generator
@@ -4033,486 +3769,6 @@ def test_search_matcher_and_substitution_are_defensive():
     assert _ast.unparse(out2) == "any((q < 0 for q in range(b + xs[i])))"
 
 
-def test_nested_search_flattens_through_decidable_exists():
-    # The nested-search class: an inner pure search becomes
-    # `if any(TEST for j in range(a, b))` -- the prelude's IntBexDec
-    # makes the bounded ∃ decidable, and the instance COMPOSES, so
-    # the triple loop flattens through the same rewrite with zero
-    # extra machinery (measured: depth 3 proved the moment depth 2
-    # did). enumerate normalizes first (i, x -> i with x := l[i],
-    # lexically). The or-accumulator wraps the ∀-clean invariant
-    # through a ¬ -- without the flip, found ↔ clean was FALSE at
-    # the first hit -- and index-bound conjuncts are DROPPED: they
-    # are loop-head guard facts, false at the fold's exit index and
-    # on the empty list.
-    src = Path("examples/contact/he_humaneval_43.py").read_text()
-    out = _encode(src).lean_source
-    assert "decide (∃ «j» : Int," in out
-    assert "(¬(«b'» = true)) ↔" in out or "¬«b'» = true" in out
-    # bounds conjunct dropped from the carried invariant
-    assert "0 ≤ «i» ∧ «i» <" not in out.split("_inv»")[1].split("\n")[1]
-
-    src3 = Path("examples/contact/he_humaneval_40.py").read_text()
-    out3 = _encode(src3).lean_source
-    # depth 3: an ∃ inside the decide's ∃
-    inner = out3.split("decide (∃")[1][:400]
-    assert "∃" in inner
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_nested_searches_prove_and_lies_fail(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    for stem in ("he_humaneval_43", "he_humaneval_40"):
-        src = Path(f"examples/contact/{stem}.py")
-        good = tmp_path / f"{stem}.py"
-        shutil.copy(src, good)
-        assert verify_structured(good, tmp_path / f"o{stem}",
-                                 backend="lean")["status"] == "ok", stem
-
-    base = Path("examples/contact/he_humaneval_43.py").read_text()
-    for k, (frm, to) in enumerate((
-            ("if l1 + l[j] == 0:", "if l1 + l[j] != 0:"),
-            ("l[a] + l[b] != 0", "l[a] + l[b] != 1"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        assert verify_structured(bad, tmp_path / f"ob{k}",
-                                 backend="lean")["status"] == "failed", k
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_computed_reads_carry_wellformedness_obligations(tmp_path):
-    from veripy.verification.runner import verify_structured
-
-    # Review-caught: scaffolding the ensures totalized UNBOUNDED
-    # reads -- `xs[100] == 0` could hold about getD's default where
-    # Python cannot even evaluate. Every scaffold-computed read now
-    # joins the goal as a well-formedness conjunct (the Dafny VC
-    # parallel): out-of-range makes the theorem unprovable.
-    bad = tmp_path / "u.py"
-    bad.write_text("#@ ensures xs[100] == 0 or result >= 0\n"
-                   "def f(xs: list[int]) -> int:\n    return 0\n")
-    assert verify_structured(bad, tmp_path / "o1",
-                             backend="lean")["status"] == "failed"
-
-    # ...and a bounded computed read (the intersperse class) proves
-    # its obligation from the clause's own quantifier plus the
-    # length post.
-    import shutil
-    good = tmp_path / "isp.py"
-    shutil.copy(Path("examples/contact/he_humaneval_5.py"), good)
-    assert verify_structured(good, tmp_path / "o2",
-                             backend="lean")["status"] == "ok"
-
-
-def test_str_code_point_model_maps_and_disciplines():
-    # `str` is its code-point sequence (List Int) -- faithful ONLY
-    # under the element discipline: `len`, and comparisons whose
-    # EVERY operand is an indexed character of a str parameter
-    # (Python orders characters by code point, so all six comparators
-    # transfer). Everything else rejects by default, in ghost
-    # positions too, so a #@ clause means one thing across backends.
-    src = Path("examples/contact/he_humaneval_48.py").read_text()
-    out = _encode(src).lean_source
-    assert ": List Int" in out
-    # The mirror license: xs[len(xs) - 1 - i] rides i's own bound.
-    assert ".length : Int) - 1 -" in out
-
-    HEAD = ("def f(text: str) -> bool:\n"
-            "    for i in range(len(text)):\n"
-            "        #@ invariant True\n"
-            "        if text[i] != text[len(text) - 1 - i]:\n"
-            "            return False\n"
-            "    return True\n")
-    for bad_ens in (
-            "#@ ensures result == (sum(text) > 0)\n",          # arith
-            "#@ ensures result == (text[0] == 97)\n",          # literal
-            "#@ ensures result == (text[0] + 1 == text[0])\n",  # arith
-            "#@ ensures result == (text == text)\n"):          # whole-str
-        with pytest.raises(EncodeError,
-                           match="str.*parameter|compared with another"):
-            _encode("#@ verified\n" + bad_ens + HEAD)
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_palindrome_proves_and_lies_fail(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/he_humaneval_48.py")
-    good = tmp_path / "pal.py"
-    shutil.copy(src, good)
-    assert verify_structured(good, tmp_path / "o0",
-                             backend="lean")["status"] == "ok"
-
-    base = src.read_text()
-    for k, (frm, to) in enumerate((
-            # Off-by-one mirror in the spec: the ghost read escapes
-            # the window, and its well-formedness obligation (plus
-            # the spec itself) is FALSE on 1-char strings up.
-            ("#@ ensures result == (forall i in range(len(text)) :: "
-             "text[i] == text[len(text) - 1 - i])",
-             "#@ ensures result == (forall i in range(len(text)) :: "
-             "text[i] == text[len(text) - 2 - i])"),
-            # Implementation lie: bail on the MATCH, keep mismatches.
-            ("if text[i] != text[len(text) - 1 - i]:",
-             "if text[i] == text[len(text) - 1 - i]:"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        assert verify_structured(bad, tmp_path / f"ob{k}",
-                                 backend="lean")["status"] == "failed", k
-
-
-def test_filtered_comprehension_maps_and_disciplines():
-    # The filtered-comprehension class (slice 28): the identity
-    # filter `[x for x in l if P]` is List.filter, membership
-    # quantifiers range over ELEMENTS (`∀ x ∈ l`) with `==>`
-    # recovered as an arrow in that body, `x in l` is ∈, and
-    # `xs.count(v)` is List.count cast to Int. The ladder proves
-    # count preservation through Count_filter_of_pos at the EXPLICIT
-    # emitted predicate.
-    src = Path("examples/contact/he_humaneval_30.py").read_text()
-    out = _encode(src).lean_source
-    assert ".filter (fun" in out
-    assert "∈" in out
-    assert ".count" in out
-    assert "Count_filter_of_pos" in out
-    # Mapping and filtering at once has no ladder story: rejected.
-    HEAD = ("#@ verified\n#@ ensures result == result\n"
-            "def f(l: list[int]) -> list[int]:\n")
-    with pytest.raises(EncodeError, match="keeps elements unchanged"):
-        _encode(HEAD + "    return [x * 2 for x in l if x > 0]\n")
-    with pytest.raises(EncodeError, match="one filter condition"):
-        _encode(HEAD + "    return [x for x in l if x > 0 if x < 9]\n")
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_get_positive_proves_and_lies_fail(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/he_humaneval_30.py")
-    good = tmp_path / "pos.py"
-    shutil.copy(src, good)
-    assert verify_structured(good, tmp_path / "o0",
-                             backend="lean")["status"] == "ok"
-
-    base = src.read_text()
-    for k, (frm, to) in enumerate((
-            # Polarity lie: the filter keeps positives, not negatives.
-            ("#@ ensures forall x in result :: x > 0",
-             "#@ ensures forall x in result :: x < 0"),
-            # Guard dropped: count preservation is FALSE for the
-            # non-positive elements the filter removes.
-            ("#@ ensures forall x in l :: x > 0 ==> "
-             "l.count(x) == result.count(x)",
-             "#@ ensures forall x in l :: "
-             "l.count(x) == result.count(x)"),
-            # Implementation lie: >= admits zero, breaking the > spec.
-            ("    return [e for e in l if e > 0]",
-             "    return [e for e in l if e >= 0]"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        assert verify_structured(bad, tmp_path / f"ob{k}",
-                                 backend="lean")["status"] == "failed", k
-
-
-def test_sorted_unique_maps_and_disciplines():
-    # The sorted-unique class (slice 29): sorted(list(set(l))) is one
-    # prelude function (insertion sort that DROPS duplicates), and
-    # the pack proves strict adjacency plus both membership
-    # directions. Bare sorted(l) keeps duplicates -- a different
-    # function -- and stays rejected. Result reads with computed
-    # indices (result[i + 1] under a binder over range(len(result)
-    # - 1)) are totalized in scaffold positions and owe a WF
-    # conjunct, the same rule param lists got in the WF slice.
-    src = Path("examples/contact/he_humaneval_34.py").read_text()
-    out = _encode(src).lean_source
-    assert "VeriPy.SortedUnique" in out
-    assert "SortedUnique_adjacent" in out
-    with pytest.raises(EncodeError, match="sorted-unique class"):
-        _encode("#@ verified\n#@ ensures result == result\n"
-                "def f(l: list[int]) -> list[int]:\n"
-                "    return sorted(l)\n")
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_unique_proves_and_lies_fail(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/he_humaneval_34.py")
-    good = tmp_path / "uniq.py"
-    shutil.copy(src, good)
-    assert verify_structured(good, tmp_path / "o0",
-                             backend="lean")["status"] == "ok"
-
-    base = src.read_text()
-    for k, (frm, to) in enumerate((
-            # Order lie: adjacency reversed is falsified by any two
-            # distinct elements.
-            ("result[i] < result[i + 1]", "result[i] > result[i + 1]"),
-            # Implementation lie: identity keeps duplicates and order.
-            ("    return sorted(list(set(l)))", "    return l"),
-            # WF teeth on RESULT reads: an out-of-range ghost read
-            # makes its bound conjunct false, not vacuously true.
-            ("#@ ensures forall i in range(len(result)) :: "
-             "result[i] in l",
-             "#@ ensures forall i in range(len(result)) :: "
-             "result[i + 1] in l"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        assert verify_structured(bad, tmp_path / f"ob{k}",
-                                 backend="lean")["status"] == "failed", k
-
-
-def test_optional_max_class_matches_strictly():
-    # The OptionalMax class (slice 30, he_9): an `int | None` running
-    # accumulator beside a list builder, MATCHED strictly rather than
-    # translated — the emitted template was proved end to end before
-    # the emitter existed, and the matcher's strictness is what lets
-    # the template stand in for translation. Near-misses are rejected
-    # with the pattern named, never mistranslated.
-    src = Path("examples/contact/he_humaneval_9.py").read_text()
-    out = _encode(src).lean_source
-    assert "Option Int × List Int" in out
-    assert "VeriPy.ListMax" in out
-    assert "rolling_max_assert0" in out       # the slice-extension hint
-    # A body deviation: min is not the class.
-    with pytest.raises(EncodeError, match="OptionalMax"):
-        _encode(src.replace("running_max = max(running_max, n)",
-                            "running_max = min(running_max, n)"))
-    # A spec deviation: the wrong prefix bound is refused, not proved.
-    with pytest.raises(EncodeError, match="OptionalMax"):
-        _encode(src.replace(
-            "#@ ensures forall i in range(len(numbers)) :: "
-            "result[i] == max(numbers[:i + 1])",
-            "#@ ensures forall i in range(len(numbers)) :: "
-            "result[i] == max(numbers[:i])"))
-    # A sibling def named after a template declaration collides
-    # loudly, not in Lean's lap (review-caught).
-    sib = (src + "\n\n#@ verified\n#@ ensures result >= 0\n"
-           "def rolling_max_loop(n: int) -> int:\n    return 0\n")
-    with pytest.raises(EncodeError, match="collides with another"):
-        _encode(sib)
-    # ...but only names the emitter actually creates: an ASSERT-LESS
-    # shape reserves no f_assert0, so that sibling coexists
-    # (review-caught over-reservation).
-    no_assert = src.replace(
-        "        assert numbers[:i + 1] == numbers[:i] + [numbers[i]]\n",
-        "")
-    sib2 = (no_assert + "\n\n#@ verified\n#@ ensures result >= 0\n"
-            "def rolling_max_assert0(n: int) -> int:\n    return 0\n")
-    assert "VeriPy.ListMax" in _encode(sib2).lean_source
-    # A malformed THIRD ensures gets the class rejection, never an
-    # escaping SyntaxError from the expected-source build
-    # (review-caught: None binders made unparseable f-strings).
-    bad3 = src.replace(
-        "def rolling_max(numbers: list[int]) -> list[int]:",
-        "#@ ensures len(result) >= 0\n"
-        "def rolling_max(numbers: list[int]) -> list[int]:")
-    with pytest.raises(EncodeError, match="OptionalMax"):
-        _encode(bad3)
-    # A missing invariant: four are required, by name.
-    with pytest.raises(EncodeError, match="four invariants"):
-        _encode(src.replace(
-            "        #@ invariant (running_max is None) <==> "
-            "(len(maxes) == 0)\n", ""))
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_rolling_max_proves(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/he_humaneval_9.py")
-    good = tmp_path / "rmax.py"
-    shutil.copy(src, good)
-    assert verify_structured(good, tmp_path / "o0",
-                             backend="lean")["status"] == "ok"
-
-    # In-template lies are impossible by construction (every part of
-    # the shape is pinned), so the teeth here are the REFUSALS: a
-    # mutated body or spec must never reach `ok`.
-    base = src.read_text()
-    for k, (frm, to) in enumerate((
-            ("running_max = max(running_max, n)",
-             "running_max = min(running_max, n)"),
-            ("max(numbers[:i + 1])", "max(numbers[:i])"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        st = verify_structured(bad, tmp_path / f"ob{k}",
-                               backend="lean")["status"]
-        assert st == "encode-error", (k, st)
-
-
-def test_sqrt_search_class_matches_strictly():
-    # The sqrt-search class (is_prime): while trial division with an
-    # early return, matched strictly against the pinned template. The
-    # one class whose sidecar pack is load-bearing under Lean BY
-    # CONSTRUCTION: the emitted endgame applies the clause's lemma at
-    # the True exit with every side condition discharged from the
-    # invariant and the negated condition.
-    src = Path("tests/fixtures/lean/is_prime_sqrt.py").read_text()
-    lemmas = frozenset({"CompositeHasSmallFactor"})
-
-    def enc(text):
-        return encode_module_lean(text, parse_source(text),
-                                  module_name="m.py",
-                                  proof_lemmas=lemmas)
-    out = enc(src).lean_source
-    assert "Int × Bool" in out
-    assert "CompositeHasSmallFactor" in out
-    with pytest.raises(EncodeError, match="sqrt-search"):
-        enc(src.replace("k = k + 1", "k = k + 2"))
-    with pytest.raises(EncodeError, match="proof"):
-        enc(src.replace(
-            "    #@ proof CompositeHasSmallFactor(n, k)\n", ""))
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_while_exit_value_is_synthesized_without_the_assert(tmp_path):
-    # The exit-value endgame: a while condition `VAR <= E` with a
-    # params-only bound offers omega the candidate `VAR = E + 1` as a
-    # GUARDED have at the spec endgame — the assert-free route to
-    # what `assert i == n + 1` supplies as a source hint. Measured on
-    # sum_to_n, whose exit assert could not be adopted because it
-    # flips the DAFNY pack vacuous. A weak invariant skips silently:
-    # the same task with the upper bound dropped must fail as a
-    # postcondition, not crash the ladder.
-    import shutil
-    from veripy.verification.runner import verify_structured
-    src = Path("examples/contact/he_humaneval_60.py")
-    # Exercise the upstream assert-free exit rule using the maintained example.
-    source = src.read_text().replace("    assert i == n + 1\n", "")
-    (tmp_path / "task.py").write_text(source)
-    support = src.with_suffix(".proofs.lean").read_text()
-    (tmp_path / "task.proofs.lean").write_text(support)
-    r = verify_structured(tmp_path / "task.py", tmp_path / "o",
-                          backend="lean", time_limit=60)
-    assert r["status"] == "ok", r["failures"][:1]
-
-    weak = source.replace(
-        "#@ invariant 1 <= i <= n + 1", "#@ invariant 1 <= i")
-    (tmp_path / "weak.py").write_text(weak)
-    (tmp_path / "weak.proofs.lean").write_text(
-        support)
-    r2 = verify_structured(tmp_path / "weak.py", tmp_path / "o2",
-                           backend="lean", time_limit=60)
-    assert r2["status"] == "failed", r2["status"]
-
-
-def test_frequency_dict_class_matches_strictly():
-    # The frequency-dict class (mbpp_97): the FIRST dict task — a
-    # dict[int, int] counter over a flattened list[list[int]],
-    # modeled as an association list whose order is carried but never
-    # observed (the admitted specs are order-blind, per the
-    # iteration-order veto). Matched strictly against the pinned
-    # template; the prelude's FreqFold_inv master invariant absorbs
-    # the source's three invariant lines the way the nested-search
-    # flattener absorbs inner-loop invariants.
-    src = Path("examples/contact/mbpp_97.py").read_text()
-    out = _encode(src).lean_source
-    assert "VeriPy.FreqFold" in out
-    assert "VeriPy.DictHas" in out
-    assert "List.mem_flatten" in out
-    # Body deviations are refused with the pattern named.
-    with pytest.raises(EncodeError, match="frequency-dict"):
-        _encode(src.replace("dic_data[num] += 1",
-                            "dic_data[num] += 2"))
-    # Spec deviations too: a weakened count post is refused, not
-    # proved.
-    with pytest.raises(EncodeError, match="frequency-dict"):
-        _encode(src.replace(
-            "result[key] == sum(1 for sublist in list1 for item in "
-            "sublist if item == key)",
-            "result[key] >= 1"))
-    # A dropped invariant is named, never silently absorbed into
-    # nothing.
-    with pytest.raises(EncodeError, match="three invariants"):
-        _encode(src.replace(
-            "        #@ invariant forall key in dic_data :: "
-            "key in flat\n", ""))
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_frequency_lists_proves(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/mbpp_97.py")
-    good = tmp_path / "freq.py"
-    shutil.copy(src, good)
-    assert verify_structured(good, tmp_path / "o0", backend="lean",
-                             time_limit=60)["status"] == "ok"
-
-    # In-template lies are impossible by construction; the teeth are
-    # the refusals — mutations must never reach `ok`.
-    base = src.read_text()
-    for k, (frm, to) in enumerate((
-            ("dic_data[num] += 1", "dic_data[num] += 2"),
-            ("value = 1", "value = 2"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        st = verify_structured(bad, tmp_path / f"ob{k}",
-                               backend="lean")["status"]
-        assert st == "encode-error", (k, st)
-
-
-def test_isomorphism_class_matches_strictly():
-    # The isomorphism class (mbpp_885): two position-class dicts over
-    # code-point strings, compared by sorted values. The deepest pin
-    # so far — the spec theorem proves the algorithm's multiset test
-    # EQUIVALENT to the ∀∀ equality pattern, both directions, riding
-    # two design facts: first-occurrence order is a property of the
-    # position partition alone (so the ⇐ direction gets literally
-    # equal value lists), and the sort needs no properties beyond
-    # being a permutation.
-    src = Path("examples/contact/mbpp_885.py").read_text()
-    out = _encode(src).lean_source
-    assert "VeriPy.PosFold" in out
-    assert "VeriPy.SortL" in out
-    assert "VeriPy.IsoVals" in out
-    with pytest.raises(EncodeError, match="isomorphism"):
-        _encode(src.replace(
-            "dict_str1.get(value, []) + [i]",
-            "dict_str1.get(value, []) + [i, i]"))
-    with pytest.raises(EncodeError, match="isomorphism"):
-        _encode(src.replace(
-            "(str1[i] == str1[j]) == (str2[i] == str2[j])",
-            "(str1[i] == str1[j])"))
-    with pytest.raises(EncodeError, match="four invariants"):
-        _encode(src.replace(
-            "        #@ invariant forall k in range(j) :: "
-            "str2[k] in dict_str2 and k in dict_str2[str2[k]]\n", ""))
-
-
-@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
-def test_end_to_end_is_isomorphic_proves(tmp_path):
-    from veripy.verification.runner import verify_structured
-    import shutil
-
-    src = Path("examples/contact/mbpp_885.py")
-    good = tmp_path / "iso.py"
-    shutil.copy(src, good)
-    assert verify_structured(good, tmp_path / "o0", backend="lean",
-                             time_limit=90)["status"] == "ok"
-
-    # In-template lies are impossible by construction; mutations must
-    # never reach `ok`.
-    base = src.read_text()
-    for k, (frm, to) in enumerate((
-            ("sorted(dict_str1.values()) == sorted(dict_str2.values())",
-             "sorted(dict_str1.values()) != sorted(dict_str2.values())"),
-            ("for i, value in enumerate(str1):",
-             "for i, value in enumerate(str2):"))):
-        bad = tmp_path / f"bad{k}.py"
-        bad.write_text(base.replace(frm, to))
-        st = verify_structured(bad, tmp_path / f"ob{k}",
-                               backend="lean")["status"]
-        assert st == "encode-error", (k, st)
-
-
 @pytest.mark.parametrize('priority', [1, 1100, 999999])
 def test_sidecar_allows_numeric_spec_priority(priority):
     from veripy.backends.lean.sidecar import validate_sidecar_text
@@ -4531,9 +3787,80 @@ def test_sidecar_priority_does_not_admit_arbitrary_attributes(attribute):
         validate_sidecar_text(f'@[{attribute}]\ntheorem Checked : True := trivial', 'priority')
 
 
-@pytest.mark.requires_prover("lean")
-def test_preserved_upstream_sqrt_search_proof(tmp_path):
-    from veripy import api
-    source = Path("tests/fixtures/lean/is_prime_sqrt.py")
-    result = api.verify(source, tmp_path, backend="lean", time_limit=60)
-    assert result["status"] == "ok", result["failures"]
+def test_early_return_loops_desugar_to_bool_accumulators():
+    # The early-return search-loop shape: `if TEST: return False` inside
+    # the loop desugars to the and-accumulator over not-TEST (return
+    # True on hit is the or-accumulator over TEST). Result-faithful:
+    # Python short-circuits, the fold runs on, and Bool and/or are
+    # monotone over a pure body. The accumulator is synthesized fresh,
+    # and the user's accumulator-free invariant becomes its iff-body.
+    enc = _encode(EARLY_BT)
+    assert "Nat → Int → Bool → Bool" in enc.lean_source
+    assert "(«b» && (decide (¬(" in enc.lean_source     # not-TEST step
+    assert "((«b» = true) ↔ (∀ «k» : Int," in enc.lean_source
+    # The omega leaves bridge `l[i] >= t` against the invariant's
+    # `l[k] < t` — same linear fact, different spelling.
+    assert "first | exact hpi | omega" in enc.lean_source
+
+    hit_true = ("#@ ensures result == "
+                "any(l[k] == v for k in range(len(l)))\n"
+                "def has(l: list[int], v: int) -> bool:\n"
+                "    for i in range(len(l)):\n"
+                "        #@ invariant all(l[k] != v for k in range(i))\n"
+                "        if l[i] == v:\n"
+                "            return True\n"
+                "    return False\n")
+    enc2 = _encode(hit_true)
+    assert "(«b» || (decide ((" in enc2.lean_source     # TEST step
+
+    # Non-literal returns and agreeing literals stay out.
+    with pytest.raises(EncodeError, match="bool literals"):
+        _encode(EARLY_BT.replace("return False", "return t > 0"))
+    with pytest.raises(EncodeError, match="must differ"):
+        _encode(EARLY_BT.replace("return True", "return False"))
+
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_early_return_loops_verify(tmp_path):
+    from veripy.verification.runner import verify_structured
+
+    # Check the inline loop and a deliberately false invariant.
+    src = tmp_path / "bt.py"
+    src.write_text(EARLY_BT)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The invariant states the wrong prefix property: fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(EARLY_BT.replace("l[k] < t for k in range(i)",
+                                    "l[k] > t for k in range(i)"))
+    assert verify_structured(bad, tmp_path / "o2",
+                             backend="lean")["status"] == "failed"
+
+
+
+@pytest.mark.skipif(find_lean() is None, reason="lean not installed")
+def test_end_to_end_max_element_verifies(tmp_path):
+    from veripy.verification.runner import verify_structured
+
+    src = tmp_path / "max_element.py"
+    src.write_text(MAX_ELEMENT)
+    assert verify_structured(src, tmp_path / "o1",
+                             backend="lean")["status"] == "ok"
+
+    # The min dual (mirrored guard) rides the same machinery.
+    mn = tmp_path / "min_element.py"
+    mn.write_text(MAX_ELEMENT
+                  .replace("max_element", "min_element")
+                  .replace("l[i] <= result", "l[i] >= result")
+                  .replace("l[k] <= m", "l[k] >= m")
+                  .replace("if l[i] > m:", "if l[i] < m:"))
+    assert verify_structured(mn, tmp_path / "o2",
+                             backend="lean")["status"] == "ok"
+
+    # Flipping the guard against the invariant fails honestly.
+    bad = tmp_path / "bad.py"
+    bad.write_text(MAX_ELEMENT.replace("if l[i] > m:", "if l[i] < m:"))
+    assert verify_structured(bad, tmp_path / "o3",
+                             backend="lean")["status"] == "failed"

@@ -315,7 +315,7 @@ theorem SqGeSelf (a : Int) : a ≤ a * a := by
   · calc a = a * 1 := by omega
       _ ≤ a * a := Int.mul_le_mul_of_nonneg_left h (by omega)
 
--- The mapped-fold pair (mbpp_sum_squares class). The slice-extension
+-- The mapped-fold pair (mapped-sum-of-squares class). The slice-extension
 -- assert `[f(x) for x in xs[:i+1]] == [f(x) for x in xs[:i]] + [f(xs[i])]`
 -- is proved by Map_take_succ (its bound comes from the obligation's own
 -- `i < len` hypothesis), and the proved form then steps the invariant
@@ -482,7 +482,7 @@ theorem GetD_le_ListMax_take (l : List Int) (j i : Int)
   Mem_le_ListMax _ _ (GetD_mem_take l ((i + 1)).toNat (j).toNat
     (by omega) (by omega))
 
--- The dict model for the frequency class (mbpp_97): an
+-- The dict model for the frequency class (frequency-count): an
 -- association list over (Int × Int), all operations structural
 -- so every lemma is a clean if-split induction. Order is carried
 -- but never observed — the admitted specs are order-blind, per
@@ -674,7 +674,7 @@ theorem PySum_map_length_flatten (l : List (List Int)) :
     push_cast
     omega
 
--- The isomorphism-class pack (mbpp_885): position-class dicts
+-- The isomorphism-class pack (string-isomorphism): position-class dicts
 -- over code-point strings. AppendPos inserts fresh keys at the
 -- END, so the value order is FIRST-OCCURRENCE order — a property
 -- of the position partition alone, which is why the ⇐ direction
@@ -685,7 +685,7 @@ theorem PySum_map_length_flatten (l : List (List Int)) :
 -- to the ∀∀ equality pattern. The masters (PosFold_inv, the
 -- pointwise/fresh Vals lemmas) absorb the source's four
 -- invariant lines, the nested-search flattener's precedent.
--- Stage A of the isomorphism-class pin (mbpp_885): the position-
+-- Stage A of the isomorphism-class pin (string-isomorphism): the position-
 -- class dict. Keys are code points, values are the (increasing)
 -- lists of positions where the key occurs. AppendPos inserts at the
 -- END on a fresh key, so the value order is first-occurrence order —

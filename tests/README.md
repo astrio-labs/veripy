@@ -20,9 +20,9 @@ frozen experiments, copied repositories or output archives.
 | `editor` | Language-server protocol and concurrency |
 | `integration` | Repository components and retained proof fixtures |
 | `tools` | Research archive integrity and repository hygiene |
-| `fixtures` | Shared inputs and lists of maintained examples |
+| `fixtures` | Shared component inputs |
 
-Examples and case-study inputs are shared fixtures. Their source paths are
+Component inputs are shared fixtures. Their source paths are
 resolved relative to the repository root. Keep these files when preparing a clean
 checkout. Backend tests require installed Dafny or Lean, and typing tests need
 basedpyright. Proof integration tests skip explicitly when their required provers are absent.
@@ -30,7 +30,5 @@ Use `pytest -rs` to see why each check skipped. A passing subset without provers
 is not a full proof run. New backend tests should declare `requires_prover` so
 encoding-only tests continue to run without external tools.
 
-`fixtures/difftest.txt` lists sixteen admitted examples for the nightly
-differential sweep and guard-import checks. Editor tests share the checked GCD
-example and its sidecar. No test depends on the removed benchmark harness or
-external benchmark downloads.
+The retired benchmark corpus and its dedicated sweep have been removed.
+Component regression tests use local fixtures and retained case studies.
