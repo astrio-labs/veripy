@@ -93,4 +93,4 @@ footer .pagination-links { margin-top: 0; }
 .expressive-code { --ec-brdRad: .65rem; --ec-frm-frameBoxShdCssVal: none; }
 
 /* Keep the approved wordmark legible on both themes. */
-.site-title img { height: 2.25rem; width: auto; border-radius: 0.25rem; }
+.site-title img { height: 1.875rem; width: auto; border-radius: 0.25rem; }
