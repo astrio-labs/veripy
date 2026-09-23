@@ -92,5 +92,5 @@ footer .meta { margin-top: 0; }
 footer .pagination-links { margin-top: 0; }
 .expressive-code { --ec-brdRad: .65rem; --ec-frm-frameBoxShdCssVal: none; }
 
-/* Keep the approved wordmark legible on both themes. */
+/* Theme-specific transparent wordmarks share the same compact dimensions. */
 .site-title img { height: 1.875rem; width: auto; border-radius: 0.25rem; }

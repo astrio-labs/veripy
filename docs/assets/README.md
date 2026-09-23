@@ -40,6 +40,8 @@ use the repository's [MIT license](../../LICENSE).
 
 `veripy-logo.png` preserves the approved, AI-generated logo.
 `veripy-logo.svg` is a presentation wrapper around that original raster,
-with a tighter viewport and white backing for light and dark surfaces.
+with a tighter viewport and transparent background.
+`veripy-logo-dark.svg` applies an SVG color filter for a lighter dark-theme
+variant while preserving the original geometry and transparency.
 It is not a vector tracing. The documentation favicon is the matching
 icon-only image in `docs-site/public/favicon-transparent.png`.
