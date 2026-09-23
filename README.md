@@ -1,6 +1,7 @@
-# VeriPy
-
-<img src="docs/assets/veripy-logo.svg" alt="VeriPy logo" width="320">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/veripy-logo-dark.svg">
+  <img src="docs/assets/veripy-logo.svg" alt="VeriPy" width="200">
+</picture>
 
 **Source-Preserving Verification and Compatibility Checking for Python Components**
 
