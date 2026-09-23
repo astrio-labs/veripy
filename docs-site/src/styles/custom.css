@@ -91,3 +91,6 @@ footer.sl-flex { gap: 1rem; padding-top: 1.25rem; border-top: 1px solid var(--do
 footer .meta { margin-top: 0; }
 footer .pagination-links { margin-top: 0; }
 .expressive-code { --ec-brdRad: .65rem; --ec-frm-frameBoxShdCssVal: none; }
+
+/* Keep the approved wordmark legible on both themes. */
+.site-title img { height: 2.25rem; width: auto; border-radius: 0.25rem; }

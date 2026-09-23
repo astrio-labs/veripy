@@ -1,5 +1,7 @@
 # VeriPy
 
+<img src="docs/assets/veripy-logo.svg" alt="VeriPy logo" width="320">
+
 **Source-Preserving Verification and Compatibility Checking for Python Components**
 
 [Getting started](#getting-started) · [Language guide](https://astrio-labs.github.io/veripy/) · [Documentation](#documentation) ·
