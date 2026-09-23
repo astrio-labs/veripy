@@ -6,6 +6,8 @@ export default defineConfig({
   trailingSlash: 'always',
   integrations: [starlight({
     title: 'VeriPy',
+    logo: { src: '../docs/assets/veripy-logo.svg', alt: '', replacesTitle: true },
+    favicon: '/favicon.png',
     description: 'A practical guide to verifying Python components and checking compatibility.',
     social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/astrio-labs/veripy' }],
     customCss: ['./src/styles/custom.css'],

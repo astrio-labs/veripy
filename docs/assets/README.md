@@ -35,3 +35,11 @@ arrows, colors and embedded logos.
 Third-party names and logos identify their respective projects and are not
 covered by VeriPy's software license. Diagram layout and custom vector elements
 use the repository's [MIT license](../../LICENSE).
+
+## VeriPy brand
+
+`veripy-logo.png` preserves the approved, AI-generated logo.
+`veripy-logo.svg` is a presentation wrapper around that original raster,
+with a tighter viewport and white backing for light and dark surfaces.
+It is not a vector tracing. The documentation favicon is the matching
+icon-only image in `docs-site/public/favicon.png`.
