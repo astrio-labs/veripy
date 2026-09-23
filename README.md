@@ -2,7 +2,7 @@
 
 **Source-Preserving Verification and Compatibility Checking for Python Components**
 
-[Getting started](#getting-started) · [Documentation](#documentation) ·
+[Getting started](#getting-started) · [Language guide](https://astrio-labs.github.io/veripy/) · [Documentation](#documentation) ·
 [Case studies](case_studies/README.md) · [Citation](#citation)
 
 Keeping a Python implementation and its formal guarantees aligned is a continuing
