@@ -42,4 +42,4 @@ use the repository's [MIT license](../../LICENSE).
 `veripy-logo.svg` is a presentation wrapper around that original raster,
 with a tighter viewport and white backing for light and dark surfaces.
 It is not a vector tracing. The documentation favicon is the matching
-icon-only image in `docs-site/public/favicon.png`.
+icon-only image in `docs-site/public/favicon-transparent.png`.
