@@ -22,17 +22,17 @@ def increment(x: int) -> int:
     return 1 + x
 ```
 
-Run the comparison using Dafny's outcome model.
+Run the comparison using the default Dafny backend.
 
 ```sh
-python -m veripy.compatibility --old old.py --new new.py   --function increment --backend dafny-outcomes --out build/increment-comparison
+python -m veripy.compatibility --old old.py --new new.py   --function increment --backend dafny --out build/increment-comparison
 ```
 
 Use a fresh output directory for each comparison. The successful verdict is `proved-compatible`.
 
 ## What is checked
 
-Within the admitted typed domain and environment, the product checks that old inputs remain admitted, modeled exception outcomes agree, and normal return values are equal. Both implementations and their proof support must also verify.
+Within the admitted typed domain and environment, the product checks that old inputs remain admitted, modeled exception outcomes agree, and normal return values are equal. Both implementations and their proof support must also verify. This example has no raising behavior in its admitted domain. For exception-aware contracts, use the specialized `dafny-outcomes` backend described in the reference.
 
 Changing the new precondition to `x > 0` excludes the formerly admitted input zero. Changing the new result to `x + 2` changes behavior. These are different compatibility failures.
 

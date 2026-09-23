@@ -37,6 +37,6 @@ with tempfile.TemporaryDirectory(prefix='veripy-docs-') as tmp:
         print(f'{page}: passed',flush=True)
     old=out/'old.py';new=out/'new.py'
     old.write_text(block('compatibility','python',0));new.write_text(block('compatibility','python',1))
-    p=run(['-m','veripy.compatibility','--old',str(old),'--new',str(new),'--function','increment','--backend','dafny-outcomes','--out',str(out/'comparison')])
+    p=run(['-m','veripy.compatibility','--old',str(old),'--new',str(new),'--function','increment','--backend','dafny','--out',str(out/'comparison')])
     assert 'proved-compatible' in p.stdout,p.stdout
     print('compatibility: passed',flush=True)
