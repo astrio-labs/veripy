@@ -5,9 +5,9 @@ It is Figure 2 in the current manuscript. The root README intentionally uses a
 stable descriptive label instead of a paper figure number.
 
 `veripy-workflow.pdf` is the standalone vector export, copied without changes
-from the manuscript figure on September 14, 2026. It contains only the diagram,
+from the manuscript figure on September 22, 2026. It contains only the diagram,
 not the manuscript. Its SHA-256 is
-`4edddf612dad5a013535b919ae26f96aaebe3fe26982d9573737ee6b99eee57f`.
+`3aa3f02820a35c441a621bdc6263cee31886e587991bc01fad53018d58262de6`.
 
 ## Rebuild the README image
 
