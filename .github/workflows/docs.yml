@@ -2,9 +2,9 @@ name: Documentation
 on:
   push:
     branches: [main]
-    paths: ['docs/**', 'docs-site/**', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'docs-site/**', 'veripy/**', 'pyproject.toml', 'pyrightconfig.json', 'lean-toolchain', '.github/workflows/docs.yml']
   pull_request:
-    paths: ['docs/**', 'docs-site/**', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'docs-site/**', 'veripy/**', 'pyproject.toml', 'pyrightconfig.json', 'lean-toolchain', '.github/workflows/docs.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -46,8 +46,10 @@ jobs:
           python -m pip install -e '.[dev]'
           dotnet tool install --global dafny --version 4.11.0
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
-          curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o /tmp/elan-init.sh
-          sh /tmp/elan-init.sh -y --default-toolchain none
+          sudo apt-get update
+          sudo apt-get install -y elan
+          elan toolchain install leanprover/lean4:v4.33.1
+          elan default leanprover/lean4:v4.33.1
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - run: python docs-site/scripts/check_examples.py
   deploy:
