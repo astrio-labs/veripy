@@ -71,3 +71,10 @@ coverage.xml
 *.acn
 *.acr
 *.alg
+
+# Documentation site dependencies and generated output
+/docs-site/node_modules/
+/docs-site/.astro/
+/docs-site/dist/
+/docs-site/src/content/docs/
+/docs-site/public/assets/

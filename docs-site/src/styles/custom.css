@@ -1,0 +1,6 @@
+:root { --sl-color-accent-low: #23183d; --sl-color-accent: #8770bd; --sl-color-accent-high: #d7ccef; --sl-font: system-ui, sans-serif; }
+:root[data-theme='light'] { --sl-color-accent-low: #eee8f8; --sl-color-accent: #482778; --sl-color-accent-high: #352052; }
+.site-title { font-weight: 750; letter-spacing: -.035em; }
+.sl-markdown-content h2 { letter-spacing: -.025em; }
+.sl-markdown-content img { background: white; border-radius: .6rem; padding: .65rem; }
+.hero { padding-block: 2.5rem; }

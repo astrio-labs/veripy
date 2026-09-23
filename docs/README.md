@@ -1,5 +1,9 @@
 # VeriPy documentation
 
+Read the [online language guide](https://astrio-labs.github.io/veripy/) for a
+progressive introduction, runnable tutorials and searchable reference pages.
+The site is generated from these Markdown files.
+
 Start with the [project README](../README.md) for installation, the verification
 workflow and a runnable comparison. These guides describe the maintained source
 tree. Research results retain their own compiler, environment and input bindings.
