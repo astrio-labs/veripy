@@ -5,8 +5,10 @@
 
 **Source-Preserving Verification and Compatibility Checking for Python Components**
 
-[Getting started](#getting-started) · [Language guide](https://astrio-labs.github.io/veripy/) · [Documentation](#documentation) ·
-[Case studies](case_studies/README.md) · [Citation](#citation)
+[![arXiv](https://img.shields.io/badge/arXiv-2610.02814-b31b1b.svg)](https://arxiv.org/abs/2610.02814)
+[![Docs](https://img.shields.io/badge/docs-language_guide-482878.svg)](https://astrio-labs.github.io/veripy/)
+[![License](https://img.shields.io/badge/license-MIT-107454.svg)](LICENSE)
+[![Citation](https://img.shields.io/badge/citation-BibTeX-8970bf.svg)](#citation)
 
 Keeping a Python implementation and its formal guarantees aligned is a continuing
 maintenance problem. A contract must describe the code that callers execute, and
@@ -145,17 +147,19 @@ The [documentation index](docs/README.md) provides a reading guide.
 
 ## Citation
 
-If you use VeriPy in research, please cite the software and record the commit
-used in your experiments. Machine-readable metadata is available in
-[CITATION.cff](CITATION.cff).
+If you use VeriPy in research, please cite the [paper](https://arxiv.org/abs/2610.02814)
+and record the commit used in your experiments. Software metadata is available
+in [CITATION.cff](CITATION.cff).
 
 ```bibtex
-@misc{veripy2026,
-  author = {{Naing Oo Lwin} and {VeriPy contributors}},
-  title = {{VeriPy}: Source-Preserving Verification and Compatibility Checking for Python Components},
-  year = {2026},
-  howpublished = {\url{https://github.com/astrio-labs/veripy}},
-  note = {Research software, version 0.1.0a1}
+@misc{lwin2026veripysourcepreservingverificationcompatibility,
+  title={VeriPy Source-Preserving Verification and Compatibility Checking for Python Components},
+  author={Naing Oo Lwin},
+  year={2026},
+  eprint={2610.02814},
+  archivePrefix={arXiv},
+  primaryClass={cs.SE},
+  url={https://arxiv.org/abs/2610.02814},
 }
 ```
 
