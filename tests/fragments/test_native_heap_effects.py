@@ -220,6 +220,73 @@ def test_borrowed_container_insertions_update_local_wrapper_provenance(
     assert any("assertion" in d.message for d in result.diagnostics), result.raw
 
 
+OPTIONAL_SCHEMA = {
+    "types": {
+        "Entry": {
+            "fields": {
+                "count": "int",
+                "events": "list[str]",
+                "candidate": "Entry | None",
+            }
+        }
+    }
+}
+
+
+@dataclass
+class OptionalEntry:
+    count: int = 0
+    events: list[str] = field(default_factory=list)
+    candidate: "OptionalEntry | None" = None
+
+
+@pytest.mark.requires_prover("dafny")
+@pytest.mark.parametrize(
+    "read,error",
+    [
+        # Reading a field through an optional receiver raises AttributeError.
+        ("label = value.candidate.count", AttributeError),
+        # Any format specification can raise for the formatted primitive.
+        ('label = f"{value.count:bad}"', ValueError),
+    ],
+)
+def test_failing_reads_after_borrowed_writes_fail_proof(read, error, tmp_path):
+    text = source(
+        '    for key, value in shard.items():\n        value.events.append("changed")\n        '
+        + read
+        + "\n",
+        schema=OPTIONAL_SCHEMA,
+    )
+    namespace = {"Entry": OptionalEntry}
+    exec(compile(text, str(tmp_path / "late_read.py"), "exec"), namespace)
+    changed = OptionalEntry()
+    with pytest.raises(error):
+        namespace["admit"]({}, {"one": changed})
+    assert changed.events == ["changed"]
+    result = prove(text, tmp_path)
+    assert not result.ok and result.error is None, result.raw
+    assert any("assertion" in d.message for d in result.diagnostics), result.raw
+
+
+@pytest.mark.requires_prover("dafny")
+@pytest.mark.parametrize(
+    "read",
+    ["label = value.candidate.count", 'label = f"{value.count}"'],
+)
+def test_nonfailing_reads_after_borrowed_writes_still_prove(read, tmp_path):
+    schema = json.loads(
+        json.dumps(OPTIONAL_SCHEMA).replace('"Entry | None"', '"Entry"')
+    )
+    text = source(
+        '    for key, value in shard.items():\n        value.events.append("changed")\n        '
+        + read
+        + "\n",
+        schema=schema,
+    )
+    result = prove(text, tmp_path)
+    assert result.ok, result.raw
+
+
 def test_opaque_metadata_formatting_does_not_assume_python_callbacks_pure():
     schema = {"types": {"Entry": {"fields": {"metadata": "opaque"}}}}
     with pytest.raises(EncodeError, match="formatting requires exact primitive"):

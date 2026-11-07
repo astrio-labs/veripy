@@ -18,7 +18,7 @@ from veripy.backends.base import register_backend
 from veripy.backends.dafny.backend import DafnyBackend
 from veripy.backends.dafny.encoder import EncodedModule, _err
 
-VERSION = "heap-effects-1"
+VERSION = "heap-effects-2"
 
 
 @dataclass(frozen=True)
@@ -163,6 +163,9 @@ class Effects:
             return Value("bool") if type(n.value) is bool else SCALAR
         if isinstance(n, ast.Attribute):
             receiver = self.expr(n.value, indent)
+            if receiver.optional:
+                # Reading a field of None raises AttributeError.
+                self.reject(n, indent)
             fields = self.schema["types"].get(receiver.kind, {}).get("fields", {})
             if n.attr not in fields:
                 raise _err(n, "attribute missing from explicit external type contract")
@@ -251,6 +254,9 @@ class Effects:
                         )
                     if item.format_spec is not None:
                         self.expr(item.format_spec, indent)
+                        # Any specification may be invalid for the formatted
+                        # primitive (ValueError/TypeError) after prior writes.
+                        self.reject(item, indent)
             return SCALAR
         if isinstance(n, ast.Call):
             if isinstance(n.func, ast.Name) and n.func.id == "zip":
