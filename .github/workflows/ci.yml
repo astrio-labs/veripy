@@ -15,12 +15,12 @@ jobs:
   # Tier 1 — no Dafny: parser, encoder, guards, proof assistance,
   # conformance. Dafny-dependent tests skip themselves (find_dafny gate).
   unit:
-    runs-on: ubuntu-24.04  # pinned: exact Python 3.14.4 is not built for newer images
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
       - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
         with:
-          python-version: "3.14.4"
+          python-version: "3.14"
       - name: Repository hygiene
         run: python tools/check_repository_hygiene.py
       - name: Install
@@ -33,12 +33,12 @@ jobs:
   # Tier 2 — full pipeline: Dafny proofs + the translation-validation
   # harness (difftest) over the corpus.
   prove:
-    runs-on: ubuntu-24.04  # pinned: exact Python 3.14.4 is not built for newer images
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
       - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
         with:
-          python-version: "3.14.4"
+          python-version: "3.14"
       - uses: actions/setup-dotnet@6bd8b7f7774af54e05809fcc5431931b3eb1ddee  # v4.0.1
         with:
           dotnet-version: "8.0.x"
