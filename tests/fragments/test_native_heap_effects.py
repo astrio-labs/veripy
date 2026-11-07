@@ -1,0 +1,211 @@
+"""Effect lowering is generic and preserves borrowed writes on failing paths."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from veripy.backends.dafny.driver import verify_dafny_file
+from veripy.backends.dafny.encoder import EncodeError
+from veripy.backends.dafny.native_heap import DafnyHeapBackend
+from veripy.frontend.extract import parse_source
+
+SCHEMA = {
+    "types": {
+        "Entry": {"fields": {"seen": "bool", "count": "int", "events": "list[str]"}}
+    }
+}
+
+
+def source(body, *, name="admit", schema=SCHEMA):
+    return (
+        "# heap-schema: "
+        + json.dumps(schema)
+        + f"\n#@ verified\ndef {name}(retained: dict[str, Entry], shard: dict[str, Entry]) -> None:\n"
+        + body
+    )
+
+
+def encode(text):
+    return DafnyHeapBackend().encode(
+        text, parse_source(text), module_name="fresh_example", proof_lemmas=[]
+    )
+
+
+def prove(text, tmp_path):
+    result = encode(text)
+    path = tmp_path / "heap.dfy"
+    path.write_text(result.dafny_source)
+    return verify_dafny_file(path, result.line_map)
+
+
+@pytest.mark.requires_prover("dafny")
+def test_fresh_noncandidate_validate_then_accumulate(tmp_path):
+    text = source(
+        """    pending: dict[str, Entry] = {}
+    entries: list[tuple[Entry, Entry]] = []
+    for key, value in shard.items():
+        if key not in retained:
+            pending[key] = value
+            continue
+        prior = retained[key]
+        assert prior.count == value.count
+        entries.append((prior, value))
+    retained.update(pending)
+    for prior, value in entries:
+        prior.seen |= value.seen
+        prior.events.extend(value.events)
+""",
+        name="combine_telemetry",
+    )
+    result = prove(text, tmp_path)
+    assert result.ok, result.raw
+    assert "1 verified, 0 errors" in result.raw
+    assert encode(text).dafny_source == encode(text).dafny_source
+
+
+@pytest.mark.requires_prover("dafny")
+@pytest.mark.parametrize(
+    "write",
+    [
+        "prior.seen = value.seen",
+        "prior.seen |= value.seen",
+        "value.seen |= prior.seen",
+        "alias = prior\n        alias.events.extend(value.events)",
+        "wrapper = [prior]\n        wrapper[0].events.extend(value.events)",
+        "pending: dict[str, Entry] = {}\n        retained.update(pending)",
+    ],
+)
+def test_borrowed_write_before_later_rejection_fails_proof(write, tmp_path):
+    # Updating even an abstract empty map emits a conservative write event.
+    body = (
+        "    for key, value in shard.items():\n        prior = retained[key]\n        "
+        + write
+        + "\n        assert prior.count == value.count\n"
+    )
+    result = prove(source(body), tmp_path)
+    assert not result.ok
+    assert result.error is None
+    assert any("assertion" in d.message for d in result.diagnostics), result.raw
+
+
+@pytest.mark.requires_prover("dafny")
+@pytest.mark.parametrize(
+    "body",
+    [
+        """    pending: dict[str, Entry] = {}
+    for key, value in shard.items():
+        if key not in shard:
+            pending[key] = value
+    retained.update(pending)
+""",
+        """    pending: dict[str, Entry] = {}
+    for key, value in shard.items():
+        if key not in retained:
+            key: str = "occupied"
+            pending[key] = value
+    retained.update(pending)
+""",
+        """    pending: dict[str, Entry] = {}
+    pending.update(shard)
+    retained.update(pending)
+""",
+        """    pending: dict[str, Entry] = {}
+    wrapper = [pending]
+    for key, value in shard.items():
+        pending[key] = value
+    retained.update(wrapper[0])
+""",
+        """    local: list[str] = []
+    alias = local
+    for key, value in shard.items():
+        alias.extend(local)
+        alias = value.events
+    assert False
+""",
+    ],
+)
+def test_capabilities_and_loop_aliases_are_conservative(body, tmp_path):
+    result = prove(source(body), tmp_path)
+    assert not result.ok and result.error is None, result.raw
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    callback(retained)\n",
+        "    [value.events.clear() for value in shard.values()]\n",
+        "    try:\n        assert False\n    except AssertionError:\n        retained.update(shard)\n",
+        "    for key, value in shard.items():\n        value.count |= value.count\n",
+    ],
+)
+def test_unknown_effects_and_nonboolean_or_fail_closed(body):
+    with pytest.raises(EncodeError):
+        encode(source(body))
+
+
+def test_no_contract_or_empty_target_is_not_verification():
+    with pytest.raises(EncodeError):
+        encode("#@ verified\ndef f() -> None:\n    pass\n")
+    with pytest.raises(ValueError, match="nonempty"):
+        encode(
+            "# heap-schema: " + json.dumps(SCHEMA) + "\ndef f() -> None:\n    pass\n"
+        )
+
+
+@pytest.mark.parametrize(
+    "shadow",
+    [
+        "def zip(): pass\n",
+        "from other import zip\n",
+        "import other as zip\n",
+        "zip = 1\n",
+    ],
+)
+def test_builtin_zip_shadowing_fails_closed(shadow):
+    with pytest.raises(EncodeError, match="shadows builtin zip"):
+        encode(shadow + source("    pass\n"))
+
+
+@pytest.mark.requires_prover("dafny")
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    raise AssertionError() from retained.update(shard)\n",
+        "    assert False, f\"{0:{retained.update(shard) or ''}}\"\n",
+    ],
+)
+def test_exception_causes_and_nested_format_specs_preserve_hidden_writes(
+    body, tmp_path
+):
+    result = prove(source(body), tmp_path)
+    assert not result.ok and result.error is None, result.raw
+    assert any("assertion" in d.message for d in result.diagnostics), result.raw
+
+
+@pytest.mark.requires_prover("dafny")
+@pytest.mark.parametrize(
+    "insertion", ["wrapper.append(retained)", "wrapper.extend([retained])"]
+)
+def test_borrowed_container_insertions_update_local_wrapper_provenance(
+    insertion, tmp_path
+):
+    text = source(
+        "    pending: dict[str, Entry] = {}\n    wrapper = [pending]\n    "
+        + insertion
+        + "\n    for alias in wrapper:\n        alias.update(shard)\n    assert False\n"
+    )
+    result = prove(text, tmp_path)
+    assert not result.ok and result.error is None, result.raw
+    assert any("assertion" in d.message for d in result.diagnostics), result.raw
+
+
+def test_opaque_metadata_formatting_does_not_assume_python_callbacks_pure():
+    schema = {"types": {"Entry": {"fields": {"metadata": "opaque"}}}}
+    with pytest.raises(EncodeError, match="formatting requires exact primitive"):
+        encode(
+            source(
+                '    for key, value in shard.items():\n        assert False, f"{value.metadata}"\n',
+                schema=schema,
+            )
+        )
