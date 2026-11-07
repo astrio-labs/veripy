@@ -23,7 +23,7 @@ from veripy.frontend.parse import Clause, ModuleSpecs
 
 TD_MIN = -999999999 * 86400 * 1000000
 TD_MAX = (999999999 * 86400 + 86399) * 1000000 + 999999
-VERSION = "native-scalar-timedelta-1"
+VERSION = "native-scalar-timedelta-2"
 
 PREAMBLE = """
 // Exact builtin int bit_length: sign does not contribute a bit.
@@ -525,17 +525,17 @@ class NativeEncoder(OutcomeEncoder):
         if isinstance(stmt, ast.Return) and stmt.value is not None:
             for clause in self._proofs_by_stmt.pop(id(stmt), []):
                 self._emit_proof(clause, indent)
-            # Operations are pure and eager in this admitted expression subset.
-            # Negative shifts have ValueError outcomes, including without a guard.
-            for node in ast.walk(stmt.value):
+            # Operations are pure and eager in this admitted expression subset,
+            # so checks follow Python's evaluation order: an earlier product's
+            # OverflowError precedes a later negative shift's ValueError.
+            for node in _evaluation_order(stmt.value):
                 if isinstance(node, ast.BinOp) and isinstance(node.op, ast.LShift):
                     self.emit(f"{indent}if {self.expr(node.right)} < 0 {{", node.lineno)
                     self.emit(
                         f"{indent}  {self.error_name} := true; return;", node.lineno
                     )
                     self.emit(f"{indent}}}")
-            for node in reversed(list(ast.walk(stmt.value))):
-                if (
+                elif (
                     isinstance(node, ast.BinOp)
                     and getattr(node, "_native_type", None) == "timedelta"
                 ):
@@ -544,6 +544,13 @@ class NativeEncoder(OutcomeEncoder):
                         f"{indent}assert {TD_MIN} <= {value} <= {TD_MAX};", node.lineno
                     )
         return super().stmt(stmt, indent)
+
+
+def _evaluation_order(node):
+    """Post-order: operands (in field order) are evaluated before their operation."""
+    for child in ast.iter_child_nodes(node):
+        yield from _evaluation_order(child)
+    yield node
 
 
 class NativeBackend(OutcomeBackend):

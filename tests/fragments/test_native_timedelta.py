@@ -2,6 +2,7 @@
 
 import ast
 import shutil
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,38 @@ def test_local_semantic_bindings_are_not_treated_as_builtins(tmp_path, name):
         path, tmp_path / "proof", backend="dafny-native", keep_artifacts=True
     )
     assert result["status"] == "encode-error", result
+
+
+@pytest.mark.requires_prover("dafny")
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        # Python overflows on the left product before evaluating the shift.
+        ("return (self.duration * 2) * (1 << step)", "failed"),
+        # The shift raises ValueError before the product is evaluated.
+        ("return self.duration * (1 << step)", "ok"),
+    ],
+)
+def test_outcome_checks_follow_python_evaluation_order(tmp_path, body, expected):
+    source = f'''from dataclasses import dataclass
+from datetime import timedelta
+@dataclass(frozen=True)
+class Sample:
+    duration: timedelta
+    #@ requires step < 0
+    #@ ensures raised()
+    def scaled(self, step: int) -> timedelta:
+        {body}
+'''
+    namespace = {}
+    exec(compile(source, str(tmp_path / "order.py"), "exec"), namespace)
+    sample = namespace["Sample"](timedelta.max)
+    with pytest.raises(OverflowError if expected == "failed" else ValueError):
+        sample.scaled(-1)
+    path = tmp_path / "order.py"
+    path.write_text(source)
+    result = api.verify(path, tmp_path / "proof", backend="dafny-native", time_limit=20)
+    assert result["status"] == expected, result
 
 
 @pytest.mark.parametrize("method", ["__getattribute__", "__getattr__", "__init__", "__setattr__"])
