@@ -3,9 +3,9 @@
     "measurements.dfy": "b5d65b989c5f56f79c52b97f4cd374be8771f7b8803f4745db917fe17992b853",
     "measurements.map.json": "9bc375d0a0dc8bdec62dfb6e86007cd5f2d45492a143338b655a429b8eed55d0",
     "pauses.dfy": "7ae6fdd2f32776945f8716981ab3f22ac5342d68f67adba826c39fa222ba7ad6",
-    "pauses.map.json": "f1fca362e233dfa573c483cfd83c92c25bce7b552b3268ea1e1a9d31462e6949"
+    "pauses.map.json": "d467edd73f7b6e29023c047437f66a28b1d80c909698ddb941f239704b7156ad"
   },
-  "compiler": "f2d59dd5f3501ac4f69a60602fd03ffc743b20438f3d915e01dd9c83ba9ef789",
+  "compiler": "d65f8429a0f7ffe52ae78f0d0d92f29960975618c58b92dc28eefdff829c3cce",
   "contracts": {
     "measurements": {
       "annotations": [

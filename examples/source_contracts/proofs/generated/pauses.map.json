@@ -38,6 +38,6 @@
     ],
     "source_sha256": "58db37e809e8f2dc33bc922a18784263f454fe0aee3e0af377100c8db1ff125d",
     "unit": "exact integer microseconds",
-    "version": "native-scalar-timedelta-1"
+    "version": "native-scalar-timedelta-2"
   }
 }
