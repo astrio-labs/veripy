@@ -1,0 +1,2 @@
+include requirements-project.lock requirements-build.lock
+recursive-include examples/source_contracts *.py *.dfy *.json *.md
