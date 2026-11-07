@@ -698,6 +698,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    p_project = sub.add_parser("project", help="prove current enrolled source and maintain deterministic artifacts")
+    p_project.add_argument("mode", choices=("generate", "check"))
+    p_project.add_argument("manifest", type=Path)
+    p_project.add_argument("--json", nargs="?", const="-", default=None)
+    p_project.add_argument("--time-limit", type=_engine_wall, default=30)
+    p_project.add_argument("--update-enrollment", action="store_true")
+    p_project.add_argument("--update-contracts", action="store_true")
+
     p_check = sub.add_parser(
         "check",
         help="parse #@ specs, report diagnostics, check fragment conformance; "
@@ -822,6 +830,27 @@ def main(argv: list[str] | None = None) -> int:
     p_survey.add_argument("--json", type=Path, default=None)
 
     args = parser.parse_args(argv)
+    if args.command == "project":
+        from veripy.project import run_project
+        result = run_project(args.manifest, args.mode, time_limit=args.time_limit,
+                             update_enrollment=args.update_enrollment,
+                             update_contracts=args.update_contracts)
+        rendered = json.dumps(result, indent=2) + "\n"
+        if args.json == "-":
+            print(rendered, end="")
+        elif args.json:
+            Path(args.json).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.json).write_text(rendered)
+            print(result["status"])
+        else:
+            print(result["status"])
+            if result.get("error"):
+                print(result["error"])
+            for target in result["targets"]:
+                print(f"{target['id']}: {target['proof_status']}")
+                for diagnostic in target["diagnostics"]:
+                    print(f"  {diagnostic['file']}:{diagnostic['line']}: {diagnostic['message']}")
+        return 0 if result["status"] == "verified" else 1
     if args.command == "check":
         return cmd_check(args.files, types=not args.no_types,
                          fragment=not args.no_fragment)
