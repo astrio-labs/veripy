@@ -69,11 +69,13 @@ class TypeGateResult:
 
 
 def find_basedpyright() -> str | None:
+    candidate = Path(sys.executable).parent / "basedpyright"
+    if candidate.exists():
+        return str(candidate)
     exe = shutil.which("basedpyright")
     if exe:
         return exe
-    candidate = Path(sys.executable).parent / "basedpyright"
-    return str(candidate) if candidate.exists() else None
+    return None
 
 
 def _has_pyright_table(pyproject: Path) -> bool:
@@ -355,7 +357,10 @@ def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
                 )
                 continue
         cwd = config_dir or Path(os.path.commonpath([str(p.parent) for p in group]))
-        cmd = [exe, "--outputjson", *[str(p) for p in group]]
+        # The proof package's interpreter supplies the installed application
+        # dependencies, even when PATH points at another virtual environment.
+        cmd = [exe, "--outputjson", "--pythonpath", sys.executable,
+               *[str(p) for p in group]]
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout, cwd=str(cwd)
@@ -371,6 +376,16 @@ def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
                     f"unparseable basedpyright output (exit {proc.returncode}): "
                     f"{proc.stdout[:200]!r} {proc.stderr[:200]!r}"
                 ),
+            )
+        # Exit 1 is the documented type-error outcome. A crashing checker or
+        # a nonzero exit with no error diagnostics cannot certify strict types.
+        if (proc.returncode not in (0, 1) or
+                (proc.returncode and not any(
+                    d.get("severity") == "error"
+                    for d in payload.get("generalDiagnostics", [])))):
+            return TypeGateResult(
+                available=False,
+                error=f"basedpyright exited {proc.returncode}: {proc.stderr[:200]}",
             )
         version = payload.get("version", version)
         diagnostics.extend(

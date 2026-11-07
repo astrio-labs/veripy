@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools==82.0.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "icontract>=2.6.6",
+    "icontract==2.7.3",
 ]
 
 [project.urls]
@@ -34,6 +34,9 @@ Repository = "https://github.com/astrio-labs/veripy"
 Issues = "https://github.com/astrio-labs/veripy/issues"
 
 [project.optional-dependencies]
+project = [
+    "basedpyright==1.39.9",
+]
 types = [
     "basedpyright>=1.39",
 ]

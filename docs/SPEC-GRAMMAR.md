@@ -4,7 +4,10 @@ This guide describes the maintained `#@` interface. Annotation parsing is shared
 but admission and proof support depend on the selected backend. See
 [supported fragments](SUPPORTED-FRAGMENTS.md) and [Lean](LEAN.md).
 
-Specs are comments beginning `#@`. CPython ignores them; the spec parser does not.
+Specs are comments beginning `#@` or `# @`. Both spellings have identical
+meaning, including proof hooks and loop invariants. The spaced spelling survives
+Ruff's E265 comment formatting. CPython ignores them; the spec parser does not.
+Markers inside Python strings are ordinary string contents.
 
 ## Clauses
 
@@ -69,7 +72,7 @@ a guard can execute it. Unsupported uses must be reported as admission errors.
 ## Grammar sketch
 
 ```
-spec_comment ::= "#@" clause
+spec_comment ::= ("#@" | "# @") clause
 clause       ::= "verified"
                | ("requires" | "ensures" | "ghost_ensures" | "invariant" | "decreases") expr
                | "proof" NAME "(" [py_expr ("," py_expr)*] ")"
