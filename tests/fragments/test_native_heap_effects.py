@@ -209,3 +209,8 @@ def test_opaque_metadata_formatting_does_not_assume_python_callbacks_pure():
                 schema=schema,
             )
         )
+
+
+def test_wildcard_import_cannot_hide_builtin_replacement():
+    with pytest.raises(EncodeError, match="wildcard import"):
+        encode("from unknown import *\n" + source("    pass\n"))

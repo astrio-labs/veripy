@@ -627,6 +627,11 @@ class DafnyHeapBackend(DafnyBackend):
             raise ValueError("heap schema expects only types")
         tree = ast.parse(source)
         for binding in ast.walk(tree):
+            if isinstance(binding, ast.alias) and binding.name == "*":
+                raise _err(
+                    binding,
+                    "wildcard import may shadow heap builtins or contracted types",
+                )
             name = (
                 binding.id
                 if isinstance(binding, ast.Name)
