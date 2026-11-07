@@ -78,6 +78,18 @@ def find_basedpyright() -> str | None:
     return None
 
 
+def _valid_diagnostic(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    location = value.get("range")
+    start = location.get("start") if isinstance(location, dict) else None
+    return (isinstance(value.get("file"), str)
+            and value.get("severity") in ("error", "warning", "information")
+            and isinstance(value.get("message"), str)
+            and isinstance(start, dict)
+            and type(start.get("line")) is int and start["line"] >= 0)
+
+
 def _has_pyright_table(pyproject: Path) -> bool:
     try:
         text = pyproject.read_text(encoding="utf-8", errors="replace")
@@ -377,12 +389,25 @@ def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
                     f"{proc.stdout[:200]!r} {proc.stderr[:200]!r}"
                 ),
             )
-        # Exit 1 is the documented type-error outcome. A crashing checker or
-        # a nonzero exit with no error diagnostics cannot certify strict types.
-        if (proc.returncode not in (0, 1) or
-                (proc.returncode and not any(
-                    d.get("severity") == "error"
-                    for d in payload.get("generalDiagnostics", [])))):
+        if proc.returncode not in (0, 1):
+            return TypeGateResult(
+                available=False,
+                error=f"basedpyright exited {proc.returncode}: {proc.stderr[:200]}",
+            )
+        # An empty or truncated JSON object is not evidence of type analysis.
+        # Check both the diagnostics shape and that all requested files ran.
+        if (not isinstance(payload, dict)
+                or not isinstance(payload.get("version"), str)
+                or not isinstance(payload.get("generalDiagnostics"), list)
+                or not all(_valid_diagnostic(d) for d in payload["generalDiagnostics"])
+                or not isinstance(payload.get("summary"), dict)
+                or type(payload["summary"].get("filesAnalyzed")) is not int
+                or payload["summary"]["filesAnalyzed"] < len(group)):
+            return TypeGateResult(available=False, error="incomplete basedpyright output or omitted input files")
+        # Exit 1 is the documented type-error outcome. A nonzero exit with no
+        # error diagnostics cannot certify strict types.
+        if proc.returncode and not any(
+                d.get("severity") == "error" for d in payload["generalDiagnostics"]):
             return TypeGateResult(
                 available=False,
                 error=f"basedpyright exited {proc.returncode}: {proc.stderr[:200]}",

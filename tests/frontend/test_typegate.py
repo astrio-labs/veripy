@@ -263,3 +263,23 @@ def test_checker_uses_current_python_and_nonzero_exit_fails_closed(tmp_path, mon
     assert "7" in result.error
     command = commands[0]
     assert command[command.index("--pythonpath") + 1] == sys.executable
+
+
+@pytest.mark.parametrize("payload", [
+    [], {}, {"generalDiagnostics": None}, {"generalDiagnostics": [None]},
+    {"version": "1.39.9", "generalDiagnostics": [], "summary": {"filesAnalyzed": 0}},
+    {"version": "1.39.9", "generalDiagnostics": [{"range": None}], "summary": {"filesAnalyzed": 1}},
+])
+def test_incomplete_checker_output_cannot_certify_types(tmp_path, monkeypatch, payload):
+    import json
+    import subprocess
+    from veripy.frontend import typegate
+
+    def incomplete_checker(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(typegate.subprocess, "run", incomplete_checker)
+    module = _strict_project(tmp_path, "def g(x: int) -> int:\n    return x\n")
+    result = run_type_gate([module])
+    assert not result.available
+    assert result.error
