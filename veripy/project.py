@@ -25,6 +25,14 @@ def _json(value):
 def _hash(value):
     return hashlib.sha256(value if isinstance(value, bytes) else value.encode()).hexdigest()
 
+def _snapshot(path):
+    """Read once; the returned text is exactly what the returned bytes hash.
+
+    Decodes like ``Path.read_text`` so proofs see the same source as before.
+    """
+    raw = path.read_bytes()
+    return raw, io.TextIOWrapper(io.BytesIO(raw)).read()
+
 def _path(root, name, exists=True):
     if not isinstance(name, str) or not name or Path(name).is_absolute():
         raise ProjectError("paths must be nonempty and relative to the manifest")
@@ -102,7 +110,8 @@ def _type_policy(paths, root):
 
 def _load(manifest):
     root = manifest.resolve().parent
-    data = json.loads(manifest.read_text())
+    manifest_bytes, manifest_text = _snapshot(manifest)
+    data = json.loads(manifest_text)
     allowed = {"version", "sources", "required_targets", "targets", "artifacts", "dafny_version"}
     if not isinstance(data, dict) or set(data) != allowed or data["version"] != 1:
         raise ProjectError("manifest requires exactly the documented v1 fields")
@@ -128,7 +137,10 @@ def _load(manifest):
         path = _path(root, item["source"])
         if path.is_relative_to(artifacts):
             raise ProjectError("source cannot be inside generated artifacts")
-        source = path.read_text()
+        # Hash the proved snapshot, not a later read that an editor save
+        # could make newer than the source given to the prover.
+        source_bytes, source = _snapshot(path)
+        inputs[path.relative_to(root).as_posix()] = _hash(source_bytes)
         specs = parse_source(source, filename=item["source"])
         if specs.errors or specs.orphans:
             raise ProjectError(f"invalid or orphaned source contracts: {item['source']}")
@@ -153,7 +165,10 @@ def _load(manifest):
             # sidecar, including a dependency named like an emitted artifact.
             if file.is_relative_to(artifacts):
                 raise ProjectError("project inputs cannot be inside generated artifacts")
-            inputs[file.relative_to(root).as_posix()] = _hash(file.read_bytes())
+            if file != path:
+                # Read later by the type gate/prover, so a change after this
+                # hash is caught by the final freshness check.
+                inputs[file.relative_to(root).as_posix()] = _hash(file.read_bytes())
         targets.append((item, path, source, specs, backend))
     if seen != set(required):
         raise ProjectError("required targets and actual enrollment differ")
@@ -170,7 +185,7 @@ def _load(manifest):
         raise ProjectError("annotated-source discovery differs from enrollment")
     if not isinstance(data["dafny_version"], str) or not data["dafny_version"]:
         raise ProjectError("an exact Dafny version is required")
-    return root, data, artifacts, targets, inputs
+    return root, data, artifacts, targets, inputs, manifest_bytes
 
 def _prove(item, path, source, specs, backend, root, temporary, time_limit):
     row = {"id": item["id"], "source": item["source"], "backend": item["backend"],
@@ -236,7 +251,7 @@ def run_project(manifest, mode="check", *, update_enrollment=False, update_contr
         report["error"] = "invalid mode or proof time limit"
         return report
     try:
-        root, data, artifacts, targets, inputs = _load(manifest)
+        root, data, artifacts, targets, inputs, manifest_bytes = _load(manifest)
         lock_path = artifacts / "project.lock.json"
         previous = json.loads(lock_path.read_text()) if lock_path.exists() else None
         if previous is not None and (not isinstance(previous, dict) or previous.get("schema") != "veripy-project-lock/1"):
@@ -245,7 +260,6 @@ def run_project(manifest, mode="check", *, update_enrollment=False, update_contr
         if previous and previous.get("enrollment") != enrollment and not (mode == "generate" and update_enrollment):
             raise ProjectError("enrollment changed; review and generate --update-enrollment explicitly")
         compiler = _compiler()
-        manifest_bytes = manifest.read_bytes()
         type_policy = _type_policy([target[1] for target in targets], root)
         gate = run_type_gate([target[1] for target in targets])
         report["typechecker_version"] = gate.version

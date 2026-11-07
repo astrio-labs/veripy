@@ -163,6 +163,33 @@ def test_generated_outputs_cannot_overwrite_declared_inputs(tmp_path):
 
 
 @pytest.mark.requires_prover("dafny")
+@pytest.mark.parametrize("changed,content", [
+    ("core.py", SOURCE.replace("total += 1", "total += 2")),
+    ("veripy-project.json", None),
+])
+def test_input_saved_while_loading_cannot_be_locked_as_proved(tmp_path, monkeypatch, changed, content):
+    """An editor save between the proof's read and the lock's hash is stale."""
+    import veripy.project as project_module
+
+    path = project(tmp_path)
+    original = project_module.parse_source
+    saved = []
+
+    def parse_then_save(*args, **kwargs):
+        specs = original(*args, **kwargs)
+        if not saved:
+            target = tmp_path / changed
+            target.write_text(content if content is not None else target.read_text() + "\n")
+            saved.append(changed)
+        return specs
+
+    monkeypatch.setattr(project_module, "parse_source", parse_then_save)
+    result = run_project(path, "generate")
+    assert saved and result["status"] == "stale", result
+    assert not (tmp_path / "proofs/generated/project.lock.json").exists()
+
+
+@pytest.mark.requires_prover("dafny")
 def test_type_policy_drift_requires_review_and_fresh_artifacts(tmp_path):
     path = project(tmp_path)
     assert run_project(path, "generate")["status"] == "verified"
