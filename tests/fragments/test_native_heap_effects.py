@@ -1,6 +1,7 @@
 """Effect lowering is generic and preserves borrowed writes on failing paths."""
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,24 @@ def test_fresh_noncandidate_validate_then_accumulate(tmp_path):
 """,
         name="combine_telemetry",
     )
+    # This is also executable Python with a fresh passive model, not only an
+    # effect fixture whose unresolved annotation names never run.
+    @dataclass
+    class Entry:
+        seen: bool = False
+        count: int = 0
+        events: list[str] = field(default_factory=list)
+
+    namespace = {"Entry": Entry}
+    exec(compile(text, str(tmp_path / "combine.py"), "exec"), namespace)
+    original = Entry(events=["prior"])
+    incoming = Entry(seen=True, events=["next"])
+    retained, shard = {"existing": original}, {"existing": incoming, "new": Entry()}
+    namespace["combine_telemetry"](retained, shard)
+    assert retained["existing"] is original and retained["new"] is shard["new"]
+    assert original.seen and original.events == ["prior", "next"]
+    assert incoming.events == ["next"]
+
     result = prove(text, tmp_path)
     assert result.ok, result.raw
     assert "1 verified, 0 errors" in result.raw
