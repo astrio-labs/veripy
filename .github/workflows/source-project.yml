@@ -16,14 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-      - name: Install pinned Dafny
-        shell: bash
-        run: |
-          curl --fail --location --retry 3 https://github.com/dafny-lang/dafny/releases/download/v4.11.0/dafny-4.11.0-x64-ubuntu-22.04.zip --output "$RUNNER_TEMP/dafny.zip"
-          echo 'a46a9ff7cdd720f7955854c78e95df13f4cfe6b80691b05f8654fe19e8267179  '"$RUNNER_TEMP/dafny.zip" | sha256sum --check
-          unzip -q "$RUNNER_TEMP/dafny.zip" -d "$RUNNER_TEMP/proof-tools"
-          chmod +x "$RUNNER_TEMP/proof-tools/dafny/dafny" "$RUNNER_TEMP/proof-tools/dafny/z3/bin/z3-4.12.1"
-          echo "$RUNNER_TEMP/proof-tools/dafny" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/setup-dafny
       - name: Build wheel with pinned build backend
         env:
           SOURCE_DATE_EPOCH: '315532800'
