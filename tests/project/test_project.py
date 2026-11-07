@@ -163,15 +163,25 @@ def test_generated_outputs_cannot_overwrite_declared_inputs(tmp_path):
 
 
 @pytest.mark.requires_prover("dafny")
-@pytest.mark.parametrize("changed,content", [
-    ("core.py", SOURCE.replace("total += 1", "total += 2")),
-    ("veripy-project.json", None),
+@pytest.mark.parametrize("changed,content,shared", [
+    ("core.py", SOURCE.replace("total += 1", "total += 2"), False),
+    ("veripy-project.json", None, False),
+    # core.py is also a later target's dependency, whose re-read must not
+    # replace the hash of the snapshot that was proved.
+    ("core.py", SOURCE.replace("total += 1", "total += 2"), True),
 ])
-def test_input_saved_while_loading_cannot_be_locked_as_proved(tmp_path, monkeypatch, changed, content):
+def test_input_saved_while_loading_cannot_be_locked_as_proved(tmp_path, monkeypatch, changed, content, shared):
     """An editor save between the proof's read and the lock's hash is stale."""
     import veripy.project as project_module
 
     path = project(tmp_path)
+    if shared:
+        (tmp_path / "other.py").write_text(SOURCE)
+        manifest = json.loads(path.read_text())
+        manifest["required_targets"].append("other")
+        manifest["targets"].append({"id": "other", "source": "other.py", "backend": "dafny",
+                                    "functions": ["tally"], "dependencies": ["core.py"]})
+        path.write_text(json.dumps(manifest))
     original = project_module.parse_source
     saved = []
 

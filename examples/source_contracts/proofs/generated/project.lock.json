@@ -5,7 +5,7 @@
     "pauses.dfy": "7ae6fdd2f32776945f8716981ab3f22ac5342d68f67adba826c39fa222ba7ad6",
     "pauses.map.json": "d467edd73f7b6e29023c047437f66a28b1d80c909698ddb941f239704b7156ad"
   },
-  "compiler": "dceba588c8a1c7f8e7f8e9e7840acf4e1fb0d37539400436c1f182d5f70e09ed",
+  "compiler": "8b81110e973f006c933c1011eaffd435ccf1c7e5b7f77fe579c969548b02262d",
   "contracts": {
     "measurements": {
       "annotations": [

@@ -139,8 +139,11 @@ def _load(manifest):
             raise ProjectError("source cannot be inside generated artifacts")
         # Hash the proved snapshot, not a later read that an editor save
         # could make newer than the source given to the prover.
+        # The earliest digest of a path is kept even when another target names
+        # this source as a dependency: every proof read happens at or after it,
+        # so the final freshness check catches any later save.
         source_bytes, source = _snapshot(path)
-        inputs[path.relative_to(root).as_posix()] = _hash(source_bytes)
+        inputs.setdefault(path.relative_to(root).as_posix(), _hash(source_bytes))
         specs = parse_source(source, filename=item["source"])
         if specs.errors or specs.orphans:
             raise ProjectError(f"invalid or orphaned source contracts: {item['source']}")
@@ -168,7 +171,7 @@ def _load(manifest):
             if file != path:
                 # Read later by the type gate/prover, so a change after this
                 # hash is caught by the final freshness check.
-                inputs[file.relative_to(root).as_posix()] = _hash(file.read_bytes())
+                inputs.setdefault(file.relative_to(root).as_posix(), _hash(file.read_bytes()))
         targets.append((item, path, source, specs, backend))
     if seen != set(required):
         raise ProjectError("required targets and actual enrollment differ")
