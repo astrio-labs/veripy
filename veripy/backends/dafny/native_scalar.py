@@ -345,6 +345,8 @@ def lower_native(source, specs):
             ):
                 if item.target.id in fields:
                     raise _err(item, "duplicate native field")
+                if item.target.id.startswith("__") and item.target.id.endswith("__"):
+                    raise _err(item, "native fields cannot replace Python special attributes")
                 fields[item.target.id] = item.annotation.id
                 field = copy.deepcopy(item)
                 if item.annotation.id == "timedelta":
@@ -370,6 +372,12 @@ def lower_native(source, specs):
         ]
         bodies.append(snapshot)
         for method in methods:
+            # Record reads and dataclass construction use Python's ordinary
+            # attribute machinery. A user hook could replace those semantics
+            # even though its separately encoded body is pure and proved.
+            if (method.name.startswith("__") and method.name.endswith("__")
+                    and method.name != "__post_init__"):
+                raise _err(method, "native methods cannot override Python special methods")
             key = (method.name, method.lineno)
             if (
                 key not in targets

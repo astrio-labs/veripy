@@ -146,3 +146,23 @@ def test_local_semantic_bindings_are_not_treated_as_builtins(tmp_path, name):
         path, tmp_path / "proof", backend="dafny-native", keep_artifacts=True
     )
     assert result["status"] == "encode-error", result
+
+
+@pytest.mark.parametrize("method", ["__getattribute__", "__getattr__", "__init__", "__setattr__"])
+def test_special_methods_cannot_replace_native_record_semantics(tmp_path, method):
+    source = f'''from dataclasses import dataclass
+from datetime import timedelta
+@dataclass(frozen=True)
+class Sample:
+    duration: timedelta
+    #@ ensures not raised() and result == 0
+    def {method}(self, name: int) -> int:
+        return 0
+    #@ ensures not raised() and result == self.duration
+    def read(self) -> timedelta:
+        return self.duration
+'''
+    path = tmp_path / "descriptor.py"
+    path.write_text(source)
+    result = api.verify(path, tmp_path / "proof", backend="dafny-native")
+    assert result["status"] == "encode-error", result
