@@ -283,3 +283,25 @@ def test_incomplete_checker_output_cannot_certify_types(tmp_path, monkeypatch, p
     result = run_type_gate([module])
     assert not result.available
     assert result.error
+
+
+def test_complete_warning_only_checker_outcome_retains_evidence(tmp_path, monkeypatch):
+    import json
+    import subprocess
+    from veripy.frontend import typegate
+
+    module = _strict_project(tmp_path, "def g(x: int) -> int:\n    return x\n")
+    payload = {
+        "version": "1.39.9",
+        "generalDiagnostics": [{"file": str(module), "severity": "warning", "message": "unused declaration", "range": {"start": {"line": 0}}}],
+        "summary": {"filesAnalyzed": 1, "errorCount": 0, "warningCount": 1, "informationCount": 0},
+    }
+
+    def warning_checker(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, json.dumps(payload), "")
+
+    monkeypatch.setattr(typegate.subprocess, "run", warning_checker)
+    result = run_type_gate([module])
+    assert result.available, result.error
+    assert not result.errors
+    assert len(result.warnings) == 1

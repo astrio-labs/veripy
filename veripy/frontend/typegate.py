@@ -404,10 +404,16 @@ def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
                 or type(payload["summary"].get("filesAnalyzed")) is not int
                 or payload["summary"]["filesAnalyzed"] < len(group)):
             return TypeGateResult(available=False, error="incomplete basedpyright output or omitted input files")
-        # Exit 1 is the documented type-error outcome. A nonzero exit with no
-        # error diagnostics cannot certify strict types.
-        if proc.returncode and not any(
-                d.get("severity") == "error" for d in payload["generalDiagnostics"]):
+        counts = {severity: sum(d["severity"] == severity for d in payload["generalDiagnostics"])
+                  for severity in ("error", "warning", "information")}
+        if any(type(payload["summary"].get(severity + "Count")) is not int
+               or payload["summary"][severity + "Count"] != count
+               for severity, count in counts.items()):
+            return TypeGateResult(available=False, error="inconsistent basedpyright diagnostic summary")
+        # Recommended mode can exit 1 for warnings. Accept that documented
+        # outcome only with a complete, consistent diagnostic payload; callers
+        # retain warnings separately from errors. Empty nonzero output fails.
+        if proc.returncode and not (counts["error"] or counts["warning"]):
             return TypeGateResult(
                 available=False,
                 error=f"basedpyright exited {proc.returncode}: {proc.stderr[:200]}",
