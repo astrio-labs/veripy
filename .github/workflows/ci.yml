@@ -15,7 +15,7 @@ jobs:
   # Tier 1 — no Dafny: parser, encoder, guards, proof assistance,
   # conformance. Dafny-dependent tests skip themselves (find_dafny gate).
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: exact Python 3.14.4 is not built for newer images
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
       - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
@@ -33,7 +33,7 @@ jobs:
   # Tier 2 — full pipeline: Dafny proofs + the translation-validation
   # harness (difftest) over the corpus.
   prove:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: exact Python 3.14.4 is not built for newer images
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
       - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
