@@ -59,6 +59,7 @@ def test_fresh_noncandidate_validate_then_accumulate(tmp_path):
 """,
         name="combine_telemetry",
     )
+
     # This is also executable Python with a fresh passive model, not only an
     # effect fixture whose unresolved annotation names never run.
     @dataclass
@@ -233,3 +234,69 @@ def test_opaque_metadata_formatting_does_not_assume_python_callbacks_pure():
 def test_wildcard_import_cannot_hide_builtin_replacement():
     with pytest.raises(EncodeError, match="wildcard import"):
         encode("from unknown import *\n" + source("    pass\n"))
+
+
+@pytest.mark.requires_prover("dafny")
+def test_strict_zip_iteration_failure_occurs_after_prior_writes(tmp_path):
+    text = source("""    for key, value in zip(retained.keys(), shard.values(), strict=True):
+        value.seen |= True
+""")
+
+    # Native Python writes one borrowed entry before the unequal zip rejects.
+    @dataclass
+    class Entry:
+        seen: bool = False
+        count: int = 0
+        events: list[str] = field(default_factory=list)
+
+    namespace = {"Entry": Entry}
+    exec(compile(text, str(tmp_path / "zip.py"), "exec"), namespace)
+    changed = Entry()
+    with pytest.raises(ValueError):
+        namespace["admit"]({"one": Entry(), "two": Entry()}, {"one": changed})
+    assert changed.seen
+    result = prove(text, tmp_path)
+    assert not result.ok and result.error is None, result.raw
+    assert any("assertion" in d.message for d in result.diagnostics), result.raw
+
+
+@pytest.mark.requires_prover("dafny")
+@pytest.mark.parametrize(
+    "body",
+    [
+        """    for key, events in retained.items():
+        retained.setdefault("inserted", []).append("seen")
+""",
+        """    for key, events in retained.items():
+        key: str = "inserted"
+        retained.setdefault(key, []).append("seen")
+""",
+    ],
+)
+def test_dictionary_iterator_invalidation_is_a_postwrite_exit(body, tmp_path):
+    text = source(body).replace("dict[str, Entry]", "dict[str, list[str]]")
+    namespace = {}
+    exec(compile(text, str(tmp_path / "dict_iteration.py"), "exec"), namespace)
+    retained = {"existing": []}
+    with pytest.raises(RuntimeError):
+        namespace["admit"](retained, {})
+    assert "inserted" in retained
+    result = prove(text, tmp_path)
+    assert not result.ok and result.error is None, result.raw
+    assert any("assertion" in d.message for d in result.diagnostics), result.raw
+
+
+@pytest.mark.requires_prover("dafny")
+def test_current_key_setdefault_does_not_invalidate_an_aliased_iterator(tmp_path):
+    text = source("""    for key, events in shard.items():
+        retained.setdefault(key, []).extend(events)
+""").replace("dict[str, Entry]", "dict[str, list[str]]")
+    namespace = {}
+    exec(compile(text, str(tmp_path / "list_merge.py"), "exec"), namespace)
+    retained = {"existing": ["prior"]}
+    old = retained["existing"]
+    namespace["admit"](retained, {"existing": ["next"], "new": ["new"]})
+    assert retained == {"existing": ["prior", "next"], "new": ["new"]}
+    assert retained["existing"] is old
+    result = prove(text, tmp_path)
+    assert result.ok, result.raw

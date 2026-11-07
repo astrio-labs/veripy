@@ -30,6 +30,9 @@ class Value:
     fresh_keys: frozenset[str] | None = frozenset()
     field: str = ""
     optional: bool = False
+    iteration_failure: bool = False
+    iterated_maps: tuple = ()
+    iterator_key: int | None = None
 
 
 SCALAR = Value("scalar")
@@ -50,6 +53,9 @@ def join(a, b, node):
         else a.fresh_keys & b.fresh_keys,
         a.field if a.field == b.field else "",
         a.optional or b.optional,
+        a.iteration_failure or b.iteration_failure,
+        tuple(dict.fromkeys((*a.iterated_maps, *b.iterated_maps))),
+        a.iterator_key if a.iterator_key == b.iterator_key else None,
     )
 
 
@@ -60,6 +66,7 @@ class Effects:
         self.guards = set()
         self.serial = 0
         self.events = []
+        self.iterations = []
         for arg in fn.args.args:
             self.env[arg.arg] = replace(self.type(arg.annotation, True), token=arg.arg)
 
@@ -190,12 +197,16 @@ class Effects:
                 n, "only dictionary reads and constant tuple projections supported"
             )
         if isinstance(n, (ast.Tuple, ast.List)):
-            values = tuple(
-                self.element(self.expr(x.value, indent), x)
-                if isinstance(x, ast.Starred)
-                else self.expr(x, indent)
-                for x in n.elts
-            )
+            values = []
+            for item in n.elts:
+                if isinstance(item, ast.Starred):
+                    iterable = self.expr(item.value, indent)
+                    if iterable.iteration_failure:
+                        self.reject(item, indent)
+                    values.append(self.element(iterable, item))
+                else:
+                    values.append(self.expr(item, indent))
+            values = tuple(values)
             if isinstance(n, ast.Tuple):
                 return Value("tuple", parts=values)
             if not values:
@@ -253,9 +264,15 @@ class Effects:
                     raise _err(n, "zip requires strict=True")
                 self.reject(n, indent)
                 return Value(
-                    "list",
+                    "iter",
                     parts=(
                         Value("tuple", parts=tuple(self.element(x, n) for x in values)),
+                    ),
+                    iteration_failure=True,
+                    iterated_maps=tuple(
+                        dict.fromkeys(
+                            m for value in values for m in value.iterated_maps
+                        )
                     ),
                 )
             if not isinstance(n.func, ast.Attribute):
@@ -281,6 +298,12 @@ class Effects:
                             else receiver.parts[0 if name == "keys" else 1]
                         ),
                     ),
+                    iterated_maps=(receiver,),
+                    iterator_key=0
+                    if name == "items"
+                    else -1
+                    if name == "keys"
+                    else None,
                 )
             methods = (
                 self.schema["types"].get(receiver.kind, {}).get("pure_methods", {})
@@ -297,6 +320,8 @@ class Effects:
                 if name == "extend" and args[0].kind not in ("list", "iter", "tuple"):
                     raise _err(n, "extend requires an admitted iterable")
                 self.write(receiver, name, n, indent)
+                if name == "extend" and args[0].iteration_failure:
+                    self.reject(n, indent)
                 if not receiver.borrowed:
                     added = args[0] if name == "append" else self.element(args[0], n)
                     self.set_shape(receiver, (join(receiver.parts[0], added, n),))
@@ -307,6 +332,7 @@ class Effects:
                         n, "setdefault admitted only for empty-list initialization"
                     )
                 self.write(receiver, name, n, indent)
+                self.iterator_mutation(receiver, n, indent, key=n.args[0])
                 if not receiver.borrowed:
                     self.set_capability(receiver, frozenset())
                 return receiver.parts[1]
@@ -343,6 +369,7 @@ class Effects:
                         or receiver.token in args[0].fresh_keys
                     ),
                 )
+                self.iterator_mutation(receiver, n, indent)
                 return SCALAR
             raise _err(n, "method has no admitted effect or external purity contract")
         raise _err(
@@ -371,6 +398,10 @@ class Effects:
                 for root, key in self.guards
                 if "Name(id=" + repr(target.id) + "," not in key
             }
+            self.iterations = [
+                (mapping, None if key == target.id else key)
+                for mapping, key in self.iterations
+            ]
             self.env[target.id] = value
         elif (
             isinstance(target, (ast.Tuple, ast.List))
@@ -390,7 +421,8 @@ class Effects:
                 raise _err(target, "heap writes require a dictionary")
             if receiver.borrowed:
                 self.write(receiver, "replace", target, indent)
-            else:
+            self.iterator_mutation(receiver, target, indent, key=target.slice)
+            if not receiver.borrowed:
                 self.set_shape(
                     receiver,
                     (receiver.parts[0], join(receiver.parts[1], value, target)),
@@ -407,6 +439,25 @@ class Effects:
                 self.set_capability(receiver, capability)
         else:
             raise _err(target, "unsupported assignment target")
+
+    def iterator_mutation(self, receiver, node, indent, key=None):
+        """Builtin dict iterators may raise after a size-changing write.
+
+        A setdefault/subscript of that iterator's unchanged current key cannot
+        change its size even if two borrowed map references alias. Other writes
+        conservatively retain the possible exceptional exit after the effect.
+        """
+        for mapping, current_key in self.iterations:
+            can_alias = receiver.borrowed == mapping.borrowed and (
+                receiver.borrowed
+                or not receiver.token
+                or not mapping.token
+                or receiver.token == mapping.token
+            )
+            same_key = isinstance(key, ast.Name) and key.id == current_key
+            if can_alias and not same_key:
+                self.reject(node, indent)
+                return
 
     def set_shape(self, receiver, parts):
         def update(alias):
@@ -527,6 +578,19 @@ class Effects:
             elif isinstance(n, ast.For):
                 value = self.expr(n.iter, indent)
                 self.bind(n.target, self.element(value, n), indent)
+                outer_iterations = list(self.iterations)
+                key = (
+                    n.target
+                    if value.iterator_key == -1
+                    else n.target.elts[0]
+                    if value.iterator_key == 0
+                    and isinstance(n.target, (ast.Tuple, ast.List))
+                    else None
+                )
+                current_key = key.id if isinstance(key, ast.Name) else None
+                self.iterations += [
+                    (mapping, current_key) for mapping in value.iterated_maps
+                ]
                 self.widen_loop(n, indent)
                 self.serial += 1
                 serial = self.serial
@@ -536,8 +600,16 @@ class Effects:
                 self.emit("  decreases *", n, indent)
                 invariant_pos = len(self.lines)
                 self.emit("{", n, indent)
+                if value.iteration_failure:
+                    self.reject(n, indent + "  ")
                 self.block(n.body, indent + "  ")
                 self.emit("}", n, indent)
+                if value.iteration_failure:
+                    self.reject(n, indent)
+                self.iterations = [
+                    (mapping, key if (mapping, key) in self.iterations else None)
+                    for mapping, key in outer_iterations
+                ]
                 # Frames are mechanically derived from emitted write effects;
                 # a loop with writes gets only the sound prefix invariant.
                 has_write = any("writes := writes +" in x for x in self.lines[pos:])
@@ -571,11 +643,16 @@ class Effects:
         saved_lines, saved_map = self.lines, self.line_map
         saved_events, saved_serial = self.events, self.serial
         saved_guards = set(self.guards)
+        saved_iterations = list(self.iterations)
         try:
             for _ in range(32):
                 self.lines, self.line_map, self.events = [], {}, []
                 self.serial = saved_serial
                 self.guards = set(saved_guards)
+                self.iterations = [
+                    (mapping, key if (mapping, key) in self.iterations else None)
+                    for mapping, key in saved_iterations
+                ]
                 self.env = dict(entry)
                 self.block(node.body, indent)
                 merged = {
