@@ -53,8 +53,10 @@ type-policy and proof-sidecar changes need explicit review before regeneration.
 - `dafny` verifies the supported scalar, loop, collection and immutable-record
   fragment. Preconditions and loop invariants are explicit source contracts.
 - `dafny-native` verifies admitted immutable methods with exact builtin integer
-  and timedelta semantics, including checked overflow obligations. Special-method
-  overrides and unsupported operations fail admission.
+  and timedelta semantics, including checked overflow obligations. Shift and
+  overflow checks follow Python's evaluation order, and short-circuiting forms
+  around shifts (including chained comparisons) fail admission, as do
+  special-method overrides and unsupported operations.
 - `dafny-heap` checks a conservative effect abstraction of validate-then-commit
   functions. Borrowed writes, rejection exits, aliases and iteration failures
   come from the actual Python AST. Metadata branch outcomes are nondeterministic.
@@ -86,7 +88,8 @@ and type-policy inputs. It does not claim a hermetic operating-system snapshot.
 Review generated `.dfy` and `.map.json` beside the Python and proof additions.
 Retain source mutants and independent runtime observations when extending support.
 In particular, loop-carried aliases, key reassignment, exception causes, f-string
-format expressions and iterator failures can carry effects: the regression suite
+format expressions and iterator failures can carry effects, and optional-receiver
+field reads and format specifications can fail after a write: the regression suite
 checks these rather than assuming successful example proofs imply a sound frontend.
 
 For the project API use `veripy.project.run_project(manifest, "check")`. The CLI is

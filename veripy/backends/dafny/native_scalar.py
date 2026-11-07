@@ -184,7 +184,11 @@ class NativeTypes:
                         for n in ast.walk(stmt.value)
                     )
                     and any(
+                        # Short-circuiting forms (including chained comparisons)
+                        # may skip a shift that the model always evaluates.
                         isinstance(n, (ast.BoolOp, ast.IfExp))
+                        or isinstance(n, ast.Compare)
+                        and len(n.ops) > 1
                         or isinstance(n, ast.BinOp)
                         and isinstance(n.op, (ast.FloorDiv, ast.Mod, ast.Pow))
                         for n in ast.walk(stmt.value)

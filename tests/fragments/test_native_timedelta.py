@@ -181,6 +181,27 @@ class Sample:
     assert result["status"] == expected, result
 
 
+def test_chained_comparison_cannot_skip_a_modeled_shift(tmp_path):
+    # 1 < 0 short-circuits in Python, so the negative shift never raises.
+    source = '''from dataclasses import dataclass
+from datetime import timedelta
+@dataclass(frozen=True)
+class Sample:
+    duration: timedelta
+    #@ requires step < 0
+    #@ ensures raised()
+    def bounded(self, step: int) -> bool:
+        return 1 < 0 < (1 << step)
+'''
+    namespace = {}
+    exec(compile(source, str(tmp_path / "chain.py"), "exec"), namespace)
+    assert namespace["Sample"](timedelta(1)).bounded(-1) is False
+    path = tmp_path / "chain.py"
+    path.write_text(source)
+    result = api.verify(path, tmp_path / "proof", backend="dafny-native")
+    assert result["status"] == "encode-error", result
+
+
 @pytest.mark.parametrize("method", ["__getattribute__", "__getattr__", "__init__", "__setattr__"])
 def test_special_methods_cannot_replace_native_record_semantics(tmp_path, method):
     source = f'''from dataclasses import dataclass
