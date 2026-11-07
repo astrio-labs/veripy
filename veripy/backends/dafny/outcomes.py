@@ -353,11 +353,12 @@ class OutcomeEncoder(_MethodEncoder):
         self.emit("}")
 
 
-def encode_outcomes(source, specs, module_name="module.py", proof_lemmas=frozenset()):
+def encode_outcomes(source, specs, module_name="module.py", proof_lemmas=frozenset(),
+                    *, module_override=None, encoder_class=None, preamble_extension=""):
     if specs.errors:
         first = specs.errors[0]
         raise EncodeError(f"spec error: {first.error}", first.line)
-    module = ast.parse(source)
+    module = copy.deepcopy(module_override) if module_override is not None else ast.parse(source)
     _module_shadow_check(module)
     from veripy.backends.dafny.environment import resolve_for_encoder, EnvironmentError
     try:
@@ -439,7 +440,7 @@ def encode_outcomes(source, specs, module_name="module.py", proof_lemmas=frozens
             raise _err(fn, "Outcome functions require an explicit final return or raise, and no bare returns")
         if outcome and fn.name in helpers and not environment.exceptions:
             raise _err(fn, "Calls to outcome functions are outside checked composition")
-        cls = OutcomeEncoder if outcome else _MethodEncoder
+        cls = (encoder_class or OutcomeEncoder) if outcome else _MethodEncoder
         if not outcome:
             from veripy.backends.dafny.encoder import _localize_scalar_parameters
             fn,spec=_localize_scalar_parameters(fn,spec,reserved_names)
@@ -452,7 +453,7 @@ def encode_outcomes(source, specs, module_name="module.py", proof_lemmas=frozens
         for enc in encoders:
             enc.used_names.update(all_names)
             enc.mangle_map = enc._build_mangle_map()
-    lines = [f"// Generated outcome model from {module_name}", *PREAMBLE.splitlines(), *decimal.preamble().splitlines(),
+    lines = [f"// Generated outcome model from {module_name}", *PREAMBLE.splitlines(), *decimal.preamble().splitlines(), *preamble_extension.splitlines(),
              *(unicode_strings.preamble().splitlines() if unicode_strings.needed(module) or environment.regex_models else []),
              *(regex_strings.PREAMBLE.splitlines() if environment.regex_models else [])]
     for name, fields in records.items():

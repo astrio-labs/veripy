@@ -219,6 +219,8 @@ def _verify_into(path: Path, outdir: Path, workdir: Path | None,
         sidecar = be.load_sidecar(path)
         encoded = be.encode(source, specs, module_name=path.name,
                             proof_lemmas=sidecar.lemmas)
+        if hasattr(encoded, "translation"):
+            payload["translation"] = encoded.translation
     except EncodeError as exc:
         payload["status"] = "encode-error"
         # Same record shape as a `failed` failure: a consumer written
