@@ -124,6 +124,8 @@ _LOCK = threading.Lock()
 _LAZY_MODULES: dict[str, str] = {
     "dafny": "veripy.backends.dafny.backend",
     "dafny-outcomes": "veripy.backends.dafny.outcomes",
+    "dafny-native": "veripy.backends.dafny.native_scalar",
+    "dafny-heap": "veripy.backends.dafny.native_heap",
     "dafny-buffers": "veripy.backends.dafny.buffers",
     "lean": "veripy.backends.lean.backend",
 }

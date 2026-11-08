@@ -2,9 +2,9 @@ name: Documentation
 on:
   push:
     branches: [main]
-    paths: ['docs/**', 'docs-site/**', 'veripy/**', 'pyproject.toml', 'pyrightconfig.json', 'lean-toolchain', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'docs-site/**', 'veripy/**', 'pyproject.toml', 'pyrightconfig.json', 'lean-toolchain', '.github/workflows/docs.yml', '.github/actions/setup-dafny/**']
   pull_request:
-    paths: ['docs/**', 'docs-site/**', 'veripy/**', 'pyproject.toml', 'pyrightconfig.json', 'lean-toolchain', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'docs-site/**', 'veripy/**', 'pyproject.toml', 'pyrightconfig.json', 'lean-toolchain', '.github/workflows/docs.yml', '.github/actions/setup-dafny/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -38,14 +38,10 @@ jobs:
       - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f
         with:
           python-version: '3.12'
-      - uses: actions/setup-dotnet@6bd8b7f7774af54e05809fcc5431931b3eb1ddee
-        with:
-          dotnet-version: '8.0.x'
+      - uses: ./.github/actions/setup-dafny
       - name: Install tools
         run: |
           python -m pip install -e '.[dev]'
-          dotnet tool install --global dafny --version 4.11.0
-          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
           sudo apt-get update
           sudo apt-get install -y elan
           elan toolchain install leanprover/lean4:v4.33.1

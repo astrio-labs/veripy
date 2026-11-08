@@ -1,0 +1,43 @@
+{
+  "functions": [
+    "RetryWindow.pause"
+  ],
+  "generated_to_source": {
+    "699": 15,
+    "700": 12,
+    "701": 15,
+    "702": 15,
+    "703": 13,
+    "704": 14,
+    "707": 16,
+    "708": 17,
+    "711": 18,
+    "712": 19,
+    "715": 20,
+    "716": 21,
+    "719": 22,
+    "720": 22
+  },
+  "source": "pauses.py",
+  "translation": {
+    "assumptions": [
+      "exact builtin field and parameter types; stable module bindings; immutable snapshots; no hostile object.__setattr__ or monkeypatching",
+      "frontend/microsecond/bit_length translation is trusted and tested, not a mechanized CPython refinement proof",
+      "resource exhaustion and exception messages/tracebacks are outside the theorem"
+    ],
+    "body_ast_preserved": true,
+    "lowered_source": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass RetryWindow:\n    base: int\n    cap: int\n\ndef RetryWindow_pause(self: RetryWindow, attempt: int) -> int:\n    if attempt < 0:\n        raise ValueError('attempt must be nonnegative')\n    if attempt == 0:\n        return self.base\n    if self.cap // self.base < 2:\n        return self.cap\n    return self.base * 2",
+    "methods": [
+      {
+        "body_sha256": "d39c55ae496cdb339a4dc60f27aa4a923e4c6468d168ebe3f05793df1c762490",
+        "class_name": "RetryWindow",
+        "line": 15,
+        "lowered_function": "RetryWindow_pause",
+        "method": "pause"
+      }
+    ],
+    "source_sha256": "58db37e809e8f2dc33bc922a18784263f454fe0aee3e0af377100c8db1ff125d",
+    "unit": "exact integer microseconds",
+    "version": "native-scalar-timedelta-2"
+  }
+}

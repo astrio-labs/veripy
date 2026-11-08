@@ -9,13 +9,14 @@ Save the following as `count.py`.
 #@ ensures result == n
 def count(n: int) -> int:
     total = 0
-    for i in range(n):
-        #@ invariant total == i
+    for _i in range(n):
+        #@ invariant total == _i
         total += 1
     return total
 ```
 
-Run the default backend.
+The underscore prefix marks `_i` as a proof-only loop index for the strict type
+checker; CPython ignores the invariant comment. Run the default backend.
 
 ```sh
 veripy verify count.py --time-limit 30 --outdir build/count

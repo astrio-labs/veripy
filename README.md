@@ -21,6 +21,12 @@ checks auxiliary proofs against the generated obligations. A separate relational
 checker establishes whether an updated component still admits old inputs and
 preserves returned values and modeled exceptions.
 
+This branch adds [maintained source projects](docs/SOURCE-PROJECTS.md):
+`veripy project generate` proves enrolled current Python and saves artifacts;
+`veripy project check` re-proves the source and checks freshness for CI.
+The [runnable example project](examples/source_contracts/README.md) exercises
+loops, lists, records, proof additions and native timedelta methods.
+
 ## VeriPy verification workflow
 
 ![VeriPy verification workflow showing Python annotation parsing, admission checks, Dafny and Lean proof backends, human or agent proof assistance, and complementary runtime checks.](docs/assets/veripy-workflow.png)

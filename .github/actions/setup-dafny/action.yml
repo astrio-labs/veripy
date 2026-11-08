@@ -1,0 +1,18 @@
+name: Set up pinned Dafny
+description: >-
+  Install the checksummed Dafny 4.11.0 release, which bundles its own .NET
+  runtime and the Z3 4.12.1 solver it supports. The release always prefers its
+  bundled Z3, so a newer `z3` on PATH (for example from the z3-solver wheel that
+  crosshair-tool pulls in) cannot change proof results. `dotnet tool install
+  dafny` ships no Z3 and silently uses whatever `z3` is on PATH.
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Dafny
+      shell: bash
+      run: |
+        curl --fail --location --retry 3 https://github.com/dafny-lang/dafny/releases/download/v4.11.0/dafny-4.11.0-x64-ubuntu-22.04.zip --output "$RUNNER_TEMP/dafny.zip"
+        echo 'a46a9ff7cdd720f7955854c78e95df13f4cfe6b80691b05f8654fe19e8267179  '"$RUNNER_TEMP/dafny.zip" | sha256sum --check
+        unzip -q "$RUNNER_TEMP/dafny.zip" -d "$RUNNER_TEMP/proof-tools"
+        chmod +x "$RUNNER_TEMP/proof-tools/dafny/dafny" "$RUNNER_TEMP/proof-tools/dafny/z3/bin/z3-4.12.1"
+        echo "$RUNNER_TEMP/proof-tools/dafny" >> "$GITHUB_PATH"

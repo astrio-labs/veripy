@@ -30,8 +30,13 @@ def _spec_comments(source: str) -> dict[int, tuple[int, str]]:
     comments: dict[int, tuple[int, str]] = {}
     tokens = tokenize.generate_tokens(io.StringIO(source).readline)
     for tok in tokens:
-        if tok.type == tokenize.COMMENT and tok.string.startswith("#@"):
-            comments[tok.start[0]] = (tok.start[1], tok.string[2:].strip())
+        if tok.type != tokenize.COMMENT:
+            continue
+        # Ruff E265 and ordinary comment formatters insert a space after #.
+        # Both spellings are contracts; string contents remain ordinary Python.
+        prefix = next((p for p in ("#@", "# @") if tok.string.startswith(p)), None)
+        if prefix is not None:
+            comments[tok.start[0]] = (tok.start[1], tok.string[len(prefix):].strip())
     return comments
 
 

@@ -232,3 +232,76 @@ def test_weak_pyproject_table_flagged(tmp_path):
     assert result.available
     assert result.errors
     assert result.errors[0].rule == "veripy-strict-required"
+
+
+def test_checker_resolves_packages_from_current_interpreter(tmp_path):
+    module = _strict_project(
+        tmp_path,
+        "from icontract import DBC\n\nclass Subject(DBC):\n    pass\n",
+    )
+    result = run_type_gate([module])
+    assert result.available
+    assert not result.errors, [d.message for d in result.errors]
+
+
+def test_checker_uses_current_python_and_nonzero_exit_fails_closed(tmp_path, monkeypatch):
+    import json
+    import subprocess
+    import sys
+    from veripy.frontend import typegate
+
+    commands = []
+
+    def failed_checker(cmd, **kwargs):
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 7, json.dumps({"generalDiagnostics": []}), "checker crashed")
+
+    monkeypatch.setattr(typegate.subprocess, "run", failed_checker)
+    module = _strict_project(tmp_path, "def g(x: int) -> int:\n    return x\n")
+    result = run_type_gate([module])
+    assert not result.available
+    assert "7" in result.error
+    command = commands[0]
+    assert command[command.index("--pythonpath") + 1] == sys.executable
+
+
+@pytest.mark.parametrize("payload", [
+    [], {}, {"generalDiagnostics": None}, {"generalDiagnostics": [None]},
+    {"version": "1.39.9", "generalDiagnostics": [], "summary": {"filesAnalyzed": 0}},
+    {"version": "1.39.9", "generalDiagnostics": [{"range": None}], "summary": {"filesAnalyzed": 1}},
+])
+def test_incomplete_checker_output_cannot_certify_types(tmp_path, monkeypatch, payload):
+    import json
+    import subprocess
+    from veripy.frontend import typegate
+
+    def incomplete_checker(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(typegate.subprocess, "run", incomplete_checker)
+    module = _strict_project(tmp_path, "def g(x: int) -> int:\n    return x\n")
+    result = run_type_gate([module])
+    assert not result.available
+    assert result.error
+
+
+def test_complete_warning_only_checker_outcome_retains_evidence(tmp_path, monkeypatch):
+    import json
+    import subprocess
+    from veripy.frontend import typegate
+
+    module = _strict_project(tmp_path, "def g(x: int) -> int:\n    return x\n")
+    payload = {
+        "version": "1.39.9",
+        "generalDiagnostics": [{"file": str(module), "severity": "warning", "message": "unused declaration", "range": {"start": {"line": 0}}}],
+        "summary": {"filesAnalyzed": 1, "errorCount": 0, "warningCount": 1, "informationCount": 0},
+    }
+
+    def warning_checker(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, json.dumps(payload), "")
+
+    monkeypatch.setattr(typegate.subprocess, "run", warning_checker)
+    result = run_type_gate([module])
+    assert result.available, result.error
+    assert not result.errors
+    assert len(result.warnings) == 1

@@ -185,10 +185,12 @@
     ]
   },
   "vllm/alignment.proofs.dfy": {
-    "sha256": "487d7f2483dc0816f53e83733cccad3a115291258dbf89e787498972a0d47e42",
+    "sha256": "6ef7686b3052b9e0711c2bb56589f490c075bf40f3db590a9a1510c45da153f8",
     "archived_paths": [
       "case_studies/real_world_v1/verification/inputs-004/02-vllm-alignment/case.proofs.dfy"
-    ]
+    ],
+    "archived_sha256": "487d7f2483dc0816f53e83733cccad3a115291258dbf89e787498972a0d47e42",
+    "change": "Added two checked sign-flipped product postconditions to FloorDivFacts so the cdiv proof holds on Dafny 4.11's bundled Z3 4.12.1, not only on newer solvers. The Python source is unchanged."
   },
   "vllm/alignment.proofs.lean": {
     "sha256": "050aeb3a5c5553a16db0928f2662efd48600e56ad8a22d1ef3c5259e5ee7ceb5",

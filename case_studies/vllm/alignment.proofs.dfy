@@ -48,6 +48,11 @@ lemma FloorDivFacts(a: int, b: int)
   ensures b > 0 ==> PyFloorDiv(a, b) * b <= a < (PyFloorDiv(a, b) + 1) * b
   ensures b < 0 ==> PyFloorDiv(a, b) * b >= a > (PyFloorDiv(a, b) + 1) * b
   ensures PyMod(PyFloorDiv(a, b) * b, b) == 0
+  // Sign-flipped products for ceiling division, which negates the quotient and
+  // divisor: Z3 4.12.1 (Dafny 4.11's bundled solver) does not relate
+  // (-q) * (-b) to q * b on its own; newer solvers do.
+  ensures (-PyFloorDiv(a, b)) * (-b) == PyFloorDiv(a, b) * b
+  ensures (-PyFloorDiv(a, b) - 1) * (-b) == (PyFloorDiv(a, b) + 1) * b
 {
   var q := a / b;
   var r := a % b;

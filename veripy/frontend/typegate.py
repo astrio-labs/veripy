@@ -69,11 +69,25 @@ class TypeGateResult:
 
 
 def find_basedpyright() -> str | None:
+    candidate = Path(sys.executable).parent / "basedpyright"
+    if candidate.exists():
+        return str(candidate)
     exe = shutil.which("basedpyright")
     if exe:
         return exe
-    candidate = Path(sys.executable).parent / "basedpyright"
-    return str(candidate) if candidate.exists() else None
+    return None
+
+
+def _valid_diagnostic(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    location = value.get("range")
+    start = location.get("start") if isinstance(location, dict) else None
+    return (isinstance(value.get("file"), str)
+            and value.get("severity") in ("error", "warning", "information")
+            and isinstance(value.get("message"), str)
+            and isinstance(start, dict)
+            and type(start.get("line")) is int and start["line"] >= 0)
 
 
 def _has_pyright_table(pyproject: Path) -> bool:
@@ -355,7 +369,10 @@ def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
                 )
                 continue
         cwd = config_dir or Path(os.path.commonpath([str(p.parent) for p in group]))
-        cmd = [exe, "--outputjson", *[str(p) for p in group]]
+        # The proof package's interpreter supplies the installed application
+        # dependencies, even when PATH points at another virtual environment.
+        cmd = [exe, "--outputjson", "--pythonpath", sys.executable,
+               *[str(p) for p in group]]
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout, cwd=str(cwd)
@@ -371,6 +388,35 @@ def run_type_gate(paths: list[Path], timeout: int = 300) -> TypeGateResult:
                     f"unparseable basedpyright output (exit {proc.returncode}): "
                     f"{proc.stdout[:200]!r} {proc.stderr[:200]!r}"
                 ),
+            )
+        if proc.returncode not in (0, 1):
+            return TypeGateResult(
+                available=False,
+                error=f"basedpyright exited {proc.returncode}: {proc.stderr[:200]}",
+            )
+        # An empty or truncated JSON object is not evidence of type analysis.
+        # Check both the diagnostics shape and that all requested files ran.
+        if (not isinstance(payload, dict)
+                or not isinstance(payload.get("version"), str)
+                or not isinstance(payload.get("generalDiagnostics"), list)
+                or not all(_valid_diagnostic(d) for d in payload["generalDiagnostics"])
+                or not isinstance(payload.get("summary"), dict)
+                or type(payload["summary"].get("filesAnalyzed")) is not int
+                or payload["summary"]["filesAnalyzed"] < len(group)):
+            return TypeGateResult(available=False, error="incomplete basedpyright output or omitted input files")
+        counts = {severity: sum(d["severity"] == severity for d in payload["generalDiagnostics"])
+                  for severity in ("error", "warning", "information")}
+        if any(type(payload["summary"].get(severity + "Count")) is not int
+               or payload["summary"][severity + "Count"] != count
+               for severity, count in counts.items()):
+            return TypeGateResult(available=False, error="inconsistent basedpyright diagnostic summary")
+        # Recommended mode can exit 1 for warnings. Accept that documented
+        # outcome only with a complete, consistent diagnostic payload; callers
+        # retain warnings separately from errors. Empty nonzero output fails.
+        if proc.returncode and not (counts["error"] or counts["warning"]):
+            return TypeGateResult(
+                available=False,
+                error=f"basedpyright exited {proc.returncode}: {proc.stderr[:200]}",
             )
         version = payload.get("version", version)
         diagnostics.extend(

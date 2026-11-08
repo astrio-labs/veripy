@@ -52,6 +52,12 @@ def call_model(encoder,node):
 # CPython PSF-licensed dependency body. Keep the executable shape and local names
 # for bytecode provenance. No globals, callbacks, defaults or mutable inputs.
 def _reference_parse_http_list(s):
+    """Reference copy of urllib.request.parse_http_list.
+
+    The stdlib function has a docstring, so this one must too: Python 3.14
+    reserves co_consts[0] (and sets CO_HAS_DOCSTRING) only for functions that
+    have one, and signature() can ignore the text only when both layouts match.
+    """
     res = []
     part = ''
     escape = quote = False

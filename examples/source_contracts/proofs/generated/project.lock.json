@@ -1,0 +1,155 @@
+{
+  "artifacts": {
+    "measurements.dfy": "b5d65b989c5f56f79c52b97f4cd374be8771f7b8803f4745db917fe17992b853",
+    "measurements.map.json": "9bc375d0a0dc8bdec62dfb6e86007cd5f2d45492a143338b655a429b8eed55d0",
+    "pauses.dfy": "7ae6fdd2f32776945f8716981ab3f22ac5342d68f67adba826c39fa222ba7ad6",
+    "pauses.map.json": "d467edd73f7b6e29023c047437f66a28b1d80c909698ddb941f239704b7156ad"
+  },
+  "compiler": "2485588c64da433f29df0b8039411c41d49672c57d8419f02fd93f1bf1b46818",
+  "contracts": {
+    "measurements": {
+      "annotations": [
+        "Name(id='int', ctx=Load())",
+        "Name(id='int', ctx=Load())",
+        "Name(id='Interval', ctx=Load())",
+        "Name(id='int', ctx=Load())",
+        "Subscript(value=Name(id='list', ctx=Load()), slice=Name(id='int', ctx=Load()), ctx=Load())",
+        "Name(id='int', ctx=Load())",
+        "Name(id='int', ctx=Load())",
+        "Name(id='int', ctx=Load())",
+        "Name(id='int', ctx=Load())",
+        "Name(id='int', ctx=Load())",
+        "Name(id='bool', ctx=Load())",
+        "Subscript(value=Name(id='list', ctx=Load()), slice=Name(id='int', ctx=Load()), ctx=Load())",
+        "Name(id='int', ctx=Load())"
+      ],
+      "clauses": [
+        {
+          "clauses": [
+            [
+              "requires",
+              "bounds.lower <= bounds.upper"
+            ],
+            [
+              "ensures",
+              "result == (bounds.lower <= point <= bounds.upper)"
+            ]
+          ],
+          "function": "contains"
+        },
+        {
+          "clauses": [
+            [
+              "requires",
+              "lower <= upper"
+            ],
+            [
+              "ensures",
+              "len(result) == len(samples)"
+            ],
+            [
+              "ensures",
+              "forall j in range(len(result)) :: result[j] == min(max(samples[j], lower), upper)"
+            ]
+          ],
+          "function": "clip_readings"
+        },
+        {
+          "clauses": [
+            [
+              "requires",
+              "count >= 0"
+            ],
+            [
+              "ensures",
+              "result == start + count * stride"
+            ],
+            [
+              "invariant",
+              "ghost(\"Progress\", value, start, stride, _i)"
+            ],
+            [
+              "proof",
+              "ProgressStep(value, start, stride, _i)"
+            ]
+          ],
+          "function": "advance"
+        }
+      ],
+      "heap_schema": null,
+      "sidecar": "// Reusable arithmetic loop predicate and a checked preservation lemma.\npredicate Progress(value: int, start: int, stride: int, index: int)\n{ value == start + index * stride }\n\nlemma ProgressStep(value: int, start: int, stride: int, index: int)\n  requires Progress(value, start, stride, index)\n  ensures Progress(value + stride, start, stride, index + 1)\n{}\n"
+    },
+    "pauses": {
+      "annotations": [
+        "Name(id='timedelta', ctx=Load())",
+        "Name(id='timedelta', ctx=Load())",
+        "Name(id='int', ctx=Load())",
+        "Name(id='timedelta', ctx=Load())"
+      ],
+      "clauses": [
+        {
+          "clauses": [
+            [
+              "requires",
+              "self.base > timedelta(0) and self.cap >= self.base"
+            ],
+            [
+              "ensures",
+              "raised() == (attempt < 0)"
+            ],
+            [
+              "ensures",
+              "not raised() ==> result == (self.base if attempt == 0 else min(self.base * 2, self.cap))"
+            ]
+          ],
+          "function": "RetryWindow.pause"
+        }
+      ],
+      "heap_schema": null,
+      "sidecar": ""
+    }
+  },
+  "dafny_version": "4.11.0+fcb2042d6d043a2634f0854338c08feeaaaf4ae2",
+  "enrollment": {
+    "required_targets": [
+      "measurements",
+      "pauses"
+    ],
+    "sources": [
+      "*.py"
+    ],
+    "targets": [
+      {
+        "backend": "dafny",
+        "dependencies": [],
+        "functions": [
+          "contains",
+          "clip_readings",
+          "advance"
+        ],
+        "id": "measurements",
+        "sidecar": "measurements.proofs.dfy",
+        "source": "measurements.py"
+      },
+      {
+        "backend": "dafny-native",
+        "dependencies": [],
+        "functions": [
+          "RetryWindow.pause"
+        ],
+        "id": "pauses",
+        "source": "pauses.py"
+      }
+    ]
+  },
+  "inputs": {
+    "measurements.proofs.dfy": "8d35b4bce0d04305f4235ab112b9630bf5120fef65a9eec43467924ef27e95a1",
+    "measurements.py": "0bf0b431a2c5f9a4ccedb0b480bf187e862ff706614a0f58ec217c123b050cb3",
+    "pauses.py": "58db37e809e8f2dc33bc922a18784263f454fe0aee3e0af377100c8db1ff125d"
+  },
+  "schema": "veripy-project-lock/1",
+  "type_policy": {
+    "pyrightconfig.json": "5e22b829761392077a9ab99a565b1a76247a10894e8f684df54079d164898072"
+  },
+  "typechecker_version": "1.39.9"
+}
